@@ -171,6 +171,79 @@ fn set_writes_the_file_with_mode_0600_in_a_directory_with_mode_0700() {
     );
 }
 
+/// Runs `imify config set api-url https://api.example.com --json` with `HOME` set to `home`,
+/// `IMIFY_CONFIG_DIR` and `XDG_CONFIG_HOME` unset, then `env` applied, and returns the `path`
+/// it reports.
+fn set_in_home(home: &Path, env: &[(&str, &str)]) -> PathBuf {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_imify"));
+    command
+        .env_remove("IMIFY_OUTPUT")
+        .env_remove("IMIFY_API_URL")
+        .env_remove("IMIFY_CONFIG_DIR")
+        .env_remove("XDG_CONFIG_HOME")
+        .env("IMIFY_CREDENTIAL_STORE", "file")
+        .env("HOME", home);
+    for (key, value) in env {
+        command.env(key, value);
+    }
+    let output = command
+        .args([
+            "config",
+            "set",
+            "api-url",
+            "https://api.example.com",
+            "--json",
+        ])
+        .assert()
+        .get_output()
+        .clone();
+    assert_eq!(output.status.code(), Some(0), "{}", text(&output.stderr));
+    PathBuf::from(json_of(&output.stdout)["path"].as_str().unwrap_or_default())
+}
+
+#[test]
+fn set_without_imify_config_dir_writes_below_dot_config_in_home() {
+    let home = tempfile::tempdir().unwrap();
+
+    let path = set_in_home(home.path(), &[]);
+
+    let dir = home.path().join(".config/imify");
+    assert_eq!(path, dir.join("config.toml"));
+    assert_eq!(
+        (mode_of(&dir).unwrap(), mode_of(&path).unwrap()),
+        (0o700, 0o600)
+    );
+}
+
+#[test]
+fn set_without_imify_config_dir_writes_below_xdg_config_home() {
+    let home = tempfile::tempdir().unwrap();
+    let config_home = home.path().join("xdg-config");
+
+    let path = set_in_home(
+        home.path(),
+        &[("XDG_CONFIG_HOME", config_home.to_str().unwrap())],
+    );
+
+    assert_eq!(path, config_home.join("imify/config.toml"));
+    assert!(path.is_file());
+}
+
+#[test]
+fn a_relative_home_without_imify_config_dir_is_an_invalid_argument() {
+    let output = Command::new(env!("CARGO_BIN_EXE_imify"))
+        .env_remove("IMIFY_CONFIG_DIR")
+        .env_remove("XDG_CONFIG_HOME")
+        .env("HOME", "relative/home")
+        .args(["config", "get", "api-url", "--json"])
+        .assert()
+        .get_output()
+        .clone();
+
+    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(json_of(&output.stderr)["error"]["code"], "invalid_argument");
+}
+
 #[test]
 fn set_rejects_an_invalid_url_without_writing() {
     let config = ConfigDir::new().unwrap();

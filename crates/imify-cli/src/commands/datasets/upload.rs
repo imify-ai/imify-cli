@@ -14,12 +14,12 @@ use imify::ingest::{
 use imify::validate::Report;
 use tokio::sync::mpsc::{self, UnboundedSender};
 
-use super::journal::journal_dir;
 use super::{
     dataset_root_error, finding_json, invalid_report_error, unreadable_root, write_findings,
 };
 use crate::cli::UploadArgs;
 use crate::commands::client;
+use crate::dirs::journal_dir;
 use crate::output::renderer::{RESULT_EVENT, Render, Renderer};
 use crate::output::sanitize::printable;
 use crate::output::{CliError, Environment, ErrorCode, Settings};

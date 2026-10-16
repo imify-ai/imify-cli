@@ -75,7 +75,13 @@ $ imify config unset api-url --json
 api_url = "https://api.example.com"
 ```
 
-The file is `config.toml` in `IMIFY_CONFIG_DIR`, or in the platform's configuration directory: `~/Library/Application Support/ai.imify.imify` on macOS, `~/.config/imify` on Linux. The login file `credentials.json` uses the same directory.
+The file is `config.toml` in the configuration directory, the same on macOS and Linux:
+
+1. `IMIFY_CONFIG_DIR`, when set and not empty.
+2. `$XDG_CONFIG_HOME/imify`, when `XDG_CONFIG_HOME` is an absolute path.
+3. `~/.config/imify`.
+
+The login file `credentials.json` uses the same directory.
 
 | Key | Value |
 |---|---|
@@ -94,5 +100,5 @@ A refused file or directory fails with `internal` and exit code 1; the message s
 
 | Code | Exit | Cause |
 |---|---|---|
-| `invalid_argument` | 2 | An unknown key, an invalid value for `config set`, an invalid API URL from any source, or a config file that is not valid TOML or has an unknown key. |
-| `internal` | 1 | The config file or its directory is refused or cannot be read or written, or the home directory is unknown and `IMIFY_CONFIG_DIR` is unset. |
+| `invalid_argument` | 2 | An unknown key, an invalid value for `config set`, an invalid API URL from any source, a config file that is not valid TOML or has an unknown key, or `HOME` is not an absolute path while `IMIFY_CONFIG_DIR` and `XDG_CONFIG_HOME` are unset. |
+| `internal` | 1 | The config file or its directory is refused or cannot be read or written. |

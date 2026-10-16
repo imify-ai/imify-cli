@@ -51,6 +51,7 @@ crates/imify-cli/src/
   credentials/      where a login is stored: OS keychain, file; selection by IMIFY_CREDENTIAL_STORE
   browser.rs        opens the sign-in URL in the system browser
   config/           settings and their sources: --api-url, environment, config.toml, defaults
+  dirs.rs           the configuration and upload journal directories (XDG layout)
   private_file.rs   files only the user can change: mode checks, atomic writes
   output/           Renderer (human, json), error envelope, exit codes
   tui/              inline viewport, theme, terminal restore
@@ -71,7 +72,7 @@ Each seam is a trait with one production implementation and test doubles. They e
 
 1. `validate` runs offline; the upload does not start when the report has an error.
 2. The engine creates an ingest session and uploads `meta/info.json` first, so the server rejects an unsupported format before any bulk transfer.
-3. Remaining files upload with bounded concurrency. Each finished file is written to the resume journal in the platform state directory: `$XDG_STATE_HOME/imify/uploads/` on Linux, `~/Library/Application Support/imify/uploads/` on macOS ([ADR 0006](adr/0006-upload-transport.md)).
+3. Remaining files upload with bounded concurrency. Each finished file is written to the resume journal in the user's state directory: `$XDG_STATE_HOME/imify/uploads/`, or `~/.local/state/imify/uploads/`, on macOS and Linux ([ADR 0006](adr/0006-upload-transport.md)).
 4. `complete` asks the server to catalogue the session. The server decides whether the episodes create a new dataset or extend an existing one.
 
 ## Testing

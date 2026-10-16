@@ -53,6 +53,8 @@ pub struct Environment {
     pub term: Option<String>,
     /// `HOME`; `None` when unset.
     pub home: Option<OsString>,
+    /// `XDG_CONFIG_HOME`; `None` when unset.
+    pub config_home: Option<OsString>,
     /// `XDG_STATE_HOME`; `None` when unset.
     pub state_home: Option<OsString>,
     /// `IMIFY_OIDC_ISSUER`; `None` when unset or not valid UTF-8.
@@ -66,8 +68,8 @@ pub struct Environment {
 }
 
 impl Environment {
-    /// Reads `IMIFY_OUTPUT`, `NO_COLOR`, `IMIFY_API_URL`, `TERM`, `HOME`, `XDG_STATE_HOME`,
-    /// `IMIFY_OIDC_ISSUER`, `IMIFY_OIDC_CLIENT_ID`, `IMIFY_CREDENTIAL_STORE`,
+    /// Reads `IMIFY_OUTPUT`, `NO_COLOR`, `IMIFY_API_URL`, `TERM`, `HOME`, `XDG_CONFIG_HOME`,
+    /// `XDG_STATE_HOME`, `IMIFY_OIDC_ISSUER`, `IMIFY_OIDC_CLIENT_ID`, `IMIFY_CREDENTIAL_STORE`,
     /// `IMIFY_CONFIG_DIR` and whether stdin and stderr are terminals.
     pub fn capture() -> Self {
         Self {
@@ -79,6 +81,7 @@ impl Environment {
             stderr_is_tty: io::stderr().is_terminal(),
             term: std::env::var("TERM").ok(),
             home: std::env::var_os("HOME"),
+            config_home: std::env::var_os("XDG_CONFIG_HOME"),
             state_home: std::env::var_os("XDG_STATE_HOME"),
             oidc_issuer: std::env::var("IMIFY_OIDC_ISSUER").ok(),
             oidc_client_id: std::env::var("IMIFY_OIDC_CLIENT_ID").ok(),

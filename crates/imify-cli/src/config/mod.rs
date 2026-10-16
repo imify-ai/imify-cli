@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use url::Url;
 
-use crate::credentials::config_dir;
+use crate::dirs::config_dir;
 use crate::output::{CliError, Environment, ErrorCode};
 use crate::private_file::{self, Permissions};
 
@@ -243,11 +243,12 @@ pub struct ConfigFile {
 }
 
 impl ConfigFile {
-    /// The config file in `IMIFY_CONFIG_DIR`, or in the platform's configuration directory.
+    /// The config file in the directory [`config_dir`] returns.
     ///
     /// # Errors
     ///
-    /// Returns `internal` when `IMIFY_CONFIG_DIR` is unset and the home directory is unknown.
+    /// Returns `invalid_argument` when the directory depends on `HOME` and `HOME` is not an
+    /// absolute path.
     pub fn open(env: &Environment) -> Result<Self, CliError> {
         Ok(Self {
             path: config_dir(env)?.join(FILE_NAME),

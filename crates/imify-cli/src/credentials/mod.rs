@@ -14,13 +14,11 @@ use url::Url;
 
 pub use self::file::FileStore;
 pub use self::keychain::{Keychain, KeychainError, KeychainStore};
+use crate::dirs::config_dir;
 use crate::output::{CliError, Environment, ErrorCode};
 
 /// The variable that selects the credential store.
 pub const STORE_VARIABLE: &str = "IMIFY_CREDENTIAL_STORE";
-
-/// The variable that sets the directory of the credentials file.
-pub const CONFIG_DIR_VARIABLE: &str = "IMIFY_CONFIG_DIR";
 
 /// The key of the login for `api_url`: scheme, host, port unless it is the scheme's
 /// default, and path without a trailing slash. `https://API.example.com:443/` gives
@@ -64,31 +62,6 @@ impl StoreChoice {
             ))),
         }
     }
-}
-
-/// The directory of the credentials file: `IMIFY_CONFIG_DIR`, or the platform's
-/// configuration directory for imify.
-///
-/// # Errors
-///
-/// Returns `internal` when `IMIFY_CONFIG_DIR` is unset and the home directory is unknown.
-pub fn config_dir(env: &Environment) -> Result<PathBuf, CliError> {
-    if let Some(dir) = env
-        .config_dir
-        .as_ref()
-        .filter(|dir| !dir.as_os_str().is_empty())
-    {
-        return Ok(dir.clone());
-    }
-    directories::ProjectDirs::from("ai", "imify", "imify")
-        .map(|dirs| dirs.config_dir().to_path_buf())
-        .ok_or_else(|| {
-            CliError::new(
-                ErrorCode::Internal,
-                "Cannot determine the configuration directory: the home directory is unknown.",
-            )
-            .with_hint(format!("Set `{CONFIG_DIR_VARIABLE}` to a directory."))
-        })
 }
 
 /// Where [`HostStore::save_reporting`] stored the credentials.
@@ -144,8 +117,8 @@ impl HostStore {
     ///
     /// # Errors
     ///
-    /// Returns `invalid_argument` for an unsupported `IMIFY_CREDENTIAL_STORE`, and
-    /// `internal` when the configuration directory is unknown.
+    /// Returns `invalid_argument` for an unsupported `IMIFY_CREDENTIAL_STORE`, or when the
+    /// configuration directory depends on `HOME` and `HOME` is not an absolute path.
     pub fn open(env: &Environment, host_key: &str, keychain: Keychain) -> Result<Self, CliError> {
         let file = || config_dir(env).map(|dir| FileStore::new(&dir, host_key));
         Ok(match StoreChoice::parse(env.credential_store.as_deref())? {

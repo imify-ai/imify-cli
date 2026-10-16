@@ -143,12 +143,7 @@ An upload records each file the API stored in a journal. When an upload stops be
 | `--resume` | Fails with `not_found`. | Continues the journaled session. |
 | `--restart` | New session. | Deletes the journal and creates a new session. The journaled session stays open. |
 
-There is one journal per API host and dataset directory, in the state directory of the user:
-
-| Platform | Directory |
-|---|---|
-| Linux | `$XDG_STATE_HOME/imify/uploads/`, or `~/.local/state/imify/uploads/` when `XDG_STATE_HOME` is unset |
-| macOS | `~/Library/Application Support/imify/uploads/` |
+There is one journal per API host and dataset directory, in the state directory of the user: `$XDG_STATE_HOME/imify/uploads/` when `XDG_STATE_HOME` is an absolute path, otherwise `~/.local/state/imify/uploads/`. The location is the same on macOS and Linux. `IMIFY_CONFIG_DIR` does not move it.
 
 A journal cannot be continued when the `--task` value differs from the interrupted upload, a journaled file is no longer in the dataset directory, or the journal is corrupt. A journal is corrupt when it is a symbolic link, is larger than 64 MiB, does not parse, or names another API URL or dataset directory than its file name stands for. The command then fails with `conflict` and the hint to run again with `--restart`.
 
@@ -158,7 +153,7 @@ The journal directory is created with mode `0700`. An existing journal directory
 
 | Code | Exit | Cause |
 |---|---|---|
-| `invalid_argument` | 2 | `<path>` is not a readable directory or has no name, `--task` is missing or empty, `--resume` and `--restart` are combined, the API URL is invalid, `HOME` is unset, or a file changed or became unreadable during the upload. |
+| `invalid_argument` | 2 | `<path>` is not a readable directory or has no name, `--task` is missing or empty, `--resume` and `--restart` are combined, the API URL is invalid, `HOME` is not an absolute path while `XDG_STATE_HOME` is unset, or a file changed or became unreadable during the upload. |
 | `auth_required` | 3 | There is no login for the host, and `IMIFY_TOKEN` is not set. |
 | `auth_expired` | 3 | The stored login has expired or was revoked. |
 | `auth_rejected`, `permission_denied` | 3 | The API rejected the token, or the token lacks the permission. |

@@ -3,6 +3,7 @@ mod cli;
 mod commands;
 mod config;
 mod credentials;
+mod dirs;
 mod output;
 mod private_file;
 mod tui;

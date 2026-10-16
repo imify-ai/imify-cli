@@ -71,7 +71,7 @@ imify login --api-url https://api.example.com      # or pass it to one command
 export IMIFY_API_URL=https://api.example.com       # or set it for the shell
 ```
 
-`--api-url` takes precedence over `IMIFY_API_URL`, which takes precedence over the config file. The URL must use `https`, except for `localhost`, `127.0.0.1` and `::1`. Each host keeps its own login. The [configuration guide](docs/guide/configuration.md) covers the config file and `imify config`.
+`--api-url` takes precedence over `IMIFY_API_URL`, which takes precedence over the config file. The URL must use `https`, except for `localhost`, `127.0.0.1` and `::1`. Each host keeps its own login. By default, the config file is `~/.config/imify/config.toml` on macOS and Linux. The [configuration guide](docs/guide/configuration.md) covers the config file and `imify config`.
 
 ## Rust SDK
 
