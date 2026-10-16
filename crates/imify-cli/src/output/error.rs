@@ -5,13 +5,6 @@ use serde::Serialize;
 /// A stable, documented error code. The `snake_case` name is part of the JSON contract.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "commands produce these codes; no command exists yet"
-    )
-)]
 pub enum ErrorCode {
     /// An unexpected failure inside the CLI.
     Internal,
