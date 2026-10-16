@@ -21,6 +21,8 @@ stderr:
 | stdout | the result | the result: one JSON document, or NDJSON events |
 | stderr | progress, logs, warnings, errors | logs, the error envelope |
 
+Human output escapes control characters and Unicode format characters, such as bidirectional overrides and zero-width characters, in text from the API, the identity provider and local files. A file named `a<ESC>[2J` prints as `a\u{1b}[2J`. A line feed inside a name, path or message prints as `\u{a}`, so every value stays on its line. JSON output carries the text unchanged, escaped by JSON rules.
+
 ## Global flags
 
 | Flag | Environment | Effect |

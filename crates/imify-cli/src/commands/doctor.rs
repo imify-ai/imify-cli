@@ -9,6 +9,7 @@ use imify::{Client, ClientBuilder, Readiness, RetryPolicy, User};
 use super::auth::TokenOrigin;
 use super::{api_url, invalid_api_url, write_result};
 use crate::output::renderer::{Render, Renderer};
+use crate::output::sanitize::printable;
 use crate::output::time::rfc3339;
 use crate::output::{AUTH_REJECTED_HINT, AUTH_REQUIRED_HINT, CliError, Environment, ErrorCode};
 
@@ -526,10 +527,10 @@ impl Render for Report {
                 "{:<6}{:<14}{}",
                 check.status.as_str(),
                 check.name,
-                check.message
+                printable(&check.message)
             )?;
             if let (Status::Fail | Status::Warn, Some(hint)) = (check.status, &check.hint) {
-                writeln!(w, "{:<20}hint: {hint}", "")?;
+                writeln!(w, "{:<20}hint: {}", "", printable(hint))?;
             }
         }
         Ok(())

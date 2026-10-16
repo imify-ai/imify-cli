@@ -13,6 +13,7 @@ use imify::validate::{Finding, Report};
 use super::{client, write_result};
 use crate::cli::{LsArgs, SortField, ValidateArgs};
 use crate::output::renderer::{Render, Renderer};
+use crate::output::sanitize::printable;
 use crate::output::table::{Column, Table};
 use crate::output::{CliError, Environment, ErrorCode};
 
@@ -218,10 +219,10 @@ fn write_findings(w: &mut dyn Write, findings: &[Finding]) -> io::Result<()> {
             [
                 finding.severity().as_str().to_owned(),
                 finding.code.as_str().to_owned(),
-                finding
-                    .path
-                    .as_deref()
-                    .map_or_else(|| "-".to_owned(), |path| path.display().to_string()),
+                finding.path.as_deref().map_or_else(
+                    || "-".to_owned(),
+                    |path| printable(&path.display().to_string()).into_owned(),
+                ),
             ]
         })
         .collect();
@@ -235,7 +236,7 @@ fn write_findings(w: &mut dyn Write, findings: &[Finding]) -> io::Result<()> {
         for (cell, width) in row.iter().zip(widths) {
             write!(w, "{cell:width$}{COLUMN_GAP}")?;
         }
-        writeln!(w, "{}", finding.message)?;
+        writeln!(w, "{}", printable(&finding.message))?;
     }
     Ok(())
 }

@@ -3,7 +3,7 @@
 use std::io::{self, Write};
 
 use super::error::CliError;
-use super::sanitize::printable;
+use super::sanitize::{printable, printable_lines};
 
 /// The `type` of the event that ends an NDJSON stream and carries the result.
 pub const RESULT_EVENT: &str = "result";
@@ -14,7 +14,9 @@ pub trait Render {
     fn kind(&self) -> &'static str;
     /// The JSON form. Events are written as this object with `type` added.
     fn json(&self) -> serde_json::Value;
-    /// The human-readable form.
+    /// The human-readable form. [`HumanRenderer`] escapes its control and format characters
+    /// except line feeds; external text that may hold a line feed is written with
+    /// [`printable`].
     ///
     /// # Errors
     ///
@@ -87,10 +89,19 @@ impl std::fmt::Debug for HumanRenderer {
     }
 }
 
+/// Writes the human form of `value` to `w` with control and format characters escaped. The
+/// line feeds of the human form are kept; a field that must not break a line escapes its own
+/// line feeds with [`printable`].
+fn write_human(w: &mut dyn Write, value: &dyn Render) -> io::Result<()> {
+    let mut text = Vec::new();
+    value.human(&mut text)?;
+    w.write_all(printable_lines(&String::from_utf8_lossy(&text)).as_bytes())?;
+    w.flush()
+}
+
 impl Renderer for HumanRenderer {
     fn result(&mut self, value: &dyn Render) -> io::Result<()> {
-        value.human(&mut self.stdout)?;
-        self.stdout.flush()
+        write_human(&mut self.stdout, value)
     }
 
     fn event(&mut self, event: &dyn Render) -> io::Result<()> {
@@ -100,8 +111,7 @@ impl Renderer for HumanRenderer {
         if self.quiet {
             return Ok(());
         }
-        event.human(&mut self.stderr)?;
-        self.stderr.flush()
+        write_human(&mut self.stderr, event)
     }
 
     fn error(&mut self, error: &CliError) -> io::Result<()> {
@@ -365,6 +375,53 @@ mod tests {
             "1 files uploaded\n2 files uploaded\n"
         );
         assert_eq!(streams.stdout.text(), "dataset 42\n");
+    }
+
+    /// A value whose human form is two lines of external text.
+    struct Hostile;
+
+    impl Render for Hostile {
+        fn kind(&self) -> &'static str {
+            "hostile"
+        }
+
+        fn json(&self) -> serde_json::Value {
+            serde_json::json!({ "name": "\u{1b}[2J\u{202e}" })
+        }
+
+        fn human(&self, w: &mut dyn Write) -> io::Result<()> {
+            writeln!(w, "name  \u{1b}]0;title\u{7}\u{202e}")?;
+            writeln!(w, "task  pick\u{200b}")
+        }
+    }
+
+    const HOSTILE_ESCAPED: &str = "name  \\u{1b}]0;title\\u{7}\\u{202e}\ntask  pick\\u{200b}\n";
+
+    #[test]
+    fn human_result_escapes_control_and_format_characters_and_keeps_its_lines() {
+        let (mut renderer, streams) = human_renderer(false);
+
+        renderer.result(&Hostile).unwrap();
+
+        assert_eq!(streams.stdout.text(), HOSTILE_ESCAPED);
+    }
+
+    #[test]
+    fn human_event_escapes_control_and_format_characters_and_keeps_its_lines() {
+        let (mut renderer, streams) = human_renderer(false);
+
+        renderer.event(&Hostile).unwrap();
+
+        assert_eq!(streams.stderr.text(), HOSTILE_ESCAPED);
+    }
+
+    #[test]
+    fn json_result_keeps_external_text_as_serde_escapes_it() {
+        let (mut renderer, streams) = json_renderer(false);
+
+        renderer.result(&Hostile).unwrap();
+
+        assert_eq!(streams.stdout.text(), "{\"name\":\"\\u001b[2J\u{202e}\"}\n");
     }
 
     #[test]
