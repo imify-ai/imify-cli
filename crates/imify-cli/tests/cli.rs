@@ -1389,12 +1389,14 @@ fn doctor(api_url: Option<&str>, token: Option<&str>, extra_args: &[&str]) -> Ou
     imify(&args, &env)
 }
 
-/// Replaces the parts of a doctor report that vary between runs and machines: the mock
-/// server's port, the latency and the platform.
+/// Replaces the parts of a doctor report that vary between runs, machines and releases: the
+/// mock server's port, the latency, the platform and the CLI version.
 fn normalize_doctor_text(text: &str, server_uri: &str) -> String {
     let platform = format!("({} {})", std::env::consts::OS, std::env::consts::ARCH);
+    let version = format!("imify-cli {} (", env!("CARGO_PKG_VERSION"));
     let mut normalized = text
         .replace(server_uri, "http://127.0.0.1:<port>")
+        .replace(&version, "imify-cli <version> (")
         .replace(&platform, "(<os> <arch>)");
     let label = "Reachable in ";
     if let Some(start) = normalized.find(label).map(|index| index + label.len()) {
@@ -1407,14 +1409,18 @@ fn normalize_doctor_text(text: &str, server_uri: &str) -> String {
     normalized
 }
 
-/// The JSON report with `latency_ms` and `clock_skew_ms` set to 0 when present, and the
-/// varying text replaced as in [`normalize_doctor_text`]. `null` when stdout is not JSON.
+/// The JSON report with `latency_ms` and `clock_skew_ms` set to 0 and `cli_version` set to
+/// `<version>` when present, and the varying text replaced as in [`normalize_doctor_text`].
+/// `null` when stdout is not JSON.
 fn normalize_doctor_json(stdout: &[u8], server_uri: &str) -> String {
     let mut report: serde_json::Value = serde_json::from_slice(stdout).unwrap_or_default();
     for field in ["latency_ms", "clock_skew_ms"] {
         if !report[field].is_null() {
             report[field] = json!(0);
         }
+    }
+    if !report["cli_version"].is_null() {
+        report["cli_version"] = json!("<version>");
     }
     report["platform"] = json!({"os": "<os>", "arch": "<arch>"});
     normalize_doctor_text(&report.to_string(), server_uri)

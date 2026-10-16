@@ -2,7 +2,7 @@
 source: crates/imify-cli/tests/cli.rs
 expression: "normalize_doctor_text(&text(&output.stdout), &server.uri())"
 ---
-imify-cli 0.0.0 (<os> <arch>)
+imify-cli <version> (<os> <arch>)
 
 ok    api_url       http://127.0.0.1:<port> (IMIFY_API_URL)
 ok    health        Reachable in <n> ms.
