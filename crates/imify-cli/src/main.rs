@@ -3,6 +3,7 @@ mod cli;
 mod commands;
 mod credentials;
 mod output;
+mod private_file;
 mod tui;
 
 use std::ffi::OsString;
