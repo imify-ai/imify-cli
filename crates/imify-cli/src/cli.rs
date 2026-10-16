@@ -2,7 +2,7 @@
 
 use std::ffi::OsString;
 
-use clap::{ArgAction, Args, CommandFactory, FromArgMatches, Parser, Subcommand};
+use clap::{ArgAction, Args, CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
 
 /// Command-line interface for the imify platform.
 #[derive(Debug, Parser)]
@@ -52,6 +52,52 @@ pub enum Command {
         after_help = "Example:\n  IMIFY_TOKEN=<token> IMIFY_API_URL=https://api.example.com imify whoami"
     )]
     Whoami,
+    /// Work with datasets
+    Datasets {
+        #[command(subcommand)]
+        command: DatasetsCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum DatasetsCommand {
+    /// List the datasets visible to the access token's user
+    #[command(after_help = "Examples:\n  \
+        imify datasets ls\n  \
+        imify datasets ls --embodiment so100 --sort episodes --reverse\n  \
+        imify datasets ls --task cube --json")]
+    Ls(LsArgs),
+}
+
+/// Filters and order of `imify datasets ls`.
+#[derive(Debug, Default, Args)]
+pub struct LsArgs {
+    /// Keep datasets whose task contains TEXT, ignoring case
+    #[arg(long, value_name = "TEXT")]
+    pub task: Option<String>,
+    /// Keep datasets with exactly this format, such as `lerobot_v3`
+    #[arg(long)]
+    pub format: Option<String>,
+    /// Keep datasets with exactly this embodiment label, such as `so100`
+    #[arg(long)]
+    pub embodiment: Option<String>,
+    /// Sort by FIELD, ties by id. Without it: by task, then embodiment, then id
+    #[arg(long, value_name = "FIELD")]
+    pub sort: Option<SortField>,
+    /// Reverse the order
+    #[arg(long)]
+    pub reverse: bool,
+}
+
+/// A field `imify datasets ls` sorts by.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum SortField {
+    Id,
+    Task,
+    Format,
+    Embodiment,
+    Episodes,
+    Accepted,
 }
 
 /// Parses `args`, including the program name. `color` enables color in help and errors.

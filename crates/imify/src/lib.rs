@@ -3,20 +3,25 @@
 //! The `imify` command-line tool is built on this crate; every request it makes goes
 //! through the types defined here.
 //!
-//! ```
+//! ```no_run
 //! use imify::Client;
 //! use imify::auth::StaticToken;
 //!
+//! # async fn run() -> Result<(), imify::Error> {
 //! let client = Client::builder("https://api.example.com")
 //!     .token_source(StaticToken::new("secret"))
 //!     .build()?;
-//! # Ok::<(), imify::Error>(())
+//! for dataset in client.datasets().list().await? {
+//!     println!("{} {}", dataset.id, dataset.task);
+//! }
+//! # Ok(()) }
 //! ```
 #![deny(missing_docs)]
 
 mod account;
 pub mod auth;
 mod client;
+pub mod datasets;
 mod error;
 pub mod ingest;
 mod retry;

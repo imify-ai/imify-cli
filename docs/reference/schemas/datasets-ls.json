@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "imify datasets ls result",
+  "description": "Written to stdout by `imify datasets ls --json`: the datasets that match the filters, in the requested order.",
+  "type": "array",
+  "items": {
+    "type": "object",
+    "required": [
+      "id",
+      "task",
+      "format",
+      "embodiment",
+      "embodiment_fingerprint",
+      "cameras",
+      "action_dim",
+      "created_at",
+      "episodes",
+      "accepted"
+    ],
+    "properties": {
+      "id": {
+        "description": "Dataset id assigned by the API, a UUID string.",
+        "type": "string",
+        "minLength": 1
+      },
+      "task": {
+        "description": "Task description the episodes were recorded for.",
+        "type": "string"
+      },
+      "format": {
+        "description": "Dataset format, such as `lerobot_v3`.",
+        "type": "string"
+      },
+      "embodiment": {
+        "description": "Display label of the robot embodiment, such as `so100`.",
+        "type": "string"
+      },
+      "embodiment_fingerprint": {
+        "description": "Fingerprint that identifies the embodiment.",
+        "type": "string"
+      },
+      "cameras": {
+        "description": "Camera names recorded in the episodes.",
+        "type": "array",
+        "items": { "type": "string" }
+      },
+      "action_dim": {
+        "description": "Number of action dimensions.",
+        "type": "integer",
+        "minimum": 0
+      },
+      "created_at": {
+        "description": "Creation time as sent by the API, an ISO 8601 date-time.",
+        "type": "string"
+      },
+      "episodes": {
+        "description": "Number of episodes in the dataset.",
+        "type": "integer",
+        "minimum": 0
+      },
+      "accepted": {
+        "description": "Number of episodes that passed quality control.",
+        "type": "integer",
+        "minimum": 0
+      }
+    }
+  }
+}

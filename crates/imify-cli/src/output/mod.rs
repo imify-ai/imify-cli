@@ -17,6 +17,7 @@ pub mod interaction;
     )
 )]
 pub mod renderer;
+pub mod table;
 
 use std::ffi::OsString;
 use std::io::{self, IsTerminal};
