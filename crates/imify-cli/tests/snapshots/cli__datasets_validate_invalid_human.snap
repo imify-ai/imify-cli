@@ -1,0 +1,7 @@
+---
+source: crates/imify-cli/tests/cli.rs
+expression: text(&output.stdout)
+---
+warning  unexpected_entry         notes.txt                              Not uploaded: only meta/, data/ and videos/ are uploaded.
+error    episode_length_mismatch  data/chunk-000/episode_000000.parquet  Episode 0 has 10 rows; meta/episodes.jsonl declares 11.
+1 error, 1 warning

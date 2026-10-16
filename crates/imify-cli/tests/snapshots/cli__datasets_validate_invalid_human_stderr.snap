@@ -1,0 +1,6 @@
+---
+source: crates/imify-cli/tests/cli.rs
+expression: text(&output.stderr)
+---
+error: The dataset has 1 error.
+hint: Fix the errors listed in the report and run `imify datasets validate .` again.

@@ -105,6 +105,13 @@ pub enum Error {
     },
 
     /// A local file or directory cannot be read, or changed while it was being read.
+    ///
+    /// ```
+    /// use std::path::Path;
+    ///
+    /// let error = imify::validate::validate_dataset(Path::new("/no/such/dataset")).unwrap_err();
+    /// assert!(matches!(error, imify::Error::Io { ref path, .. } if path == Path::new("/no/such/dataset")));
+    /// ```
     #[error("cannot read {}: {source}", path.display())]
     Io {
         /// The file or directory.

@@ -61,7 +61,7 @@ Each seam is a trait with one production implementation and test doubles. They e
 
 ## Upload flow
 
-1. `validate` runs offline and stops on the first structural error.
+1. `validate` runs offline; the upload does not start when the report has an error.
 2. The engine creates an ingest session and uploads `meta/info.json` first, so the server rejects an unsupported format before any bulk transfer.
 3. Remaining files upload with bounded concurrency. Each finished file is written to the resume journal.
 4. `complete` asks the server to catalogue the session. The server decides whether the episodes create a new dataset or extend an existing one.
@@ -88,7 +88,7 @@ let dataset = DatasetBuilder::new(Format::V3_0)
 // dataset.root() is a temporary directory, removed when `dataset` is dropped.
 ```
 
-The builder writes `meta/`, uncompressed parquet data and placeholder video files. Each `Defect` changes the dataset in one respect. The same configuration always produces byte-identical files. A crate uses it through `[dev-dependencies]`, with `imify-test-support = { path = "../imify-test-support" }`.
+The builder writes `meta/`, parquet data (uncompressed unless `data_compression` sets a codec) and placeholder video files. Each `Defect` changes the dataset in one respect. The same configuration always produces byte-identical files. A crate uses it through `[dev-dependencies]`, with `imify-test-support = { path = "../imify-test-support" }`.
 
 ## Decisions
 

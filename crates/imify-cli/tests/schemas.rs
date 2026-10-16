@@ -11,6 +11,14 @@ const CASES: &[(&str, &[&str])] = &[
             "cli__invalid_imify_output_json.snap",
             "cli__whoami_auth_required_json.snap",
             "cli__whoami_auth_rejected_json.snap",
+            "cli__datasets_validate_invalid_envelope_json.snap",
+        ],
+    ),
+    (
+        "datasets-validate.json",
+        &[
+            "cli__datasets_validate_valid_json.snap",
+            "cli__datasets_validate_invalid_json.snap",
         ],
     ),
     (

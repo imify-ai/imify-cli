@@ -24,7 +24,7 @@ pub(crate) fn layout(shape: &Shape) -> io::Result<Layout> {
             PathBuf::from(format!(
                 "data/chunk-{chunk:03}/episode_{episode:06}.parquet"
             )),
-            frames.to_parquet()?,
+            frames.to_parquet(shape.data_compression)?,
         );
         for key in shape.video_keys() {
             let path = format!("videos/chunk-{chunk:03}/{key}/episode_{episode:06}.mp4");
@@ -36,7 +36,7 @@ pub(crate) fn layout(shape: &Shape) -> io::Result<Layout> {
         episodes.push(json!({
             "episode_index": episode,
             "tasks": [TASK],
-            "length": shape.frames_per_episode,
+            "length": shape.declared_length(episode),
         }));
         episodes_stats.push(json!({ "episode_index": episode, "stats": frames.stats() }));
     }

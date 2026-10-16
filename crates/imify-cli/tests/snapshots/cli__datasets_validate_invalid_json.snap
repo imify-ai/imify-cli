@@ -1,0 +1,5 @@
+---
+source: crates/imify-cli/tests/cli.rs
+expression: text(&output.stdout)
+---
+{"codebase_version":"v2.1","findings":[{"code":"unexpected_entry","message":"Not uploaded: only meta/, data/ and videos/ are uploaded.","path":"notes.txt","severity":"warning"},{"code":"episode_length_mismatch","message":"Episode 0 has 10 rows; meta/episodes.jsonl declares 11.","path":"data/chunk-000/episode_000000.parquet","severity":"error"}],"valid":false}

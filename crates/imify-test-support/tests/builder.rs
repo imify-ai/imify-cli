@@ -1,8 +1,11 @@
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 
-use imify_test_support::{DatasetBuilder, Defect, Format, SyntheticDataset};
+use imify_test_support::{Compression, DatasetBuilder, Defect, Format, SyntheticDataset};
+use parquet::basic::{Compression as Codec, GzipLevel};
+use parquet::file::metadata::ColumnChunkMetaData;
 use parquet::file::reader::{FileReader, SerializedFileReader};
+use parquet::record::Field;
 use serde_json::Value;
 
 type TestResult<T> = Result<T, Box<dyn std::error::Error>>;
@@ -480,4 +483,224 @@ fn defects_combine() {
 
     assert_eq!(read_info(dataset.root()).unwrap()["fps"], 0);
     assert!(!dataset.root().join("videos").exists());
+}
+
+#[test]
+fn missing_data_file_omits_the_first_data_file() {
+    let (before, after) = with_and_without(Defect::MissingDataFile).unwrap();
+
+    assert_eq!(
+        changed_paths(&before, &after).unwrap(),
+        paths(&["data/chunk-000/episode_000000.parquet"])
+    );
+}
+
+#[test]
+fn missing_data_file_omits_the_only_v3_0_data_file() {
+    let dataset = DatasetBuilder::new(Format::V3_0)
+        .defect(Defect::MissingDataFile)
+        .build()
+        .unwrap();
+
+    assert!(!dataset.root().join("data").exists());
+}
+
+#[test]
+fn missing_episodes_index_omits_episodes_jsonl_only() {
+    let (before, after) = with_and_without(Defect::MissingEpisodesIndex).unwrap();
+
+    assert_eq!(
+        changed_paths(&before, &after).unwrap(),
+        paths(&["meta/episodes.jsonl"])
+    );
+}
+
+#[test]
+fn missing_episodes_index_omits_the_v3_0_episodes_directory() {
+    let dataset = DatasetBuilder::new(Format::V3_0)
+        .defect(Defect::MissingEpisodesIndex)
+        .build()
+        .unwrap();
+
+    assert!(!dataset.root().join("meta/episodes").exists());
+    assert!(dataset.root().join("meta/info.json").is_file());
+}
+
+/// The values of the numeric column `name` of a parquet file, as `f64`.
+fn column(path: &Path, name: &str) -> TestResult<Vec<f64>> {
+    let reader = SerializedFileReader::new(File::open(path)?)?;
+    let mut values = Vec::new();
+    for row in reader.get_row_iter(None)? {
+        let row = row?;
+        for (column, field) in row.get_column_iter() {
+            if column != name {
+                continue;
+            }
+            #[expect(clippy::cast_precision_loss, reason = "test values are small")]
+            let value = match field {
+                Field::Long(value) => *value as f64,
+                Field::Float(value) => f64::from(*value),
+                other => return Err(format!("unexpected value {other:?}").into()),
+            };
+            values.push(value);
+        }
+    }
+    Ok(values)
+}
+
+fn declared_lengths(dataset: &SyntheticDataset, format: Format) -> TestResult<Vec<f64>> {
+    match format {
+        Format::V2_1 => fs::read_to_string(dataset.root().join("meta/episodes.jsonl"))?
+            .lines()
+            .map(|line| {
+                let episode: Value = serde_json::from_str(line)?;
+                episode["length"]
+                    .as_f64()
+                    .ok_or_else(|| "length is not a number".into())
+            })
+            .collect(),
+        Format::V3_0 => column(
+            &dataset
+                .root()
+                .join("meta/episodes/chunk-000/file-000.parquet"),
+            "length",
+        ),
+    }
+}
+
+#[test]
+fn episode_length_declares_one_frame_more_for_episode_0() {
+    for format in [Format::V2_1, Format::V3_0] {
+        let dataset = DatasetBuilder::new(format)
+            .episodes(3)
+            .frames_per_episode(4)
+            .defect(Defect::EpisodeLength)
+            .build()
+            .unwrap();
+
+        assert_eq!(
+            declared_lengths(&dataset, format).unwrap(),
+            [5.0, 4.0, 4.0],
+            "{format:?}"
+        );
+        assert_eq!(data_rows(&dataset).unwrap(), 12, "{format:?}");
+    }
+}
+
+#[test]
+fn episode_length_changes_the_v2_1_episodes_index_only() {
+    let (before, after) = with_and_without(Defect::EpisodeLength).unwrap();
+
+    assert_eq!(
+        changed_paths(&before, &after).unwrap(),
+        paths(&["meta/episodes.jsonl"])
+    );
+}
+
+/// The timestamps of the first data file, in row order.
+fn first_timestamps(dataset: &SyntheticDataset) -> TestResult<Vec<f64>> {
+    let first = dataset
+        .files()
+        .iter()
+        .find(|path| path.starts_with("data"))
+        .ok_or("no data file")?;
+    column(&dataset.root().join(first), "timestamp")
+}
+
+fn timestamps_with(format: Format, defect: Defect) -> TestResult<Vec<f64>> {
+    let dataset = DatasetBuilder::new(format)
+        .episodes(2)
+        .frames_per_episode(4)
+        .fps(4)
+        .defect(defect)
+        .build()?;
+    first_timestamps(&dataset)
+}
+
+#[test]
+fn non_monotonic_timestamps_swaps_the_first_two_timestamps_of_episode_0() {
+    let v2_1 = timestamps_with(Format::V2_1, Defect::NonMonotonicTimestamps).unwrap();
+    let v3_0 = timestamps_with(Format::V3_0, Defect::NonMonotonicTimestamps).unwrap();
+
+    assert_eq!(v2_1, [0.25, 0.0, 0.5, 0.75]);
+    assert_eq!(v3_0, [0.25, 0.0, 0.5, 0.75, 0.0, 0.25, 0.5, 0.75]);
+}
+
+#[test]
+fn timestamp_gap_delays_episode_0_after_its_first_frame_by_one_frame() {
+    let v2_1 = timestamps_with(Format::V2_1, Defect::TimestampGap).unwrap();
+    let v3_0 = timestamps_with(Format::V3_0, Defect::TimestampGap).unwrap();
+
+    assert_eq!(v2_1, [0.0, 0.5, 0.75, 1.0]);
+    assert_eq!(v3_0, [0.0, 0.5, 0.75, 1.0, 0.0, 0.25, 0.5, 0.75]);
+}
+
+#[test]
+fn non_monotonic_timestamps_change_the_first_v2_1_data_file_only() {
+    let (before, after) = with_and_without(Defect::NonMonotonicTimestamps).unwrap();
+
+    assert_eq!(
+        changed_paths(&before, &after).unwrap(),
+        paths(&["data/chunk-000/episode_000000.parquet"])
+    );
+}
+
+#[test]
+fn timestamp_gap_changes_the_first_v2_1_data_file_and_the_episode_stats() {
+    let (before, after) = with_and_without(Defect::TimestampGap).unwrap();
+
+    assert_eq!(
+        changed_paths(&before, &after).unwrap(),
+        paths(&[
+            "data/chunk-000/episode_000000.parquet",
+            "meta/episodes_stats.jsonl"
+        ])
+    );
+}
+
+fn codecs(path: &Path) -> TestResult<Vec<Codec>> {
+    let reader = SerializedFileReader::new(File::open(path)?)?;
+    Ok(reader
+        .metadata()
+        .row_groups()
+        .iter()
+        .flat_map(|group| group.columns().iter().map(ColumnChunkMetaData::compression))
+        .collect())
+}
+
+#[test]
+fn data_compression_sets_the_codec_of_data_files_only() {
+    for format in [Format::V2_1, Format::V3_0] {
+        for (compression, codec) in [
+            (Compression::Uncompressed, Codec::UNCOMPRESSED),
+            (Compression::Snappy, Codec::SNAPPY),
+            (Compression::Gzip, Codec::GZIP(GzipLevel::default())),
+        ] {
+            let dataset = DatasetBuilder::new(format)
+                .data_compression(compression)
+                .build()
+                .unwrap();
+
+            for path in dataset.files() {
+                if path.extension().is_none_or(|ext| ext != "parquet") {
+                    continue;
+                }
+                let expected = if path.starts_with("data") {
+                    codec
+                } else {
+                    Codec::UNCOMPRESSED
+                };
+                let found = codecs(&dataset.root().join(path)).unwrap();
+                assert!(
+                    found.iter().all(|found| *found == expected),
+                    "{format:?} {path:?}: {found:?}"
+                );
+            }
+            assert_eq!(
+                data_rows(&dataset).unwrap(),
+                20,
+                "{format:?} {compression:?}"
+            );
+        }
+    }
 }

@@ -1,0 +1,5 @@
+---
+source: crates/imify-cli/tests/cli.rs
+expression: text(&output.stdout)
+---
+{"codebase_version":"v3.0","findings":[],"valid":true}

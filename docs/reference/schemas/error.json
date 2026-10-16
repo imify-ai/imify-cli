@@ -20,6 +20,7 @@
             "auth_rejected",
             "permission_denied",
             "not_found",
+            "dataset_invalid",
             "conflict",
             "network",
             "server",
