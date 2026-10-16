@@ -1,0 +1,6 @@
+extends: existence
+message: "State facts without exclamation marks."
+level: error
+nonword: true
+raw:
+  - '\w!(\s|$)'

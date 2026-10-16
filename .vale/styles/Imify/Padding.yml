@@ -1,0 +1,16 @@
+extends: existence
+message: "Remove '%s'. It adds words, not information."
+level: error
+ignorecase: true
+tokens:
+  - it(')?s worth noting
+  - it is worth noting
+  - it(')?s important to note
+  - it is important to note
+  - needless to say
+  - as you can see
+  - simply put
+  - at the end of the day
+  - basically
+  - obviously
+  - of course
