@@ -198,3 +198,20 @@ fn http_is_accepted_only_for_localhost_127_0_0_1_and_ipv6_loopback() {
         assert!(parse_secure_url(rejected, "issuer").is_err(), "{rejected}");
     }
 }
+
+#[test]
+fn authorization_request_debug_contains_no_state_nonce_or_challenge() {
+    let request = AuthorizationRequest {
+        client_id: CLIENT_ID,
+        redirect_uri: "http://localhost:28753/callback",
+        state: "state-secret",
+        nonce: "nonce-secret",
+        code_challenge: "challenge-secret",
+    };
+
+    let debug = format!("{request:?}");
+
+    for secret in ["state-secret", "nonce-secret", "challenge-secret"] {
+        assert!(!debug.contains(secret), "{secret} in {debug}");
+    }
+}

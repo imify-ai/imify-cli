@@ -127,14 +127,24 @@ pub(crate) fn pkce_challenge(verifier: &str) -> String {
     URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()))
 }
 
-/// The parameters of one authorization request.
-#[derive(Debug)]
+/// The parameters of one authorization request. `Debug` prints neither `state`, `nonce`
+/// nor the PKCE challenge.
 pub(crate) struct AuthorizationRequest<'a> {
     pub(crate) client_id: &'a str,
     pub(crate) redirect_uri: &'a str,
     pub(crate) state: &'a str,
     pub(crate) nonce: &'a str,
     pub(crate) code_challenge: &'a str,
+}
+
+impl fmt::Debug for AuthorizationRequest<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("AuthorizationRequest")
+            .field("client_id", &self.client_id)
+            .field("redirect_uri", &self.redirect_uri)
+            .finish_non_exhaustive()
+    }
 }
 
 /// The authorization endpoint URL the browser opens.

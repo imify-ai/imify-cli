@@ -169,17 +169,18 @@ impl StoredLogin {
             Err(error) => return Err(error.into()),
         };
         let id_token = tokens.id_token.ok_or_else(missing_id_token)?;
-        let expires_at = id_token::check(
+        let checked = id_token::check(
             &id_token,
             &Expected {
                 issuer: current.issuer(),
                 client_id: current.client_id(),
                 nonce: None,
+                subject: current.subject(),
                 now: SystemTime::now(),
             },
         )?;
         let mut renewed = current.clone();
-        renewed.renew(id_token, expires_at, tokens.refresh_token);
+        renewed.renew(id_token, checked, tokens.refresh_token);
         let saved = renewed.clone();
         on_blocking_thread(&self.store, move |store| store.save(&saved)).await?;
         Ok(renewed)

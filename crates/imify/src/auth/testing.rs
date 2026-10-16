@@ -11,6 +11,7 @@ use serde_json::{Value, json};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
+use super::id_token::Checked;
 use super::oidc::Provider;
 use super::{CredentialStore, Credentials};
 use crate::{Client, Error, OidcSettings, RetryPolicy};
@@ -160,12 +161,15 @@ impl MockProvider {
     /// seconds.
     pub(crate) fn credentials(&self, lifetime: i64, refresh_token: Option<&str>) -> Credentials {
         let id_token = self.id_token(None, lifetime);
-        let expires_at = unix_now().saturating_add_signed(lifetime);
+        let checked = Checked {
+            expires_at: unix_now().saturating_add_signed(lifetime),
+            subject: ID_TOKEN_SUBJECT.to_owned(),
+        };
         Credentials::new(
             &self.endpoints(),
             CLIENT_ID.to_owned(),
             id_token,
-            expires_at,
+            checked,
             refresh_token.map(str::to_owned),
         )
     }
