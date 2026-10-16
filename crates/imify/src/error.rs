@@ -119,6 +119,74 @@ pub enum Error {
         /// The underlying I/O error.
         source: std::io::Error,
     },
+
+    /// A browser login or the refresh of a stored login failed. The message names no
+    /// token, authorization code, PKCE verifier, `state` or `nonce`.
+    ///
+    /// ```
+    /// use imify::{Error, LoginFailure};
+    ///
+    /// fn needs_new_login(error: &Error) -> bool {
+    ///     matches!(error, Error::Login { reason: LoginFailure::Expired, .. })
+    /// }
+    ///
+    /// let error = Error::Login {
+    ///     reason: LoginFailure::Expired,
+    ///     message: "the stored login has expired".into(),
+    /// };
+    /// assert!(needs_new_login(&error));
+    /// ```
+    #[error("login failed: {message}")]
+    Login {
+        /// Which step failed.
+        reason: LoginFailure,
+        /// What failed, without secrets.
+        message: String,
+    },
+
+    /// A [`CredentialStore`](crate::auth::CredentialStore) failed to load, save or delete
+    /// credentials.
+    #[error("credential store failed: {source}")]
+    CredentialStore {
+        /// The error the store returned.
+        source: Box<dyn std::error::Error + Send + Sync>,
+    },
+}
+
+/// Why an [`Error::Login`] occurred.
+///
+/// # Examples
+///
+/// ```
+/// use imify::LoginFailure;
+///
+/// fn retry_without_browser(reason: LoginFailure) -> bool {
+///     matches!(reason, LoginFailure::TimedOut | LoginFailure::PortsInUse)
+/// }
+///
+/// assert!(retry_without_browser(LoginFailure::PortsInUse));
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum LoginFailure {
+    /// The stored login cannot be refreshed: the refresh token is missing, expired or
+    /// revoked.
+    Expired,
+    /// The user or the identity provider denied the authorization request.
+    Denied,
+    /// The redirect carried a `state` that does not belong to this login.
+    StateMismatch,
+    /// The identity provider returned an ID token with a wrong issuer, audience or
+    /// `nonce`, an expiry in the past, or a payload that cannot be decoded.
+    InvalidIdToken,
+    /// The pasted redirect URL is not a URL or lacks `code` and `state`.
+    InvalidRedirectUrl,
+    /// No redirect arrived within the timeout.
+    TimedOut,
+    /// None of the redirect ports can be bound.
+    PortsInUse,
+    /// The identity provider answered with an error or an incomplete response.
+    Provider,
 }
 
 /// One entry of a request validation error.
