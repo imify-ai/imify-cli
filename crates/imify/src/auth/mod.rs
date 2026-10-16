@@ -1,10 +1,17 @@
 //! Access tokens and the sources the client obtains them from.
+//!
+//! [`EnvToken`] reads `IMIFY_TOKEN`. [`StaticToken`] returns a fixed token. Other sources
+//! implement [`TokenSource`].
 
 use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
 
 use crate::Error;
+
+mod env;
+
+pub use env::EnvToken;
 
 /// Supplies the access token the client sends as `Authorization: Bearer <token>`.
 ///
