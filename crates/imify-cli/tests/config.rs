@@ -335,7 +335,7 @@ fn an_invalid_url_in_the_file_is_an_invalid_argument_naming_the_file() {
         .write("api_url = \"http://api.example.com\"\n")
         .unwrap();
 
-    let output = config.run(&["whoami", "--json"], &[("IMIFY_TOKEN", "tok")]);
+    let output = config.run(&["auth", "whoami", "--json"], &[("IMIFY_TOKEN", "tok")]);
 
     assert_eq!(output.status.code(), Some(2));
     let message = json_of(&output.stderr)["error"]["message"]
@@ -403,7 +403,7 @@ async fn commands_use_the_api_url_from_the_config_file() {
     let config = ConfigDir::new().unwrap();
     config.run(&["config", "set", "api-url", &server.uri()], &[]);
 
-    let output = config.run(&["whoami", "--json"], &[("IMIFY_TOKEN", "tok")]);
+    let output = config.run(&["auth", "whoami", "--json"], &[("IMIFY_TOKEN", "tok")]);
 
     assert_eq!(output.status.code(), Some(0), "{}", text(&output.stderr));
 }

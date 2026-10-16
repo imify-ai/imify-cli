@@ -87,7 +87,7 @@ pub struct SaveReport {
 }
 
 impl Saved {
-    /// The `storage` value of `imify login --json`: `keychain` or `file`.
+    /// The `storage` value of `imify auth login --json`: `keychain` or `file`.
     pub fn storage(&self) -> &'static str {
         match self {
             Self::Keychain => "keychain",

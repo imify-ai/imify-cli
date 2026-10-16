@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "imify logout result",
-  "description": "Written to stdout by `imify logout --json`.",
+  "title": "imify auth logout result",
+  "description": "Written to stdout by `imify auth logout --json`.",
   "type": "object",
   "required": ["host", "removed", "revoked"],
   "properties": {

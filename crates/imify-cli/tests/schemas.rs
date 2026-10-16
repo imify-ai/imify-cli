@@ -43,7 +43,7 @@ const CASES: &[(&str, &[&str])] = &[
             "cli__datasets_upload_dry_run_json.snap",
         ],
     ),
-    ("whoami.json", &["cli__whoami_json.snap"]),
+    ("auth-whoami.json", &["cli__whoami_json.snap"]),
     (
         "doctor.json",
         &[
@@ -51,7 +51,7 @@ const CASES: &[(&str, &[&str])] = &[
             "cli__doctor_invalid_api_url_json.snap",
         ],
     ),
-    ("login.json", &["login_json.snap"]),
+    ("auth-login.json", &["login_json.snap"]),
     ("config-get.json", &["config__get_default_json.snap"]),
     ("config-list.json", &["config__list_json.snap"]),
     ("config-set.json", &["config__set_json.snap"]),
@@ -60,7 +60,7 @@ const CASES: &[(&str, &[&str])] = &[
         &["config__unset_json.snap", "config__unset_not_set_json.snap"],
     ),
     (
-        "logout.json",
+        "auth-logout.json",
         &[
             "auth__logout_json.snap",
             "auth__logout_not_logged_in_json.snap",

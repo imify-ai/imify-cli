@@ -58,9 +58,6 @@ pub struct GlobalArgs {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    /// Show the user the access token belongs to
-    #[command(after_help = "Example:\n  imify whoami")]
-    Whoami,
     #[command(
         about = "Check the configuration, the API and the access token",
         long_about = "Check the configuration, the API and the access token.
@@ -70,25 +67,15 @@ Writes a report to stdout. Exits with the error code of the first failing check,
   imify doctor --api-url https://api.example.com"
     )]
     Doctor,
-    /// Sign in through the browser and store the login for the host
-    #[command(
-        long_about = "Sign in through the browser and store the login for the API host.
-
-Opens the browser and waits up to 5 minutes. The login is stored in the OS keychain, or in a file readable only by the user when no keychain is available.",
-        after_help = "Examples:
-  imify login
-  imify login --api-url https://api.example.com
-  imify login --no-browser"
-    )]
-    Login {
-        /// Print the sign-in URL and read the redirect URL from the terminal instead of opening a browser
-        #[arg(long)]
-        no_browser: bool,
+    /// Sign in, sign out and show the signed-in user
+    #[command(after_help = "Examples:
+  imify auth login
+  imify auth whoami
+  imify auth logout")]
+    Auth {
+        #[command(subcommand)]
+        command: AuthCommand,
     },
-    /// Revoke and remove the stored login for the host
-    #[command(after_help = "Example:
-  imify logout")]
-    Logout,
     /// Read and change the settings in the config file
     Config {
         #[command(subcommand)]
@@ -99,6 +86,32 @@ Opens the browser and waits up to 5 minutes. The login is stored in the OS keych
         #[command(subcommand)]
         command: DatasetsCommand,
     },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum AuthCommand {
+    /// Sign in through the browser and store the login for the host
+    #[command(
+        long_about = "Sign in through the browser and store the login for the API host.
+
+Opens the browser and waits up to 5 minutes. The login is stored in the OS keychain, or in a file readable only by the user when no keychain is available.",
+        after_help = "Examples:
+  imify auth login
+  imify auth login --api-url https://api.example.com
+  imify auth login --no-browser"
+    )]
+    Login {
+        /// Print the sign-in URL and read the redirect URL from the terminal instead of opening a browser
+        #[arg(long)]
+        no_browser: bool,
+    },
+    /// Revoke and remove the stored login for the host
+    #[command(after_help = "Example:
+  imify auth logout")]
+    Logout,
+    /// Show the user the access token belongs to
+    #[command(after_help = "Example:\n  imify auth whoami")]
+    Whoami,
 }
 
 #[derive(Debug, Subcommand)]

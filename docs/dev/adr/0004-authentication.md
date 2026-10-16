@@ -7,7 +7,7 @@ Date: 2026-10-16
 `gh`, `glab` and `gcloud` share one model: browser sign-in for people, a long-lived token issued by the platform for machines, and one environment variable that overrides both. The imify identity provider offers no device-code flow, and the platform does not yet issue its own tokens. The API accepts the ID token of the host's web client as bearer token. That client is public and has no client secret.
 
 ## Decision
-- `imify login` uses the OpenID Connect authorization code flow with PKCE (`S256`), `state` and `nonce`, and the scopes `openid email profile`.
+- `imify auth login` uses the OpenID Connect authorization code flow with PKCE (`S256`), `state` and `nonce`, and the scopes `openid email profile`.
 - The redirect URI is `http://localhost:<port>/callback` on the fixed ports 28753, 28754 and 28755, tried in order. The listener binds `127.0.0.1` and, when available, `::1`. The ports are registered with the identity provider client; changing them needs a release and a new registration.
 - `--no-browser` prints the URL and accepts the pasted redirect URL. It uses the redirect URI on port 28753 and binds nothing.
 - The bearer token is the ID token. Its expiry is the `exp` claim. The SDK checks `iss`, `aud` (contains the client id; with several entries, `azp` equals the client id), `exp` (60 s leeway, at most one day ahead), `sub` (unchanged by a refresh) and, on the code exchange, `nonce`. It does not verify the signature: the token comes directly from the token endpoint over TLS (OIDC Core 1.0, section 3.1.3.7). The API verifies it.

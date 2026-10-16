@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "imify login result",
-  "description": "Written to stdout by `imify login --json`: the host, the user the login belongs to, and where the login is stored.",
+  "title": "imify auth login result",
+  "description": "Written to stdout by `imify auth login --json`: the host, the user the login belongs to, and where the login is stored.",
   "type": "object",
   "required": ["host", "subject", "name", "role", "storage", "storage_fallback"],
   "properties": {

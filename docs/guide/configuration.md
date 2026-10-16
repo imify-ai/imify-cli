@@ -22,10 +22,10 @@ The same rules apply to every source. The URL must use `https`, except on `local
 
 The config file is read only when neither `--api-url` nor `IMIFY_API_URL` is set.
 
-Logins are stored per host. Switching to another host keeps the login of the previous one; `imify login` signs in to the host the API URL selects.
+Logins are stored per host. Switching to another host keeps the login of the previous one; `imify auth login` signs in to the host the API URL selects.
 
 ```console
-$ imify login --api-url https://staging.example.com
+$ imify auth login --api-url https://staging.example.com
 $ imify datasets ls --api-url https://staging.example.com
 ```
 

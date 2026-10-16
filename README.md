@@ -34,7 +34,7 @@ On macOS, use `shasum -a 256 --check` in place of `sha256sum --check`. `gh attes
 ## Usage
 
 ```sh
-imify login                                     # sign in through the browser
+imify auth login                                # sign in through the browser
 imify datasets validate ./pick-cube             # check a LeRobot v3 or v2.1 dataset offline
 imify datasets upload ./pick-cube --task "pick the cube"
 imify datasets ls
@@ -46,18 +46,18 @@ Every command accepts `--json` for machine-readable output on stdout and returns
 ## Authentication
 
 ```console
-$ imify login
+$ imify auth login
 Signing in to https://platform.imify.ai through login.example.com. Opening the browser.
 https://login.example.com/oauth2/authorize?...
 Logged in to https://platform.imify.ai as Ada Lovelace (admin).
 Credentials stored in the keychain.
-$ imify whoami
+$ imify auth whoami
 Name     Ada Lovelace
 Subject  user-1234
 Role     admin
 ```
 
-After the install, `imify login` signs in to the hosted service at `https://platform.imify.ai` through the browser. It stores the login for that host in the OS keychain, or in a file readable only by the user when no keychain is available. On a machine without a browser, `imify login --no-browser` prints the URL and reads the address the browser ends up on. `imify logout` revokes the login and removes it. ID tokens issued before the logout stay valid until they expire. Log in only to an API URL you trust: every command sends the token to that host.
+After the install, `imify auth login` signs in to the hosted service at `https://platform.imify.ai` through the browser. It stores the login for that host in the OS keychain, or in a file readable only by the user when no keychain is available. On a machine without a browser, `imify auth login --no-browser` prints the URL and reads the address the browser ends up on. `imify auth logout` revokes the login and removes it. ID tokens issued before the logout stay valid until they expire. Log in only to an API URL you trust: every command sends the token to that host.
 
 `IMIFY_TOKEN` takes precedence over the stored login, for example in CI. The CLI sends the token as `Authorization: Bearer` and never writes it to logs or error messages.
 
@@ -67,7 +67,7 @@ A missing login fails with the error code `auth_required`, a rejected token with
 
 ```sh
 imify config set api-url https://api.example.com   # store the host in the config file
-imify login --api-url https://api.example.com      # or pass it to one command
+imify auth login --api-url https://api.example.com # or pass it to one command
 export IMIFY_API_URL=https://api.example.com       # or set it for the shell
 ```
 

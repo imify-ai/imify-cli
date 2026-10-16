@@ -1,4 +1,4 @@
-//! `imify login` against a mock API and identity provider, with a browser double that follows
+//! `imify auth login` against a mock API and identity provider, with a browser double that follows
 //! the redirect over TCP.
 
 use std::cell::RefCell;
@@ -265,7 +265,7 @@ fn renderer(mode: Mode, stdout: &Buffer, stderr: &Buffer) -> Box<dyn Renderer> {
     }
 }
 
-/// Runs `imify login` with the browser double.
+/// Runs `imify auth login` with the browser double.
 async fn browser_login(
     hosts: &Hosts,
     env: &Environment,
@@ -526,7 +526,7 @@ async fn login_writes_no_token_code_or_secret() {
     }
 }
 
-/// Runs `imify login --no-browser`, pasting what `paste` returns for the authorization URL.
+/// Runs `imify auth login --no-browser`, pasting what `paste` returns for the authorization URL.
 async fn paste_login(
     hosts: &Hosts,
     env: &Environment,

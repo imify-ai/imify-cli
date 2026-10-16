@@ -110,6 +110,16 @@ fn quiet_and_verbose_together_are_a_usage_error() {
 }
 
 #[test]
+fn top_level_login_logout_and_whoami_are_usage_errors() {
+    for command in ["login", "logout", "whoami"] {
+        let output = imify(&[command, "--json"], &[("IMIFY_TOKEN", TOKEN)]);
+
+        assert_eq!(output.status.code(), Some(2), "imify {command}");
+        assert_eq!(text(&output.stdout), "", "imify {command}");
+    }
+}
+
+#[test]
 fn global_flags_are_accepted_without_a_command() {
     let output = imify(&["--json", "--yes", "--no-color", "-vv"], &[]);
 
@@ -140,7 +150,7 @@ async fn api_rejecting_the_token() -> MockServer {
 }
 
 fn whoami(server: &MockServer, extra_args: &[&str]) -> Output {
-    let mut args = vec!["whoami"];
+    let mut args = vec!["auth", "whoami"];
     args.extend_from_slice(extra_args);
     imify(
         &args,
@@ -188,7 +198,10 @@ async fn whoami_sends_imify_token_as_the_bearer_token() {
 async fn whoami_without_imify_token_fails_with_auth_required_and_sends_no_request() {
     let server = api_with_user().await;
 
-    let output = imify(&["whoami", "--json"], &[("IMIFY_API_URL", &server.uri())]);
+    let output = imify(
+        &["auth", "whoami", "--json"],
+        &[("IMIFY_API_URL", &server.uri())],
+    );
 
     assert_eq!(output.status.code(), Some(3));
     assert!(server.received_requests().await.unwrap().is_empty());
@@ -222,7 +235,7 @@ async fn whoami_forbidden_with_a_json_body_fails_with_permission_denied() {
 /// Without a token and a login, no request is sent, so the default host is never contacted.
 #[test]
 fn whoami_without_an_api_url_targets_the_default_host() {
-    let output = imify(&["whoami", "--json"], &[]);
+    let output = imify(&["auth", "whoami", "--json"], &[]);
 
     assert_eq!(output.status.code(), Some(3));
     let envelope: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
@@ -240,7 +253,7 @@ async fn the_api_url_flag_takes_precedence_over_imify_api_url() {
     let server = api_with_user().await;
 
     let output = imify(
-        &["whoami", "--json", "--api-url", &server.uri()],
+        &["auth", "whoami", "--json", "--api-url", &server.uri()],
         &[
             ("IMIFY_TOKEN", TOKEN),
             ("IMIFY_API_URL", "https://unused.invalid"),
@@ -253,7 +266,13 @@ async fn the_api_url_flag_takes_precedence_over_imify_api_url() {
 #[test]
 fn an_invalid_api_url_flag_is_a_usage_error_naming_the_flag() {
     let output = imify(
-        &["whoami", "--json", "--api-url", "http://api.example.com"],
+        &[
+            "auth",
+            "whoami",
+            "--json",
+            "--api-url",
+            "http://api.example.com",
+        ],
         &[("IMIFY_TOKEN", TOKEN)],
     );
 
@@ -270,7 +289,7 @@ fn an_invalid_api_url_flag_is_a_usage_error_naming_the_flag() {
 #[test]
 fn whoami_with_a_non_http_imify_api_url_is_a_usage_error() {
     let output = imify(
-        &["whoami", "--json"],
+        &["auth", "whoami", "--json"],
         &[
             ("IMIFY_TOKEN", TOKEN),
             ("IMIFY_API_URL", "ftp://api.example.com"),
