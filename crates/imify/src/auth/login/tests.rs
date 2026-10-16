@@ -189,12 +189,61 @@ async fn the_code_exchange_sends_the_code_verifier_and_redirect_uri() {
 }
 
 #[tokio::test]
-async fn a_redirect_with_a_wrong_state_fails_without_a_token_request() {
+async fn a_redirect_with_another_state_is_ignored_and_the_matching_redirect_completes_the_login() {
     let provider = MockProvider::start().await;
     let started = start_loopback(&provider).await;
+    provider
+        .mount_token_response(token_body(&provider.id_token(Some(&started.nonce()), 3600)))
+        .await;
+    let finishing = tokio::spawn(started.login.finish(Duration::from_secs(10)));
+    let callback = |query: String| {
+        reqwest::get(format!(
+            "http://127.0.0.1:{}/callback?{query}",
+            started.port
+        ))
+    };
 
-    let result = started
-        .finish_after_redirect(&format!("code={CODE}&state=other-state"))
+    let other_code = callback("code=code-other&state=other-state".to_owned())
+        .await
+        .unwrap();
+    let other_error = callback("error=access_denied&state=other-state".to_owned())
+        .await
+        .unwrap();
+    callback(format!("code={CODE}&state={}", started.params["state"]))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        (other_code.status().as_u16(), other_error.status().as_u16()),
+        (400, 400)
+    );
+    assert!(finishing.await.unwrap().is_ok());
+    let requests = provider.token_requests().await;
+    assert_eq!(requests.len(), 1);
+    assert_eq!(form(&requests[0])["code"], CODE);
+}
+
+#[tokio::test]
+async fn paste_login_rejects_an_error_url_with_another_state() {
+    let provider = MockProvider::start().await;
+    let (login, _) = start_paste(&provider).await;
+
+    let result = login
+        .finish("http://localhost:28753/callback?error=access_denied&state=other-state")
+        .await;
+
+    assert_eq!(reason(result), LoginFailure::StateMismatch);
+}
+
+#[tokio::test]
+async fn paste_login_rejects_a_code_url_with_another_state_without_a_token_request() {
+    let provider = MockProvider::start().await;
+    let (login, _) = start_paste(&provider).await;
+
+    let result = login
+        .finish(&format!(
+            "http://localhost:28753/callback?code={CODE}&state=other-state"
+        ))
         .await;
 
     assert_eq!(reason(result), LoginFailure::StateMismatch);

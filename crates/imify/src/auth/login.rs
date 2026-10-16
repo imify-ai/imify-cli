@@ -104,14 +104,14 @@ impl LoopbackLogin {
         &self.session.provider_host
     }
 
-    /// Waits up to `timeout` for the redirect, then exchanges the authorization code for
-    /// tokens.
+    /// Waits up to `timeout` for the redirect that carries this login's `state`, then
+    /// exchanges the authorization code for tokens. Redirects with another or no `state`
+    /// get status 400 and are ignored, including error redirects.
     ///
     /// # Errors
     ///
-    /// Returns [`Error::Login`] with [`LoginFailure::TimedOut`] when no redirect arrives,
-    /// [`LoginFailure::Denied`] when the user denies access,
-    /// [`LoginFailure::StateMismatch`] when the redirect belongs to another login,
+    /// Returns [`Error::Login`] with [`LoginFailure::TimedOut`] when no matching redirect
+    /// arrives, [`LoginFailure::Denied`] when the user denies access,
     /// [`LoginFailure::InvalidIdToken`] when the ID token fails a claim check, and
     /// [`LoginFailure::Provider`] when the provider answers with an error or without an
     /// ID token. Returns the other [`Error`] variants as for every request.
@@ -127,7 +127,7 @@ impl LoopbackLogin {
     /// # Ok(()) }
     /// ```
     pub async fn finish(self, timeout: Duration) -> Result<Credentials, Error> {
-        let callback = self.listener.wait(timeout).await?;
+        let callback = self.listener.wait(timeout, &self.session.state).await?;
         self.session.complete(callback).await
     }
 }
@@ -209,8 +209,9 @@ impl PasteLogin {
     /// # Errors
     ///
     /// Returns [`Error::Login`] with [`LoginFailure::InvalidRedirectUrl`] when the input
-    /// is not a URL or has neither `code` and `state` nor `error`. Otherwise as
-    /// [`LoopbackLogin::finish`].
+    /// is not a URL or has neither `code` and `state` nor `error`, and
+    /// [`LoginFailure::StateMismatch`] when its `state`, also on an error redirect, is not
+    /// this login's. Otherwise as [`LoopbackLogin::finish`].
     ///
     /// # Examples
     ///
@@ -298,17 +299,17 @@ impl Session {
     }
 
     async fn complete(self, callback: Callback) -> Result<Credentials, Error> {
+        if !callback.has_state(&self.state) {
+            return Err(Error::Login {
+                reason: LoginFailure::StateMismatch,
+                message: "the redirect belongs to another login attempt".to_owned(),
+            });
+        }
         let code = match callback {
-            Callback::Code { code, state } if state == self.state => code,
-            Callback::Code { .. } => {
-                return Err(Error::Login {
-                    reason: LoginFailure::StateMismatch,
-                    message: "the redirect belongs to another login attempt".to_owned(),
-                });
-            }
-            Callback::Error { error, description } => {
-                return Err(provider_error(&error, description));
-            }
+            Callback::Code { code, .. } => code,
+            Callback::Error {
+                error, description, ..
+            } => return Err(provider_error(&error, description)),
         };
         let tokens = oidc::exchange_code(
             &self.client,

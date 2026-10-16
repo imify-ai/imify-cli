@@ -1,13 +1,15 @@
 //! The listener that receives the authorization redirect on `localhost`.
 
 use std::fmt;
+use std::io::ErrorKind;
 use std::net::{Ipv4Addr, Ipv6Addr};
+use std::sync::Arc;
 use std::time::Duration;
 
 use reqwest::Url;
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::mpsc;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc};
 use tokio::task::JoinSet;
 
 use crate::{Error, LoginFailure};
@@ -25,6 +27,10 @@ const HEAD_TIMEOUT: Duration = Duration::from_secs(10);
 /// Pause after a failed `accept`, so a persistent failure does not spin.
 const ACCEPT_RETRY_DELAY: Duration = Duration::from_millis(100);
 
+/// Most connections served at once, across both listeners. Further connections are
+/// closed on accept.
+const MAX_CONNECTIONS: usize = 32;
+
 /// The query of an authorization redirect. `Debug` redacts the code and `state`.
 pub(crate) enum Callback {
     /// The provider issued an authorization code.
@@ -33,18 +39,35 @@ pub(crate) enum Callback {
     Error {
         error: String,
         description: Option<String>,
+        state: Option<String>,
     },
+}
+
+impl Callback {
+    /// Returns `true` when the callback carries `state`.
+    pub(crate) fn has_state(&self, state: &str) -> bool {
+        match self {
+            Self::Code {
+                state: received, ..
+            } => received == state,
+            Self::Error {
+                state: received, ..
+            } => received.as_deref() == Some(state),
+        }
+    }
 }
 
 impl fmt::Debug for Callback {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Code { .. } => formatter.write_str("Callback::Code(<redacted>)"),
-            Self::Error { error, description } => formatter
+            Self::Error {
+                error, description, ..
+            } => formatter
                 .debug_struct("Callback::Error")
                 .field("error", error)
                 .field("description", description)
-                .finish(),
+                .finish_non_exhaustive(),
         }
     }
 }
@@ -63,13 +86,18 @@ pub(crate) fn parse_callback(url: &Url) -> Option<Callback> {
         }
     }
     match (error, code, state) {
-        (Some(error), _, _) => Some(Callback::Error { error, description }),
+        (Some(error), _, state) => Some(Callback::Error {
+            error,
+            description,
+            state,
+        }),
         (None, Some(code), Some(state)) => Some(Callback::Code { code, state }),
         _ => None,
     }
 }
 
-/// Listens on `127.0.0.1` and, when available, `::1`, on the first port that can be bound.
+/// Listens on `127.0.0.1` and, when the host has IPv6, `::1`, on the first port that can
+/// be bound on both.
 #[derive(Debug)]
 pub(crate) struct RedirectListener {
     listeners: Vec<TcpListener>,
@@ -77,17 +105,20 @@ pub(crate) struct RedirectListener {
 }
 
 impl RedirectListener {
-    /// Binds the first port of `ports` that is free on `127.0.0.1`.
+    /// Binds the first port of `ports` that is free on `127.0.0.1` and not in use on
+    /// `::1`. Without IPv6, it listens on `127.0.0.1` only.
     ///
-    /// Fails with [`LoginFailure::PortsInUse`] when none is.
+    /// Fails with [`LoginFailure::PortsInUse`] when no port qualifies.
     pub(crate) async fn bind(ports: &[u16]) -> Result<Self, Error> {
         for &port in ports {
             let Ok(ipv4) = TcpListener::bind((Ipv4Addr::LOCALHOST, port)).await else {
                 continue;
             };
             let mut listeners = vec![ipv4];
-            if let Ok(ipv6) = TcpListener::bind((Ipv6Addr::LOCALHOST, port)).await {
-                listeners.push(ipv6);
+            match TcpListener::bind((Ipv6Addr::LOCALHOST, port)).await {
+                Ok(ipv6) => listeners.push(ipv6),
+                Err(error) if error.kind() == ErrorKind::AddrInUse => continue,
+                Err(_) => {}
             }
             return Ok(Self { listeners, port });
         }
@@ -106,17 +137,24 @@ impl RedirectListener {
         self.port
     }
 
-    /// Waits for the first request to the callback path that carries a code or an error,
-    /// answering every request with a short HTML page. Requests to other paths get 404.
+    /// Waits for the first request to the callback path that carries `state` and a code
+    /// or an error, answering every request with a short HTML page. Callbacks with another
+    /// or no `state` get 400, requests to other paths get 404; the listener keeps waiting.
+    /// At most [`MAX_CONNECTIONS`] connections are served at once; further ones are closed.
     ///
     /// Fails with [`LoginFailure::TimedOut`] when none arrives within `timeout`.
-    pub(crate) async fn wait(self, timeout: Duration) -> Result<Callback, Error> {
+    pub(crate) async fn wait(self, timeout: Duration, state: &str) -> Result<Callback, Error> {
         let (sender, mut callbacks) = mpsc::channel(1);
+        let waiter = Arc::new(Waiter {
+            state: state.into(),
+            sender,
+            connections: Arc::new(Semaphore::new(MAX_CONNECTIONS)),
+        });
         let mut accept_loops = JoinSet::new();
         for listener in self.listeners {
-            accept_loops.spawn(accept_loop(listener, sender.clone()));
+            accept_loops.spawn(accept_loop(listener, Arc::clone(&waiter)));
         }
-        drop(sender);
+        drop(waiter);
         let received = tokio::time::timeout(timeout, callbacks.recv()).await;
         accept_loops.abort_all();
         match received {
@@ -132,12 +170,25 @@ impl RedirectListener {
     }
 }
 
-async fn accept_loop(listener: TcpListener, sender: mpsc::Sender<Callback>) {
+/// What the connections of one [`RedirectListener::wait`] share.
+struct Waiter {
+    /// The `state` of the login.
+    state: Box<str>,
+    /// Receives the first callback that carries `state`.
+    sender: mpsc::Sender<Callback>,
+    /// One permit per connection being served.
+    connections: Arc<Semaphore>,
+}
+
+async fn accept_loop(listener: TcpListener, waiter: Arc<Waiter>) {
     let mut connections = JoinSet::new();
     loop {
         match listener.accept().await {
             Ok((stream, _)) => {
-                connections.spawn(serve(stream, sender.clone()));
+                // Without a permit, dropping the stream closes the connection.
+                if let Ok(permit) = Arc::clone(&waiter.connections).try_acquire_owned() {
+                    connections.spawn(serve(stream, Arc::clone(&waiter), permit));
+                }
             }
             Err(_) => tokio::time::sleep(ACCEPT_RETRY_DELAY).await,
         }
@@ -145,13 +196,17 @@ async fn accept_loop(listener: TcpListener, sender: mpsc::Sender<Callback>) {
     }
 }
 
-/// Answers one connection and forwards its callback, if any.
-async fn serve(mut stream: TcpStream, sender: mpsc::Sender<Callback>) {
+/// Answers one connection and forwards its callback when it carries the login's `state`.
+/// Holds `_permit` until the connection is answered.
+async fn serve(mut stream: TcpStream, waiter: Arc<Waiter>, _permit: OwnedSemaphorePermit) {
     let Ok(Some(head)) = tokio::time::timeout(HEAD_TIMEOUT, read_head(&mut stream)).await else {
         respond(&mut stream, Response::BAD_REQUEST).await;
         return;
     };
     match route(&head) {
+        Route::Callback(callback) if !callback.has_state(&waiter.state) => {
+            respond(&mut stream, Response::BAD_REQUEST).await;
+        }
         Route::Callback(callback) => {
             let response = match callback {
                 Callback::Code { .. } => Response::RECEIVED,
@@ -159,7 +214,7 @@ async fn serve(mut stream: TcpStream, sender: mpsc::Sender<Callback>) {
             };
             respond(&mut stream, response).await;
             // Only the first callback is awaited; later ones are dropped.
-            let _ = sender.try_send(callback);
+            let _ = waiter.sender.try_send(callback);
         }
         Route::Rejected(response) => respond(&mut stream, response).await,
     }
