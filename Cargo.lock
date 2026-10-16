@@ -1469,7 +1469,7 @@ dependencies = [
 name = "imify"
 version = "0.0.0"
 dependencies = [
- "base64 0.22.1",
+ "base64 0.23.1",
  "fastrand",
  "futures-util",
  "getrandom 0.3.4",
@@ -1494,7 +1494,7 @@ dependencies = [
  "anstream",
  "apple-native-keyring-store",
  "assert_cmd",
- "base64 0.22.1",
+ "base64 0.23.1",
  "clap",
  "directories",
  "imify",
