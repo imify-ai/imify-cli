@@ -31,6 +31,61 @@ fn token_endpoint(provider: &MockProvider) -> Url {
 }
 
 #[tokio::test]
+async fn a_server_error_that_echoes_the_refresh_token_is_redacted_also_when_percent_encoded() {
+    let refresh_token = "rt/5b1e+secret=";
+    let percent_encoded = "rt%2F5b1e%2Bsecret%3D";
+    let provider = MockProvider::start().await;
+    provider
+        .mount_token(ResponseTemplate::new(500).set_body_json(json!({
+            "detail": format!("cannot refresh {refresh_token}: body was refresh_token={percent_encoded}"),
+        })))
+        .await;
+
+    let error = refresh(
+        &client(&provider.issuer()),
+        &token_endpoint(&provider),
+        CLIENT_ID,
+        refresh_token,
+    )
+    .await
+    .unwrap_err();
+
+    let TokenError::Failed(error) = error else {
+        panic!("expected a failure, got {error:?}");
+    };
+    let text = format!("{error} {error:?}");
+    assert!(matches!(error, Error::Server { status: 500, .. }), "{text}");
+    assert!(!text.contains(refresh_token), "{text}");
+    assert!(!text.contains(percent_encoded), "{text}");
+}
+
+#[tokio::test]
+async fn a_rejection_that_echoes_the_percent_encoded_refresh_token_is_redacted() {
+    let refresh_token = "rt/5b1e+secret=";
+    let provider = MockProvider::start().await;
+    provider
+        .mount_token(ResponseTemplate::new(400).set_body_json(json!({
+            "error": "invalid_grant",
+            "error_description": "refresh_token=rt%2F5b1e%2Bsecret%3D is revoked",
+        })))
+        .await;
+
+    let error = refresh(
+        &client(&provider.issuer()),
+        &token_endpoint(&provider),
+        CLIENT_ID,
+        refresh_token,
+    )
+    .await
+    .unwrap_err();
+
+    let TokenError::Rejected(rejection) = error else {
+        panic!("expected a rejection, got {error:?}");
+    };
+    assert!(!rejection.to_string().contains("rt%2F5b1e"), "{rejection}");
+}
+
+#[tokio::test]
 async fn a_token_response_over_1_mib_fails_with_unexpected_response() {
     let provider = MockProvider::start().await;
     provider

@@ -14,7 +14,7 @@ use super::Revocation;
 use crate::client::{network_error, read_small_body, redirect_not_followed, require_secure};
 use crate::error::from_response;
 use crate::retry::RetryMode;
-use crate::{Client, Error, LoginFailure, OidcSettings};
+use crate::{Client, Error, FieldError, LoginFailure, OidcSettings};
 
 /// Scopes every login requests.
 pub(crate) const SCOPES: &str = "openid email profile";
@@ -283,9 +283,11 @@ struct FormResponse {
 }
 
 impl FormResponse {
+    /// The error for this response, with every form of each of `secrets` replaced.
     fn into_error(self, secrets: &[&str]) -> TokenError {
         if self.status.is_redirection() {
-            return TokenError::Failed(redirect_not_followed(self.status, &self.headers));
+            let error = redirect_not_followed(self.status, &self.headers);
+            return TokenError::Failed(redact_error(error, secrets));
         }
         let rejection = matches!(
             self.status,
@@ -293,30 +295,91 @@ impl FormResponse {
         )
         .then(|| serde_json::from_slice::<OAuthError>(&self.body).ok())
         .flatten();
-        match rejection {
-            Some(mut rejection) => {
-                rejection.error = redact(&rejection.error, secrets);
-                rejection.error_description = rejection
-                    .error_description
-                    .map(|description| redact(&description, secrets));
-                TokenError::Rejected(rejection)
-            }
-            None => TokenError::Failed(from_response(
-                self.status.as_u16(),
-                &self.headers,
-                &self.body,
-            )),
+        if let Some(mut rejection) = rejection {
+            rejection.error = redact(&rejection.error, secrets);
+            rejection.error_description = rejection
+                .error_description
+                .map(|description| redact(&description, secrets));
+            TokenError::Rejected(rejection)
+        } else {
+            let error = from_response(self.status.as_u16(), &self.headers, &self.body);
+            TokenError::Failed(redact_error(error, secrets))
         }
     }
 }
 
+/// Replaces the secrets in every message of `error`.
+fn redact_error(error: Error, secrets: &[&str]) -> Error {
+    let redact = |message: String| redact(&message, secrets);
+    match error {
+        Error::Auth { status, message } => Error::Auth {
+            status,
+            message: redact(message),
+        },
+        Error::NotFound { message } => Error::NotFound {
+            message: redact(message),
+        },
+        Error::Validation { message, fields } => Error::Validation {
+            message: redact(message),
+            fields: fields
+                .into_iter()
+                .map(|field| FieldError {
+                    location: field.location.into_iter().map(redact).collect(),
+                    message: redact(field.message),
+                    kind: redact(field.kind),
+                })
+                .collect(),
+        },
+        Error::Conflict { message } => Error::Conflict {
+            message: redact(message),
+        },
+        Error::Server { status, message } => Error::Server {
+            status,
+            message: redact(message),
+        },
+        Error::UnexpectedResponse { status, message } => Error::UnexpectedResponse {
+            status,
+            message: redact(message),
+        },
+        other => other,
+    }
+}
+
+/// Replaces each of `secrets` in `text`, as sent and in its form-encoded forms.
 fn redact(text: &str, secrets: &[&str]) -> String {
     secrets
         .iter()
         .filter(|secret| !secret.is_empty())
-        .fold(text.to_owned(), |text, secret| {
-            text.replace(secret, "<redacted>")
+        .flat_map(|secret| {
+            let [upper, lower] = form_encodings(secret);
+            [(*secret).to_owned(), upper, lower]
         })
+        .fold(text.to_owned(), |text, secret| {
+            text.replace(&secret, "<redacted>")
+        })
+}
+
+/// `secret` encoded as `application/x-www-form-urlencoded`, with upper-case and with
+/// lower-case hex digits.
+fn form_encodings(secret: &str) -> [String; 2] {
+    let encode = |hex_digits: &[u8; 16]| {
+        let mut encoded = String::with_capacity(secret.len());
+        for byte in secret.bytes() {
+            match byte {
+                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'*' | b'-' | b'.' | b'_' => {
+                    encoded.push(char::from(byte));
+                }
+                b' ' => encoded.push('+'),
+                _ => {
+                    encoded.push('%');
+                    encoded.push(char::from(hex_digits[usize::from(byte >> 4)]));
+                    encoded.push(char::from(hex_digits[usize::from(byte & 0x0f)]));
+                }
+            }
+        }
+        encoded
+    };
+    [encode(b"0123456789ABCDEF"), encode(b"0123456789abcdef")]
 }
 
 /// Posts `form` without an `Authorization` header and without following redirects, and
