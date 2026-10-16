@@ -267,7 +267,8 @@ pub(crate) async fn decode<T: DeserializeOwned>(response: reqwest::Response) -> 
     decode_with(response, BodySize::Unbounded, &decode_json).await
 }
 
-/// Reads the whole response and turns it into `T` with `decode`. A redirect fails with
+/// Reads the response and turns it into `T` with `decode`. A success body is read as
+/// `success_body` says, any other body as [`read_small_body`] does. A redirect fails with
 /// [`Error::UnexpectedResponse`] without calling `decode`.
 async fn decode_with<T, D>(
     response: reqwest::Response,

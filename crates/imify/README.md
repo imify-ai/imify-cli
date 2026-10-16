@@ -29,7 +29,9 @@ let source = StoredLogin::load(store).await?.expect("credentials were saved");
 let client = Client::builder("https://api.example.com").token_source(source).build()?;
 ```
 
-`oidc_settings` reads the issuer and client id from the host's `config.json`. `LoopbackLogin` runs the authorization code flow with PKCE and receives the redirect on `http://localhost:<port>/callback`, on port 28753, 28754 or 28755. `PasteLogin` takes the pasted redirect URL instead. `Credentials` hold the ID token, which is the bearer token, and the refresh token. `store` is an `Arc<dyn CredentialStore>` you implement. `StoredLogin` refreshes the ID token when less than 60 s remain before it expires, and saves the result. `revoke` revokes the refresh token at logout.
+`oidc_settings` reads the issuer and client id from the host's `config.json`. `LoopbackLogin` runs the authorization code flow with PKCE and receives the redirect on `http://localhost:<port>/callback`, on port 28753, 28754 or 28755. It accepts only the redirect that carries the login's `state` and answers others with 400. `PasteLogin` takes the pasted redirect URL instead. `Credentials` hold the ID token, which is the bearer token, the refresh token and the user's subject. `store` is an `Arc<dyn CredentialStore>` you implement. `StoredLogin` refreshes the ID token when less than 60 s remain before it expires, and saves the result; a refreshed ID token must name the same subject. `revoke` revokes the refresh token at logout.
+
+The API URL, the issuer and every identity provider endpoint use `https`; `http` works only for `localhost`, `127.0.0.1` and `::1`. `config.json` and the discovery document follow redirects only within their origin, token and revocation requests follow none, and their responses are limited to 1 MiB. Errors never contain a token, an authorization code or the PKCE verifier.
 
 ## Upload a dataset
 
