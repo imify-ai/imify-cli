@@ -1,5 +1,6 @@
 use serde_json::json;
-use wiremock::ResponseTemplate;
+use wiremock::matchers::any;
+use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use super::*;
 use crate::auth::testing::{CLIENT_ID, MockProvider, REFRESH_TOKEN, client};
@@ -9,6 +10,209 @@ fn config_message(result: Result<Provider, Error>) -> String {
         Err(Error::Config { message }) => message,
         other => panic!("expected a config error, got {other:?}"),
     }
+}
+
+/// A server that answers every request with 200 and records it.
+async fn redirect_target() -> MockServer {
+    let target = MockServer::start().await;
+    Mock::given(any())
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
+        .mount(&target)
+        .await;
+    target
+}
+
+async fn received_count(server: &MockServer) -> usize {
+    server.received_requests().await.unwrap().len()
+}
+
+fn token_endpoint(provider: &MockProvider) -> Url {
+    Url::parse(&format!("{}/oauth2/token", provider.issuer())).unwrap()
+}
+
+#[tokio::test]
+async fn a_server_error_that_echoes_the_refresh_token_is_redacted_also_when_percent_encoded() {
+    let refresh_token = "rt/5b1e+secret=";
+    let percent_encoded = "rt%2F5b1e%2Bsecret%3D";
+    let provider = MockProvider::start().await;
+    provider
+        .mount_token(ResponseTemplate::new(500).set_body_json(json!({
+            "detail": format!("cannot refresh {refresh_token}: body was refresh_token={percent_encoded}"),
+        })))
+        .await;
+
+    let error = refresh(
+        &client(&provider.issuer()),
+        &token_endpoint(&provider),
+        CLIENT_ID,
+        refresh_token,
+    )
+    .await
+    .unwrap_err();
+
+    let TokenError::Failed(error) = error else {
+        panic!("expected a failure, got {error:?}");
+    };
+    let text = format!("{error} {error:?}");
+    assert!(matches!(error, Error::Server { status: 500, .. }), "{text}");
+    assert!(!text.contains(refresh_token), "{text}");
+    assert!(!text.contains(percent_encoded), "{text}");
+}
+
+#[tokio::test]
+async fn a_rejection_that_echoes_the_percent_encoded_refresh_token_is_redacted() {
+    let refresh_token = "rt/5b1e+secret=";
+    let provider = MockProvider::start().await;
+    provider
+        .mount_token(ResponseTemplate::new(400).set_body_json(json!({
+            "error": "invalid_grant",
+            "error_description": "refresh_token=rt%2F5b1e%2Bsecret%3D is revoked",
+        })))
+        .await;
+
+    let error = refresh(
+        &client(&provider.issuer()),
+        &token_endpoint(&provider),
+        CLIENT_ID,
+        refresh_token,
+    )
+    .await
+    .unwrap_err();
+
+    let TokenError::Rejected(rejection) = error else {
+        panic!("expected a rejection, got {error:?}");
+    };
+    assert!(!rejection.to_string().contains("rt%2F5b1e"), "{rejection}");
+}
+
+#[tokio::test]
+async fn a_token_response_over_1_mib_fails_with_unexpected_response() {
+    let provider = MockProvider::start().await;
+    provider
+        .mount_token_response(json!({"id_token": "x".repeat(1024 * 1024)}))
+        .await;
+
+    let error = refresh(
+        &client(&provider.issuer()),
+        &token_endpoint(&provider),
+        CLIENT_ID,
+        REFRESH_TOKEN,
+    )
+    .await
+    .unwrap_err();
+
+    assert!(
+        matches!(
+            error,
+            TokenError::Failed(Error::UnexpectedResponse { status: 200, .. })
+        ),
+        "{error:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_307_from_the_token_endpoint_is_not_followed() {
+    let provider = MockProvider::start().await;
+    let target = redirect_target().await;
+    provider
+        .mount_token(
+            ResponseTemplate::new(307)
+                .insert_header("location", format!("{}/oauth2/token", target.uri())),
+        )
+        .await;
+
+    let error = refresh(
+        &client(&provider.issuer()),
+        &token_endpoint(&provider),
+        CLIENT_ID,
+        REFRESH_TOKEN,
+    )
+    .await
+    .unwrap_err();
+
+    assert!(
+        matches!(
+            error,
+            TokenError::Failed(Error::UnexpectedResponse { status: 307, .. })
+        ),
+        "{error:?}"
+    );
+    assert_eq!(received_count(&target).await, 0);
+}
+
+#[tokio::test]
+async fn a_308_from_the_token_endpoint_to_the_same_origin_is_not_followed() {
+    let provider = MockProvider::start().await;
+    provider
+        .mount_token(ResponseTemplate::new(308).insert_header("location", "/oauth2/other-token"))
+        .await;
+
+    let error = refresh(
+        &client(&provider.issuer()),
+        &token_endpoint(&provider),
+        CLIENT_ID,
+        REFRESH_TOKEN,
+    )
+    .await
+    .unwrap_err();
+
+    assert!(
+        matches!(
+            error,
+            TokenError::Failed(Error::UnexpectedResponse { status: 308, .. })
+        ),
+        "{error:?}"
+    );
+    assert_eq!(received_count(&provider.server).await, 1);
+}
+
+#[tokio::test]
+async fn a_307_from_the_revocation_endpoint_is_not_followed() {
+    let provider = MockProvider::start().await;
+    let target = redirect_target().await;
+    Mock::given(any())
+        .respond_with(
+            ResponseTemplate::new(307)
+                .insert_header("location", format!("{}/oauth2/revoke", target.uri())),
+        )
+        .mount(&provider.server)
+        .await;
+    let endpoint = Url::parse(&format!("{}/oauth2/revocation", provider.issuer())).unwrap();
+
+    let result = revoke(
+        &client(&provider.issuer()),
+        &endpoint,
+        CLIENT_ID,
+        REFRESH_TOKEN,
+    )
+    .await;
+
+    assert!(
+        matches!(result, Err(Error::UnexpectedResponse { status: 307, .. })),
+        "{result:?}"
+    );
+    assert_eq!(received_count(&target).await, 0);
+}
+
+#[tokio::test]
+async fn discovery_does_not_follow_a_redirect_to_another_origin() {
+    let provider = MockProvider::start_without_discovery().await;
+    let target = redirect_target().await;
+    Mock::given(any())
+        .respond_with(ResponseTemplate::new(307).insert_header(
+            "location",
+            format!("{}/.well-known/openid-configuration", target.uri()),
+        ))
+        .mount(&provider.server)
+        .await;
+
+    let result = discover(&client(&provider.issuer()), &provider.settings()).await;
+
+    assert!(
+        matches!(result, Err(Error::UnexpectedResponse { status: 307, .. })),
+        "{result:?}"
+    );
+    assert_eq!(received_count(&target).await, 0);
 }
 
 #[tokio::test]
@@ -196,5 +400,22 @@ fn http_is_accepted_only_for_localhost_127_0_0_1_and_ipv6_loopback() {
         "ftp://localhost",
     ] {
         assert!(parse_secure_url(rejected, "issuer").is_err(), "{rejected}");
+    }
+}
+
+#[test]
+fn authorization_request_debug_contains_no_state_nonce_or_challenge() {
+    let request = AuthorizationRequest {
+        client_id: CLIENT_ID,
+        redirect_uri: "http://localhost:28753/callback",
+        state: "state-secret",
+        nonce: "nonce-secret",
+        code_challenge: "challenge-secret",
+    };
+
+    let debug = format!("{request:?}");
+
+    for secret in ["state-secret", "nonce-secret", "challenge-secret"] {
+        assert!(!debug.contains(secret), "{secret} in {debug}");
     }
 }

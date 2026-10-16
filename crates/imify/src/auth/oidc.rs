@@ -6,15 +6,15 @@ use std::fmt;
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use reqwest::header::HeaderMap;
-use reqwest::{Method, StatusCode, Url};
+use reqwest::{StatusCode, Url};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
 use super::Revocation;
-use crate::client::network_error;
+use crate::client::{network_error, read_small_body, redirect_not_followed, require_secure};
 use crate::error::from_response;
 use crate::retry::RetryMode;
-use crate::{Client, Error, LoginFailure, OidcSettings};
+use crate::{Client, Error, FieldError, LoginFailure, OidcSettings};
 
 /// Scopes every login requests.
 pub(crate) const SCOPES: &str = "openid email profile";
@@ -55,9 +55,7 @@ pub(crate) async fn discover(client: &Client, settings: &OidcSettings) -> Result
         ),
         "issuer",
     )?;
-    let document: DiscoveryDocument = client
-        .execute_unauthenticated(RetryMode::Idempotent, Method::GET, document_url)
-        .await?;
+    let document: DiscoveryDocument = client.get_same_origin(document_url).await?;
     if document.issuer.trim_end_matches('/') != settings.issuer.trim_end_matches('/') {
         return Err(Error::Config {
             message: format!(
@@ -94,22 +92,7 @@ pub(crate) fn parse_secure_url(raw: &str, name: &str) -> Result<Url, Error> {
     let url = Url::parse(raw).map_err(|error| Error::Config {
         message: format!("invalid {name} URL {raw:?}: {error}"),
     })?;
-    match url.scheme() {
-        "https" => Ok(url),
-        "http" if is_loopback(&url) => Ok(url),
-        _ => Err(Error::Config {
-            message: format!(
-                "the {name} URL {raw} must use https unless its host is localhost, 127.0.0.1 or ::1"
-            ),
-        }),
-    }
-}
-
-/// Returns `true` for the hosts `localhost`, `127.0.0.1` and `::1`.
-pub(crate) fn is_loopback(url: &Url) -> bool {
-    url.host_str().is_some_and(|host| {
-        host.eq_ignore_ascii_case("localhost") || host == "127.0.0.1" || host == "[::1]"
-    })
+    require_secure(url, name)
 }
 
 /// A random value with 256 bits of entropy, base64url-encoded: a PKCE verifier, `state`
@@ -127,14 +110,24 @@ pub(crate) fn pkce_challenge(verifier: &str) -> String {
     URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()))
 }
 
-/// The parameters of one authorization request.
-#[derive(Debug)]
+/// The parameters of one authorization request. `Debug` prints neither `state`, `nonce`
+/// nor the PKCE challenge.
 pub(crate) struct AuthorizationRequest<'a> {
     pub(crate) client_id: &'a str,
     pub(crate) redirect_uri: &'a str,
     pub(crate) state: &'a str,
     pub(crate) nonce: &'a str,
     pub(crate) code_challenge: &'a str,
+}
+
+impl fmt::Debug for AuthorizationRequest<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("AuthorizationRequest")
+            .field("client_id", &self.client_id)
+            .field("redirect_uri", &self.redirect_uri)
+            .finish_non_exhaustive()
+    }
 }
 
 /// The authorization endpoint URL the browser opens.
@@ -290,41 +283,107 @@ struct FormResponse {
 }
 
 impl FormResponse {
+    /// The error for this response, with every form of each of `secrets` replaced.
     fn into_error(self, secrets: &[&str]) -> TokenError {
+        if self.status.is_redirection() {
+            let error = redirect_not_followed(self.status, &self.headers);
+            return TokenError::Failed(redact_error(error, secrets));
+        }
         let rejection = matches!(
             self.status,
             StatusCode::BAD_REQUEST | StatusCode::UNAUTHORIZED
         )
         .then(|| serde_json::from_slice::<OAuthError>(&self.body).ok())
         .flatten();
-        match rejection {
-            Some(mut rejection) => {
-                rejection.error = redact(&rejection.error, secrets);
-                rejection.error_description = rejection
-                    .error_description
-                    .map(|description| redact(&description, secrets));
-                TokenError::Rejected(rejection)
-            }
-            None => TokenError::Failed(from_response(
-                self.status.as_u16(),
-                &self.headers,
-                &self.body,
-            )),
+        if let Some(mut rejection) = rejection {
+            rejection.error = redact(&rejection.error, secrets);
+            rejection.error_description = rejection
+                .error_description
+                .map(|description| redact(&description, secrets));
+            TokenError::Rejected(rejection)
+        } else {
+            let error = from_response(self.status.as_u16(), &self.headers, &self.body);
+            TokenError::Failed(redact_error(error, secrets))
         }
     }
 }
 
+/// Replaces the secrets in every message of `error`.
+fn redact_error(error: Error, secrets: &[&str]) -> Error {
+    let redact = |message: String| redact(&message, secrets);
+    match error {
+        Error::Auth { status, message } => Error::Auth {
+            status,
+            message: redact(message),
+        },
+        Error::NotFound { message } => Error::NotFound {
+            message: redact(message),
+        },
+        Error::Validation { message, fields } => Error::Validation {
+            message: redact(message),
+            fields: fields
+                .into_iter()
+                .map(|field| FieldError {
+                    location: field.location.into_iter().map(redact).collect(),
+                    message: redact(field.message),
+                    kind: redact(field.kind),
+                })
+                .collect(),
+        },
+        Error::Conflict { message } => Error::Conflict {
+            message: redact(message),
+        },
+        Error::Server { status, message } => Error::Server {
+            status,
+            message: redact(message),
+        },
+        Error::UnexpectedResponse { status, message } => Error::UnexpectedResponse {
+            status,
+            message: redact(message),
+        },
+        other => other,
+    }
+}
+
+/// Replaces each of `secrets` in `text`, as sent and in its form-encoded forms.
 fn redact(text: &str, secrets: &[&str]) -> String {
     secrets
         .iter()
         .filter(|secret| !secret.is_empty())
+        .flat_map(|secret| {
+            let [upper, lower] = form_encodings(secret);
+            [(*secret).to_owned(), upper, lower]
+        })
         .fold(text.to_owned(), |text, secret| {
-            text.replace(secret, "<redacted>")
+            text.replace(&secret, "<redacted>")
         })
 }
 
-/// Posts `form` without an `Authorization` header. Retries connection failures and rate
-/// limits.
+/// `secret` encoded as `application/x-www-form-urlencoded`, with upper-case and with
+/// lower-case hex digits.
+fn form_encodings(secret: &str) -> [String; 2] {
+    let encode = |hex_digits: &[u8; 16]| {
+        let mut encoded = String::with_capacity(secret.len());
+        for byte in secret.bytes() {
+            match byte {
+                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'*' | b'-' | b'.' | b'_' => {
+                    encoded.push(char::from(byte));
+                }
+                b' ' => encoded.push('+'),
+                _ => {
+                    encoded.push('%');
+                    encoded.push(char::from(hex_digits[usize::from(byte >> 4)]));
+                    encoded.push(char::from(hex_digits[usize::from(byte & 0x0f)]));
+                }
+            }
+        }
+        encoded
+    };
+    [encode(b"0123456789ABCDEF"), encode(b"0123456789abcdef")]
+}
+
+/// Posts `form` without an `Authorization` header and without following redirects, and
+/// reads at most 1 MiB of the response. Retries connection failures and rate limits.
 async fn post_form(
     client: &Client,
     url: &Url,
@@ -336,7 +395,7 @@ async fn post_form(
             |_, _, _| {},
             || async {
                 let response = client
-                    .http()
+                    .form_http()?
                     .post(url.clone())
                     .form(form)
                     .send()
@@ -344,7 +403,7 @@ async fn post_form(
                     .map_err(network_error)?;
                 let status = response.status();
                 let headers = response.headers().clone();
-                let body = response.bytes().await.map_err(network_error)?.to_vec();
+                let body = read_small_body(response).await?;
                 if status == StatusCode::TOO_MANY_REQUESTS {
                     return Err(from_response(status.as_u16(), &headers, &body));
                 }

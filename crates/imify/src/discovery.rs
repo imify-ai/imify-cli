@@ -1,8 +1,6 @@
 //! The identity provider settings a host publishes.
 
-use reqwest::Method;
-
-use crate::retry::RetryMode;
+use crate::client::require_secure;
 use crate::{Client, Error};
 
 /// Issuer and client id of the host's identity provider client.
@@ -50,12 +48,14 @@ struct ConfigJson {
 
 impl Client {
     /// Reads the identity provider settings from `config.json` under the base URL: the
-    /// keys `authority` (the issuer) and `clientId`. Sends no `Authorization` header and
-    /// ignores other keys.
+    /// keys `authority` (the issuer) and `clientId`. Sends no `Authorization` header,
+    /// follows redirects only within the API origin and ignores other keys.
     ///
     /// # Errors
     ///
-    /// Returns [`Error::NotFound`] when the host serves no `config.json`, and
+    /// Returns [`Error::Config`] without sending a request when the base URL uses `http`
+    /// on a host other than `localhost`, `127.0.0.1` or `::1`. Returns
+    /// [`Error::NotFound`] when the host serves no `config.json`, and
     /// [`Error::UnexpectedResponse`] when a key is missing. Returns the other [`Error`]
     /// variants as for every request.
     ///
@@ -69,9 +69,8 @@ impl Client {
     /// # Ok(()) }
     /// ```
     pub async fn oidc_settings(&self) -> Result<OidcSettings, Error> {
-        let config: ConfigJson = self
-            .execute_unauthenticated(RetryMode::Idempotent, Method::GET, self.url("config.json")?)
-            .await?;
+        require_secure(self.base_url().clone(), "API")?;
+        let config: ConfigJson = self.get_same_origin(self.url("config.json")?).await?;
         Ok(OidcSettings::new(config.authority, config.client_id))
     }
 }

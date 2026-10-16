@@ -83,6 +83,122 @@ async fn oidc_settings_reads_config_json_below_a_base_url_prefix() {
 }
 
 #[tokio::test]
+async fn oidc_settings_fails_with_config_for_an_http_base_url_on_a_non_loopback_host() {
+    let client = Client::builder("http://api.example.com")
+        .retry_policy(RetryPolicy::none())
+        .build()
+        .unwrap();
+
+    let error = client.oidc_settings().await.unwrap_err();
+
+    assert!(
+        matches!(error, Error::Config { ref message } if message.contains("http://api.example.com")),
+        "{error:?}"
+    );
+}
+
+#[tokio::test]
+async fn oidc_settings_follows_a_redirect_within_the_api_origin() {
+    let server = MockServer::start().await;
+    mount_config(
+        &server,
+        "/config.json",
+        ResponseTemplate::new(307).insert_header("location", "/v2/config.json"),
+    )
+    .await;
+    mount_config(
+        &server,
+        "/v2/config.json",
+        ResponseTemplate::new(200).set_body_json(settings_body()),
+    )
+    .await;
+
+    let settings = client(&server.uri()).oidc_settings().await;
+
+    assert!(settings.is_ok(), "{settings:?}");
+}
+
+#[tokio::test]
+async fn oidc_settings_does_not_follow_a_redirect_to_another_origin() {
+    let server = MockServer::start().await;
+    let target = MockServer::start().await;
+    mount_config(
+        &target,
+        "/config.json",
+        ResponseTemplate::new(200).set_body_json(settings_body()),
+    )
+    .await;
+    mount_config(
+        &server,
+        "/config.json",
+        ResponseTemplate::new(307)
+            .insert_header("location", format!("{}/config.json", target.uri())),
+    )
+    .await;
+
+    let error = client(&server.uri()).oidc_settings().await.unwrap_err();
+
+    assert!(
+        matches!(error, Error::UnexpectedResponse { status: 307, .. }),
+        "{error:?}"
+    );
+    assert!(target.received_requests().await.unwrap().is_empty());
+}
+
+/// A `config.json` body of more than 1 MiB.
+fn oversized_settings() -> String {
+    let mut body = settings_body();
+    body["padding"] = json!("x".repeat(1024 * 1024));
+    body.to_string()
+}
+
+#[tokio::test]
+async fn oidc_settings_fails_with_unexpected_response_for_a_config_json_over_1_mib() {
+    let server = MockServer::start().await;
+    mount_config(
+        &server,
+        "/config.json",
+        ResponseTemplate::new(200).set_body_string(oversized_settings()),
+    )
+    .await;
+
+    let error = client(&server.uri()).oidc_settings().await.unwrap_err();
+
+    assert!(
+        matches!(error, Error::UnexpectedResponse { status: 200, ref message } if message.contains("1048576")),
+        "{error:?}"
+    );
+}
+
+#[tokio::test]
+async fn oidc_settings_fails_for_a_config_json_over_1_mib_without_content_length() {
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut head = [0_u8; 4096];
+        let _ = stream.read(&mut head).await;
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{}",
+            oversized_settings()
+        );
+        let _ = stream.write_all(response.as_bytes()).await;
+    });
+
+    let error = client(&format!("http://{address}"))
+        .oidc_settings()
+        .await
+        .unwrap_err();
+
+    assert!(
+        matches!(error, Error::UnexpectedResponse { status: 200, .. }),
+        "{error:?}"
+    );
+}
+
+#[tokio::test]
 async fn oidc_settings_fails_with_not_found_when_the_host_serves_no_config_json() {
     let server = MockServer::start().await;
     mount_config(&server, "/config.json", ResponseTemplate::new(404)).await;

@@ -229,10 +229,11 @@ pub enum LoginFailure {
     Expired,
     /// The user or the identity provider denied the authorization request.
     Denied,
-    /// The redirect carried a `state` that does not belong to this login.
+    /// The pasted redirect URL carried a `state` that does not belong to this login.
     StateMismatch,
-    /// The identity provider returned an ID token with a wrong issuer, audience or
-    /// `nonce`, an expiry in the past, or a payload that cannot be decoded.
+    /// The identity provider returned an ID token with a wrong issuer, audience, `azp`,
+    /// `nonce` or subject, an expiry more than 60 s in the past or more than one day
+    /// ahead, or a payload that cannot be decoded.
     InvalidIdToken,
     /// The pasted redirect URL is not a URL or lacks `code` and `state`.
     InvalidRedirectUrl,

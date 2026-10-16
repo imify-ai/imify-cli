@@ -7,7 +7,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use reqwest::Url;
 use serde::{Deserialize, Deserializer, Serialize};
 
-use super::id_token::{self, Expected};
+use super::id_token::{self, Checked, Expected};
 use super::loopback::{CALLBACK_PATH, Callback, RedirectListener, parse_callback};
 use super::oidc::{self, AuthorizationRequest, Provider};
 use crate::{Client, Error, LoginFailure, OidcSettings};
@@ -104,14 +104,14 @@ impl LoopbackLogin {
         &self.session.provider_host
     }
 
-    /// Waits up to `timeout` for the redirect, then exchanges the authorization code for
-    /// tokens.
+    /// Waits up to `timeout` for the redirect that carries this login's `state`, then
+    /// exchanges the authorization code for tokens. Redirects with another or no `state`
+    /// get status 400 and are ignored, including error redirects.
     ///
     /// # Errors
     ///
-    /// Returns [`Error::Login`] with [`LoginFailure::TimedOut`] when no redirect arrives,
-    /// [`LoginFailure::Denied`] when the user denies access,
-    /// [`LoginFailure::StateMismatch`] when the redirect belongs to another login,
+    /// Returns [`Error::Login`] with [`LoginFailure::TimedOut`] when no matching redirect
+    /// arrives, [`LoginFailure::Denied`] when the user denies access,
     /// [`LoginFailure::InvalidIdToken`] when the ID token fails a claim check, and
     /// [`LoginFailure::Provider`] when the provider answers with an error or without an
     /// ID token. Returns the other [`Error`] variants as for every request.
@@ -127,7 +127,7 @@ impl LoopbackLogin {
     /// # Ok(()) }
     /// ```
     pub async fn finish(self, timeout: Duration) -> Result<Credentials, Error> {
-        let callback = self.listener.wait(timeout).await?;
+        let callback = self.listener.wait(timeout, &self.session.state).await?;
         self.session.complete(callback).await
     }
 }
@@ -209,8 +209,9 @@ impl PasteLogin {
     /// # Errors
     ///
     /// Returns [`Error::Login`] with [`LoginFailure::InvalidRedirectUrl`] when the input
-    /// is not a URL or has neither `code` and `state` nor `error`. Otherwise as
-    /// [`LoopbackLogin::finish`].
+    /// is not a URL or has neither `code` and `state` nor `error`, and
+    /// [`LoginFailure::StateMismatch`] when its `state`, also on an error redirect, is not
+    /// this login's. Otherwise as [`LoopbackLogin::finish`].
     ///
     /// # Examples
     ///
@@ -298,17 +299,17 @@ impl Session {
     }
 
     async fn complete(self, callback: Callback) -> Result<Credentials, Error> {
+        if !callback.has_state(&self.state) {
+            return Err(Error::Login {
+                reason: LoginFailure::StateMismatch,
+                message: "the redirect belongs to another login attempt".to_owned(),
+            });
+        }
         let code = match callback {
-            Callback::Code { code, state } if state == self.state => code,
-            Callback::Code { .. } => {
-                return Err(Error::Login {
-                    reason: LoginFailure::StateMismatch,
-                    message: "the redirect belongs to another login attempt".to_owned(),
-                });
-            }
-            Callback::Error { error, description } => {
-                return Err(provider_error(&error, description));
-            }
+            Callback::Code { code, .. } => code,
+            Callback::Error {
+                error, description, ..
+            } => return Err(provider_error(&error, description)),
         };
         let tokens = oidc::exchange_code(
             &self.client,
@@ -320,12 +321,13 @@ impl Session {
         )
         .await?;
         let id_token = tokens.id_token.ok_or_else(missing_id_token)?;
-        let expires_at = id_token::check(
+        let checked = id_token::check(
             &id_token,
             &Expected {
                 issuer: &self.provider.issuer,
                 client_id: &self.client_id,
                 nonce: Some(&self.nonce),
+                subject: None,
                 now: SystemTime::now(),
             },
         )?;
@@ -333,7 +335,7 @@ impl Session {
             &self.provider,
             self.client_id,
             id_token,
-            expires_at,
+            checked,
             tokens.refresh_token,
         ))
     }
@@ -359,13 +361,18 @@ pub(crate) fn missing_id_token() -> Error {
     }
 }
 
-const CREDENTIALS_VERSION: u32 = 1;
+/// The version [`Credentials`] serialize with.
+const CREDENTIALS_VERSION: u32 = 2;
 
-/// ID token, refresh token and provider endpoints of one login. `Debug` redacts the
+/// The version before `subject` was recorded. It still deserializes.
+const CREDENTIALS_VERSION_WITHOUT_SUBJECT: u32 = 1;
+
+/// ID token, refresh token, user and provider endpoints of one login. `Debug` redacts the
 /// tokens.
 ///
-/// The serialized form is a JSON object with `"version": 1`; deserializing another
-/// version fails.
+/// The serialized form is a JSON object with `"version": 2`. Version 1, which lacks
+/// `subject`, also deserializes; the next refresh records the subject. Deserializing
+/// another version fails.
 ///
 /// # Examples
 ///
@@ -387,6 +394,9 @@ pub struct Credentials {
     client_id: String,
     token_endpoint: String,
     revocation_endpoint: String,
+    /// The `sub` claim of the ID token. `None` for a login stored as version 1.
+    #[serde(default)]
+    subject: Option<String>,
     id_token: String,
     /// Unix seconds, from the ID token's `exp` claim.
     id_token_expires_at: u64,
@@ -398,7 +408,7 @@ impl Credentials {
         provider: &Provider,
         client_id: String,
         id_token: String,
-        id_token_expires_at: u64,
+        checked: Checked,
         refresh_token: Option<String>,
     ) -> Self {
         Self {
@@ -407,8 +417,9 @@ impl Credentials {
             client_id,
             token_endpoint: provider.token_endpoint.to_string(),
             revocation_endpoint: provider.revocation_endpoint.to_string(),
+            subject: Some(checked.subject),
             id_token,
-            id_token_expires_at,
+            id_token_expires_at: checked.expires_at,
             refresh_token,
         }
     }
@@ -427,7 +438,8 @@ impl Credentials {
         &self.issuer
     }
 
-    /// When the ID token expires.
+    /// When the ID token expires. A stored expiry that `SystemTime` cannot represent
+    /// yields `UNIX_EPOCH`, so the login counts as expired.
     ///
     /// # Examples
     ///
@@ -438,7 +450,12 @@ impl Credentials {
     /// ```
     #[must_use]
     pub fn expires_at(&self) -> SystemTime {
-        UNIX_EPOCH + Duration::from_secs(self.id_token_expires_at)
+        self.expiry().unwrap_or(UNIX_EPOCH)
+    }
+
+    /// The expiry as a `SystemTime`; `None` when it overflows.
+    fn expiry(&self) -> Option<SystemTime> {
+        UNIX_EPOCH.checked_add(Duration::from_secs(self.id_token_expires_at))
     }
 
     /// Returns `true` when the login can be refreshed.
@@ -465,6 +482,10 @@ impl Credentials {
         &self.client_id
     }
 
+    pub(crate) fn subject(&self) -> Option<&str> {
+        self.subject.as_deref()
+    }
+
     pub(crate) fn refresh_token(&self) -> Option<&str> {
         self.refresh_token.as_deref()
     }
@@ -477,20 +498,27 @@ impl Credentials {
         oidc::parse_secure_url(&self.revocation_endpoint, "revocation endpoint")
     }
 
-    /// Returns `true` when the ID token expires within `margin` of `now`.
+    /// Returns `true` when the ID token expires within `margin` of `now`, or when either
+    /// point in time overflows.
     pub(crate) fn expires_within(&self, margin: Duration, now: SystemTime) -> bool {
-        self.expires_at() <= now + margin
+        match (self.expiry(), now.checked_add(margin)) {
+            (Some(expiry), Some(limit)) => expiry <= limit,
+            _ => true,
+        }
     }
 
-    /// Replaces the ID token and, when `refresh_token` is `Some`, the refresh token.
+    /// Replaces the ID token, its expiry and subject and, when `refresh_token` is `Some`,
+    /// the refresh token.
     pub(crate) fn renew(
         &mut self,
         id_token: String,
-        expires_at: u64,
+        checked: Checked,
         refresh_token: Option<String>,
     ) {
+        self.version = CREDENTIALS_VERSION;
+        self.subject = Some(checked.subject);
         self.id_token = id_token;
-        self.id_token_expires_at = expires_at;
+        self.id_token_expires_at = checked.expires_at;
         if refresh_token.is_some() {
             self.refresh_token = refresh_token;
         }
@@ -506,6 +534,7 @@ impl fmt::Debug for Credentials {
             .field("client_id", &self.client_id)
             .field("token_endpoint", &self.token_endpoint)
             .field("revocation_endpoint", &self.revocation_endpoint)
+            .field("subject", &self.subject)
             .field("id_token", &"<redacted>")
             .field("id_token_expires_at", &self.id_token_expires_at)
             .field(
@@ -518,7 +547,7 @@ impl fmt::Debug for Credentials {
 
 fn supported_version<'de, D: Deserializer<'de>>(deserializer: D) -> Result<u32, D::Error> {
     let version = u32::deserialize(deserializer)?;
-    if version == CREDENTIALS_VERSION {
+    if version == CREDENTIALS_VERSION || version == CREDENTIALS_VERSION_WITHOUT_SUBJECT {
         Ok(version)
     } else {
         Err(serde::de::Error::custom(format!(

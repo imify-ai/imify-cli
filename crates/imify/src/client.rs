@@ -1,7 +1,7 @@
 //! The HTTP client every API call goes through.
 
 use std::future::Future;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderValue, LOCATION};
@@ -19,14 +19,19 @@ const DEFAULT_READ_TIMEOUT: Duration = Duration::from_secs(60);
 /// Most redirects followed for one request.
 pub(crate) const MAX_REDIRECTS: usize = 5;
 
+/// Largest error body read, and largest body of an identity provider response.
+pub(crate) const MAX_SMALL_BODY_BYTES: usize = 1024 * 1024;
+
 /// A client for the imify platform API.
 ///
 /// Every request carries a `User-Agent` header and, when a token source is configured,
 /// an `Authorization: Bearer` header. Failed requests are retried according to the
 /// client's [`RetryPolicy`]. Redirects with status 307 and 308 are followed, up to 5 in a
 /// row and never from `https` to `http`; the `Authorization` header is not sent to
-/// another host or port. Other redirects fail with [`Error::UnexpectedResponse`]. Cloning
-/// is cheap; clones share their connection pools.
+/// another host or port. Other redirects fail with [`Error::UnexpectedResponse`]. Requests
+/// to the identity provider differ: `config.json` and the discovery document follow
+/// redirects only within their origin, and token and revocation requests follow none.
+/// Cloning is cheap; clones share their connection pools.
 ///
 /// # Examples
 ///
@@ -43,6 +48,7 @@ pub(crate) const MAX_REDIRECTS: usize = 5;
 pub struct Client {
     http: reqwest::Client,
     upload_http: reqwest::Client,
+    provider_http: Arc<ProviderHttp>,
     base_url: Url,
     token_source: Option<Arc<dyn TokenSource>>,
     retry_policy: RetryPolicy,
@@ -107,16 +113,20 @@ impl Client {
         .await
     }
 
-    /// Sends a request without an `Authorization` header to `url` and decodes the JSON
-    /// response as `T`, retrying failures that `mode` allows.
-    pub(crate) async fn execute_unauthenticated<T: DeserializeOwned>(
-        &self,
-        mode: RetryMode,
-        method: Method,
-        url: Url,
-    ) -> Result<T, Error> {
-        self.execute_unauthenticated_with(mode, method, url, &decode_json)
-            .await
+    /// Sends a `GET` without an `Authorization` header to `url` and decodes the JSON
+    /// response as `T`, retrying failures the retry policy allows. Follows redirects only
+    /// within the origin of `url`.
+    pub(crate) async fn get_same_origin<T: DeserializeOwned>(&self, url: Url) -> Result<T, Error> {
+        let http = self.provider_http.same_origin()?;
+        self.retry(
+            RetryMode::Idempotent,
+            |_, _, _| {},
+            || async {
+                let response = http.get(url.clone()).send().await.map_err(network_error)?;
+                decode_with(response, BodySize::Small, &decode_json).await
+            },
+        )
+        .await
     }
 
     /// Sends a request without an `Authorization` header to `url` and turns the response
@@ -167,10 +177,10 @@ impl Client {
         }
     }
 
-    /// The HTTP client for requests the client methods do not cover, such as form posts.
-    /// It sends no `Authorization` header by itself.
-    pub(crate) fn http(&self) -> &reqwest::Client {
-        &self.http
+    /// The HTTP client for form posts to the identity provider. It sends no
+    /// `Authorization` header and follows no redirects.
+    pub(crate) fn form_http(&self) -> Result<&reqwest::Client, Error> {
+        self.provider_http.no_redirects()
     }
 
     /// The HTTP client for streamed file uploads. It has no read timeout; the caller
@@ -210,7 +220,7 @@ impl Client {
             request = request.json(body);
         }
         let response = request.send().await.map_err(network_error)?;
-        decode_with(response, decode).await
+        decode_with(response, BodySize::Unbounded, decode).await
     }
 
     /// The `Authorization` header value from the token source, `None` without one.
@@ -254,22 +264,71 @@ enum Authorize {
 
 /// Decodes a successful JSON response as `T` and maps any other response to an [`Error`].
 pub(crate) async fn decode<T: DeserializeOwned>(response: reqwest::Response) -> Result<T, Error> {
-    decode_with(response, &decode_json).await
+    decode_with(response, BodySize::Unbounded, &decode_json).await
 }
 
-/// Reads the whole response and turns it into `T` with `decode`. A redirect fails with
+/// Reads the response and turns it into `T` with `decode`. A success body is read as
+/// `success_body` says, any other body as [`read_small_body`] does. A redirect fails with
 /// [`Error::UnexpectedResponse`] without calling `decode`.
-async fn decode_with<T, D>(response: reqwest::Response, decode: &D) -> Result<T, Error>
+async fn decode_with<T, D>(
+    response: reqwest::Response,
+    success_body: BodySize,
+    decode: &D,
+) -> Result<T, Error>
 where
     D: Fn(StatusCode, &HeaderMap, &[u8]) -> Result<T, Error>,
 {
     let status = response.status();
     let headers = response.headers().clone();
-    let body = response.bytes().await.map_err(network_error)?;
+    let body = match success_body {
+        BodySize::Unbounded if status.is_success() => {
+            response.bytes().await.map_err(network_error)?.to_vec()
+        }
+        _ => read_small_body(response).await?,
+    };
     if status.is_redirection() {
         return Err(redirect_not_followed(status, &headers));
     }
     decode(status, &headers, &body)
+}
+
+/// How much of a success body is read. Other bodies are read as [`read_small_body`] does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BodySize {
+    Unbounded,
+    Small,
+}
+
+/// Reads a body of at most [`MAX_SMALL_BODY_BYTES`], checking `Content-Length` first and
+/// counting the bytes received. A larger success body fails with
+/// [`Error::UnexpectedResponse`]; a larger body of another status reads as empty, so the
+/// error built from it carries the reason phrase.
+pub(crate) async fn read_small_body(mut response: reqwest::Response) -> Result<Vec<u8>, Error> {
+    let status = response.status();
+    let too_large = || {
+        if status.is_success() {
+            Err(Error::UnexpectedResponse {
+                status: status.as_u16(),
+                message: format!("the response body exceeds {MAX_SMALL_BODY_BYTES} bytes"),
+            })
+        } else {
+            Ok(Vec::new())
+        }
+    };
+    let announced = response
+        .content_length()
+        .map(|length| usize::try_from(length).unwrap_or(usize::MAX));
+    if announced.is_some_and(|length| length > MAX_SMALL_BODY_BYTES) {
+        return too_large();
+    }
+    let mut body = Vec::with_capacity(announced.unwrap_or_default());
+    while let Some(chunk) = response.chunk().await.map_err(network_error)? {
+        if body.len() + chunk.len() > MAX_SMALL_BODY_BYTES {
+            return too_large();
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
 }
 
 /// Decodes a successful JSON response as `T` and maps any other status to an [`Error`].
@@ -287,7 +346,8 @@ pub(crate) fn decode_json<T: DeserializeOwned>(
     })
 }
 
-fn redirect_not_followed(status: StatusCode, headers: &HeaderMap) -> Error {
+/// The error for a redirect that was not followed, naming its `Location`.
+pub(crate) fn redirect_not_followed(status: StatusCode, headers: &HeaderMap) -> Error {
     let location = headers
         .get(LOCATION)
         .and_then(|value| value.to_str().ok())
@@ -320,6 +380,88 @@ fn redirect_policy() -> redirect::Policy {
             attempt.stop()
         }
     })
+}
+
+/// Like [`redirect_policy`], and only to the origin of the first request.
+fn same_origin_redirect_policy() -> redirect::Policy {
+    redirect::Policy::custom(|attempt| {
+        let previous = attempt.previous();
+        let same_origin = previous
+            .first()
+            .is_some_and(|first| first.origin() == attempt.url().origin());
+        let allowed = same_origin
+            && previous.len() <= MAX_REDIRECTS
+            && previous
+                .last()
+                .is_some_and(|last| may_follow_redirect(attempt.status(), last, attempt.url()));
+        if allowed {
+            attempt.follow()
+        } else {
+            attempt.stop()
+        }
+    })
+}
+
+/// The settings every HTTP client of a [`Client`] shares.
+#[derive(Debug, Clone)]
+struct HttpSettings {
+    user_agent: HeaderValue,
+    connect_timeout: Duration,
+    read_timeout: Duration,
+}
+
+impl HttpSettings {
+    fn builder(&self, redirects: redirect::Policy) -> reqwest::ClientBuilder {
+        reqwest::Client::builder()
+            .user_agent(self.user_agent.clone())
+            .connect_timeout(self.connect_timeout)
+            .redirect(redirects)
+    }
+}
+
+/// The HTTP clients for identity provider requests. Each is built on first use, since
+/// building one loads the TLS root certificates.
+#[derive(Debug)]
+struct ProviderHttp {
+    settings: HttpSettings,
+    same_origin: OnceLock<reqwest::Client>,
+    no_redirects: OnceLock<reqwest::Client>,
+}
+
+impl ProviderHttp {
+    fn new(settings: HttpSettings) -> Self {
+        Self {
+            settings,
+            same_origin: OnceLock::new(),
+            no_redirects: OnceLock::new(),
+        }
+    }
+
+    /// Follows redirects only within the origin of the request.
+    fn same_origin(&self) -> Result<&reqwest::Client, Error> {
+        self.get_or_build(&self.same_origin, same_origin_redirect_policy)
+    }
+
+    /// Follows no redirects.
+    fn no_redirects(&self) -> Result<&reqwest::Client, Error> {
+        self.get_or_build(&self.no_redirects, redirect::Policy::none)
+    }
+
+    fn get_or_build<'a>(
+        &self,
+        cell: &'a OnceLock<reqwest::Client>,
+        redirects: fn() -> redirect::Policy,
+    ) -> Result<&'a reqwest::Client, Error> {
+        if let Some(http) = cell.get() {
+            return Ok(http);
+        }
+        let http = build_http(
+            self.settings
+                .builder(redirects())
+                .read_timeout(self.settings.read_timeout),
+        )?;
+        Ok(cell.get_or_init(|| http))
+    }
 }
 
 pub(crate) fn network_error(error: reqwest::Error) -> Error {
@@ -435,9 +577,10 @@ impl ClientBuilder {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::Config`] when the base URL is not an `http` or `https` URL, when
-    /// the user agent is not a valid header value, or when the TLS backend fails to
-    /// initialize.
+    /// Returns [`Error::Config`] when the base URL is not an `http` or `https` URL, when a
+    /// token source is set and the base URL uses `http` on a host other than `localhost`,
+    /// `127.0.0.1` or `::1`, when the user agent is not a valid header value, or when the
+    /// TLS backend fails to initialize.
     ///
     /// # Examples
     ///
@@ -446,21 +589,28 @@ impl ClientBuilder {
     /// assert!(matches!(error, imify::Error::Config { .. }));
     /// ```
     pub fn build(self) -> Result<Client, Error> {
-        let base_url = parse_base_url(&self.base_url)?;
+        let mut base_url = parse_base_url(&self.base_url)?;
+        if self.token_source.is_some() {
+            base_url = require_secure(base_url, "API")?;
+        }
         let user_agent = HeaderValue::try_from(self.user_agent).map_err(|_| Error::Config {
             message: "user agent contains characters not allowed in an HTTP header".to_owned(),
         })?;
-        let http_builder = || {
-            reqwest::Client::builder()
-                .user_agent(user_agent.clone())
-                .connect_timeout(self.connect_timeout)
-                .redirect(redirect_policy())
+        let settings = HttpSettings {
+            user_agent,
+            connect_timeout: self.connect_timeout,
+            read_timeout: self.read_timeout,
         };
-        let http = build_http(http_builder().read_timeout(self.read_timeout))?;
-        let upload_http = build_http(http_builder())?;
+        let http = build_http(
+            settings
+                .builder(redirect_policy())
+                .read_timeout(self.read_timeout),
+        )?;
+        let upload_http = build_http(settings.builder(redirect_policy()))?;
         Ok(Client {
             http,
             upload_http,
+            provider_http: Arc::new(ProviderHttp::new(settings)),
             base_url,
             token_source: self.token_source,
             retry_policy: self.retry_policy,
@@ -472,6 +622,27 @@ impl ClientBuilder {
 fn build_http(builder: reqwest::ClientBuilder) -> Result<reqwest::Client, Error> {
     builder.build().map_err(|error| Error::Config {
         message: format!("cannot initialize the HTTP client: {error}"),
+    })
+}
+
+/// Returns `url` when it uses `https`, or `http` on the host `localhost`, `127.0.0.1` or
+/// `::1`. `name` names the URL in the error.
+pub(crate) fn require_secure(url: Url, name: &str) -> Result<Url, Error> {
+    match url.scheme() {
+        "https" => Ok(url),
+        "http" if is_loopback(&url) => Ok(url),
+        _ => Err(Error::Config {
+            message: format!(
+                "the {name} URL {url} must use https unless its host is localhost, 127.0.0.1 or ::1"
+            ),
+        }),
+    }
+}
+
+/// Returns `true` for the hosts `localhost`, `127.0.0.1` and `::1`.
+fn is_loopback(url: &Url) -> bool {
+    url.host_str().is_some_and(|host| {
+        host.eq_ignore_ascii_case("localhost") || host == "127.0.0.1" || host == "[::1]"
     })
 }
 

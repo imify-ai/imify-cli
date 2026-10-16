@@ -6,7 +6,7 @@ use wiremock::ResponseTemplate;
 
 use super::*;
 use crate::auth::testing::{
-    CLIENT_ID, MockProvider, REFRESH_TOKEN, claims, client, free_port, jwt,
+    CLIENT_ID, ID_TOKEN_SUBJECT, MockProvider, REFRESH_TOKEN, claims, client, free_port, jwt,
 };
 
 const CODE: &str = "code-8d2f-secret";
@@ -161,6 +161,7 @@ async fn a_redirect_with_the_right_state_yields_credentials_that_expire_with_the
         UNIX_EPOCH + Duration::from_secs(exp)
     );
     assert_eq!(credentials.issuer(), provider.issuer());
+    assert_eq!(credentials.subject(), Some(ID_TOKEN_SUBJECT));
     assert!(credentials.has_refresh_token());
 }
 
@@ -188,12 +189,61 @@ async fn the_code_exchange_sends_the_code_verifier_and_redirect_uri() {
 }
 
 #[tokio::test]
-async fn a_redirect_with_a_wrong_state_fails_without_a_token_request() {
+async fn a_redirect_with_another_state_is_ignored_and_the_matching_redirect_completes_the_login() {
     let provider = MockProvider::start().await;
     let started = start_loopback(&provider).await;
+    provider
+        .mount_token_response(token_body(&provider.id_token(Some(&started.nonce()), 3600)))
+        .await;
+    let finishing = tokio::spawn(started.login.finish(Duration::from_secs(10)));
+    let callback = |query: String| {
+        reqwest::get(format!(
+            "http://127.0.0.1:{}/callback?{query}",
+            started.port
+        ))
+    };
 
-    let result = started
-        .finish_after_redirect(&format!("code={CODE}&state=other-state"))
+    let other_code = callback("code=code-other&state=other-state".to_owned())
+        .await
+        .unwrap();
+    let other_error = callback("error=access_denied&state=other-state".to_owned())
+        .await
+        .unwrap();
+    callback(format!("code={CODE}&state={}", started.params["state"]))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        (other_code.status().as_u16(), other_error.status().as_u16()),
+        (400, 400)
+    );
+    assert!(finishing.await.unwrap().is_ok());
+    let requests = provider.token_requests().await;
+    assert_eq!(requests.len(), 1);
+    assert_eq!(form(&requests[0])["code"], CODE);
+}
+
+#[tokio::test]
+async fn paste_login_rejects_an_error_url_with_another_state() {
+    let provider = MockProvider::start().await;
+    let (login, _) = start_paste(&provider).await;
+
+    let result = login
+        .finish("http://localhost:28753/callback?error=access_denied&state=other-state")
+        .await;
+
+    assert_eq!(reason(result), LoginFailure::StateMismatch);
+}
+
+#[tokio::test]
+async fn paste_login_rejects_a_code_url_with_another_state_without_a_token_request() {
+    let provider = MockProvider::start().await;
+    let (login, _) = start_paste(&provider).await;
+
+    let result = login
+        .finish(&format!(
+            "http://localhost:28753/callback?code={CODE}&state=other-state"
+        ))
         .await;
 
     assert_eq!(reason(result), LoginFailure::StateMismatch);
@@ -254,7 +304,7 @@ async fn an_expired_id_token_fails_with_invalid_id_token() {
     let provider = MockProvider::start().await;
     let started = start_loopback(&provider).await;
     provider
-        .mount_token_response(token_body(&provider.id_token(Some(&started.nonce()), -10)))
+        .mount_token_response(token_body(&provider.id_token(Some(&started.nonce()), -120)))
         .await;
     let query = started.redirect_query();
 
@@ -425,21 +475,35 @@ fn credentials_debug_redacts_the_tokens() {
 }
 
 #[test]
-fn credentials_serialize_with_version_1_and_round_trip() {
+fn credentials_serialize_with_version_2_and_round_trip() {
     let credentials = sample_credentials();
 
     let json = serde_json::to_value(&credentials).unwrap();
     let parsed: Credentials = serde_json::from_value(json.clone()).unwrap();
 
-    assert_eq!(json["version"], 1);
+    assert_eq!(json["version"], 2);
+    assert_eq!(json["subject"], ID_TOKEN_SUBJECT);
     assert_eq!(parsed.id_token(), "id-token-secret");
     assert_eq!(parsed.refresh_token(), Some(REFRESH_TOKEN));
+    assert_eq!(parsed.subject(), Some(ID_TOKEN_SUBJECT));
+}
+
+#[test]
+fn credentials_of_version_1_without_a_subject_deserialize() {
+    let mut json = serde_json::to_value(sample_credentials()).unwrap();
+    json["version"] = json!(1);
+    json.as_object_mut().unwrap().remove("subject");
+
+    let parsed: Credentials = serde_json::from_value(json).unwrap();
+
+    assert_eq!(parsed.subject(), None);
+    assert_eq!(parsed.id_token(), "id-token-secret");
 }
 
 #[test]
 fn credentials_of_another_version_do_not_deserialize() {
     let mut json = serde_json::to_value(sample_credentials()).unwrap();
-    json["version"] = json!(2);
+    json["version"] = json!(3);
 
     let result = serde_json::from_value::<Credentials>(json);
 
@@ -448,11 +512,12 @@ fn credentials_of_another_version_do_not_deserialize() {
 
 fn sample_credentials() -> Credentials {
     Credentials {
-        version: 1,
+        version: 2,
         issuer: "https://login.example.com".into(),
         client_id: CLIENT_ID.into(),
         token_endpoint: "https://login.example.com/oauth2/token".into(),
         revocation_endpoint: "https://login.example.com/oauth2/revoke".into(),
+        subject: Some(ID_TOKEN_SUBJECT.into()),
         id_token: "id-token-secret".into(),
         id_token_expires_at: 1_900_000_000,
         refresh_token: Some(REFRESH_TOKEN.into()),

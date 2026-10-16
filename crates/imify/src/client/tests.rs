@@ -184,6 +184,24 @@ async fn get_returns_server_error_after_exhausting_retries() {
 }
 
 #[tokio::test]
+async fn an_error_body_over_1_mib_is_dropped_and_the_error_carries_the_reason_phrase() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .respond_with(
+            ResponseTemplate::new(404).set_body_json(json!({"detail": "x".repeat(1024 * 1024)})),
+        )
+        .mount(&server)
+        .await;
+
+    let error = get_dataset(&client(&server)).await.unwrap_err();
+
+    assert!(
+        matches!(error, Error::NotFound { ref message } if message == "Not Found"),
+        "{error:?}"
+    );
+}
+
+#[tokio::test]
 async fn get_not_found_is_sent_once() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
@@ -331,6 +349,41 @@ fn non_http_base_url_is_a_config_error() {
         .unwrap_err();
 
     assert!(matches!(error, Error::Config { .. }));
+}
+
+#[test]
+fn an_http_base_url_on_a_non_loopback_host_with_a_token_source_is_a_config_error() {
+    let error = Client::builder("http://api.example.com")
+        .token_source(StaticToken::new(TOKEN))
+        .build()
+        .unwrap_err();
+
+    assert!(
+        matches!(error, Error::Config { ref message } if message.contains("https")),
+        "{error:?}"
+    );
+}
+
+#[test]
+fn an_http_base_url_on_a_loopback_host_with_a_token_source_is_accepted() {
+    for base_url in [
+        "http://localhost:8000",
+        "http://127.0.0.1:8000",
+        "http://[::1]:8000",
+    ] {
+        let client = Client::builder(base_url)
+            .token_source(StaticToken::new(TOKEN))
+            .build();
+
+        assert!(client.is_ok(), "{base_url}: {client:?}");
+    }
+}
+
+#[test]
+fn an_http_base_url_without_a_token_source_is_accepted() {
+    let client = Client::builder("http://api.example.com").build();
+
+    assert!(client.is_ok(), "{client:?}");
 }
 
 #[test]

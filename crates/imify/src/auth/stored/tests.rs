@@ -5,7 +5,9 @@ use wiremock::matchers::{header, method, path};
 use wiremock::{Mock, ResponseTemplate};
 
 use super::*;
-use crate::auth::testing::{MemoryStore, MockProvider, REFRESH_TOKEN, client, unix_now};
+use crate::auth::testing::{
+    ID_TOKEN_SUBJECT, MemoryStore, MockProvider, REFRESH_TOKEN, claims, client, jwt, unix_now,
+};
 
 const NEW_REFRESH_TOKEN: &str = "rt_9c4d-rotated-secret";
 
@@ -31,6 +33,68 @@ fn reason(result: Result<String, Error>) -> LoginFailure {
         Err(Error::Login { reason, .. }) => reason,
         other => panic!("expected a login error, got {other:?}"),
     }
+}
+
+fn with_expiry(credentials: &Credentials, id_token_expires_at: u64) -> Credentials {
+    let mut json = serde_json::to_value(credentials).unwrap();
+    json["id_token_expires_at"] = json!(id_token_expires_at);
+    serde_json::from_value(json).unwrap()
+}
+
+/// `credentials` as a login stored before credentials recorded the subject.
+fn as_version_1(credentials: &Credentials) -> Credentials {
+    let mut json = serde_json::to_value(credentials).unwrap();
+    json["version"] = json!(1);
+    json.as_object_mut().unwrap().remove("subject");
+    serde_json::from_value(json).unwrap()
+}
+
+#[tokio::test]
+async fn a_refreshed_id_token_of_another_subject_fails_with_invalid_id_token_and_is_not_saved() {
+    let provider = MockProvider::start().await;
+    let store = MemoryStore::holding(provider.credentials(30, Some(REFRESH_TOKEN)));
+    let mut claims = claims(&provider.issuer(), None, 3600);
+    claims["sub"] = json!("user-5678");
+    provider
+        .mount_token_response(json!({"id_token": jwt(&claims)}))
+        .await;
+
+    let result = token_of(&stored_login(&store).await).await;
+
+    assert_eq!(reason(result), LoginFailure::InvalidIdToken);
+    assert_eq!(store.save_count(), 0);
+}
+
+#[tokio::test]
+async fn a_login_stored_without_a_subject_takes_the_subject_of_the_refreshed_id_token() {
+    let provider = MockProvider::start().await;
+    let stored = as_version_1(&provider.credentials(30, Some(REFRESH_TOKEN)));
+    let store = MemoryStore::holding(stored);
+    provider
+        .mount_token_response(json!({"id_token": provider.id_token(None, 3600)}))
+        .await;
+
+    token_of(&stored_login(&store).await).await.unwrap();
+
+    let saved = serde_json::to_value(store.stored().unwrap()).unwrap();
+    assert_eq!(saved["version"], 2);
+    assert_eq!(saved["subject"], ID_TOKEN_SUBJECT);
+}
+
+#[tokio::test]
+async fn a_stored_expiry_of_u64_max_counts_as_expired_and_is_refreshed() {
+    let provider = MockProvider::start().await;
+    let stored = with_expiry(&provider.credentials(3600, Some(REFRESH_TOKEN)), u64::MAX);
+    let store = MemoryStore::holding(stored.clone());
+    let new_id_token = provider.id_token(None, 3600);
+    provider
+        .mount_token_response(json!({"id_token": new_id_token}))
+        .await;
+
+    let token = token_of(&stored_login(&store).await).await.unwrap();
+
+    assert_eq!(stored.expires_at(), std::time::UNIX_EPOCH);
+    assert_eq!(token, new_id_token);
 }
 
 #[tokio::test]
@@ -155,6 +219,39 @@ async fn invalid_grant_uses_a_fresh_login_another_writer_saved() {
     let token = token_of(&login).await.unwrap();
 
     assert_eq!(token, newer.id_token());
+}
+
+#[tokio::test]
+async fn invalid_grant_does_not_adopt_a_login_another_writer_saved_for_another_issuer() {
+    let provider = MockProvider::start().await;
+    let other_provider = MockProvider::start().await;
+    let store = MemoryStore::holding(provider.credentials(30, Some(REFRESH_TOKEN)));
+    provider
+        .mount_token(ResponseTemplate::new(400).set_body_json(json!({"error": "invalid_grant"})))
+        .await;
+    let login = stored_login(&store).await;
+    store.replace(other_provider.credentials(3600, Some(NEW_REFRESH_TOKEN)));
+
+    let result = token_of(&login).await;
+
+    assert_eq!(reason(result), LoginFailure::Expired);
+}
+
+#[tokio::test]
+async fn invalid_grant_does_not_adopt_a_login_another_writer_saved_for_another_client() {
+    let provider = MockProvider::start().await;
+    let store = MemoryStore::holding(provider.credentials(30, Some(REFRESH_TOKEN)));
+    provider
+        .mount_token(ResponseTemplate::new(400).set_body_json(json!({"error": "invalid_grant"})))
+        .await;
+    let login = stored_login(&store).await;
+    let mut other_client = serde_json::to_value(provider.credentials(3600, None)).unwrap();
+    other_client["client_id"] = json!("client-2");
+    store.replace(serde_json::from_value(other_client).unwrap());
+
+    let result = token_of(&login).await;
+
+    assert_eq!(reason(result), LoginFailure::Expired);
 }
 
 #[tokio::test]

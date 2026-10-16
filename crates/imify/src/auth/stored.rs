@@ -169,28 +169,31 @@ impl StoredLogin {
             Err(error) => return Err(error.into()),
         };
         let id_token = tokens.id_token.ok_or_else(missing_id_token)?;
-        let expires_at = id_token::check(
+        let checked = id_token::check(
             &id_token,
             &Expected {
                 issuer: current.issuer(),
                 client_id: current.client_id(),
                 nonce: None,
+                subject: current.subject(),
                 now: SystemTime::now(),
             },
         )?;
         let mut renewed = current.clone();
-        renewed.renew(id_token, expires_at, tokens.refresh_token);
+        renewed.renew(id_token, checked, tokens.refresh_token);
         let saved = renewed.clone();
         on_blocking_thread(&self.store, move |store| store.save(&saved)).await?;
         Ok(renewed)
     }
 
-    /// Credentials another writer saved since `current` was loaded, when their ID token
-    /// is still fresh.
+    /// Credentials another writer saved since `current` was loaded, when they have the
+    /// same issuer and client id and their ID token is still fresh.
     async fn newer_stored(&self, current: &Credentials) -> Result<Option<Credentials>, Error> {
         let stored = on_blocking_thread(&self.store, |store| store.load()).await?;
         Ok(stored.filter(|stored| {
-            stored.id_token() != current.id_token()
+            stored.issuer() == current.issuer()
+                && stored.client_id() == current.client_id()
+                && stored.id_token() != current.id_token()
                 && !stored.expires_within(REFRESH_MARGIN, SystemTime::now())
         }))
     }

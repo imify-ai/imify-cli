@@ -3,6 +3,8 @@ use std::net::TcpListener as StdListener;
 use super::*;
 use crate::auth::testing::free_port;
 
+const STATE: &str = "s-1";
+
 async fn get(port: u16, path_and_query: &str) -> reqwest::Response {
     reqwest::get(format!("http://127.0.0.1:{port}{path_and_query}"))
         .await
@@ -27,6 +29,44 @@ async fn bind_takes_the_next_port_when_the_first_is_in_use() {
     let listener = RedirectListener::bind(&[taken_port, free]).await.unwrap();
 
     assert_eq!(listener.port(), free);
+}
+
+#[tokio::test]
+async fn bind_takes_the_next_port_when_the_first_is_in_use_on_ipv6_loopback() {
+    let taken = StdListener::bind((Ipv6Addr::LOCALHOST, 0)).unwrap();
+    let taken_port = taken.local_addr().unwrap().port();
+    let free = free_port();
+
+    let listener = RedirectListener::bind(&[taken_port, free]).await.unwrap();
+
+    assert_eq!(listener.port(), free);
+}
+
+#[tokio::test]
+async fn wait_drops_connections_beyond_the_limit_of_32_in_flight() {
+    let listener = RedirectListener::bind(&[free_port()]).await.unwrap();
+    let port = listener.port();
+    let _waiting = tokio::spawn(listener.wait(Duration::from_secs(10), STATE));
+    let mut silent = Vec::new();
+    for _ in 0..MAX_CONNECTIONS {
+        silent.push(
+            TcpStream::connect((Ipv4Addr::LOCALHOST, port))
+                .await
+                .unwrap(),
+        );
+    }
+
+    let mut excess = TcpStream::connect((Ipv4Addr::LOCALHOST, port))
+        .await
+        .unwrap();
+    let mut buffer = [0_u8; 16];
+    let read = tokio::time::timeout(Duration::from_secs(5), excess.read(&mut buffer)).await;
+
+    assert_eq!(MAX_CONNECTIONS, 32);
+    assert!(
+        matches!(read, Ok(Ok(0) | Err(_))),
+        "the excess connection was not closed: {read:?}"
+    );
 }
 
 #[tokio::test]
@@ -56,7 +96,7 @@ async fn bind_fails_with_ports_in_use_when_every_port_is_taken() {
 async fn wait_returns_the_code_and_state_of_the_redirect() {
     let listener = RedirectListener::bind(&[free_port()]).await.unwrap();
     let port = listener.port();
-    let waiting = tokio::spawn(listener.wait(Duration::from_secs(10)));
+    let waiting = tokio::spawn(listener.wait(Duration::from_secs(10), STATE));
 
     let response = get(port, "/callback?code=c-1&state=s-1").await;
 
@@ -71,7 +111,7 @@ async fn wait_returns_the_code_and_state_of_the_redirect() {
 async fn wait_answers_other_paths_with_404_and_keeps_waiting() {
     let listener = RedirectListener::bind(&[free_port()]).await.unwrap();
     let port = listener.port();
-    let waiting = tokio::spawn(listener.wait(Duration::from_secs(10)));
+    let waiting = tokio::spawn(listener.wait(Duration::from_secs(10), STATE));
 
     let favicon = get(port, "/favicon.ico").await;
     get(port, "/callback?code=c-1&state=s-1").await;
@@ -87,7 +127,7 @@ async fn wait_answers_other_paths_with_404_and_keeps_waiting() {
 async fn wait_is_not_blocked_by_a_connection_that_sends_nothing() {
     let listener = RedirectListener::bind(&[free_port()]).await.unwrap();
     let port = listener.port();
-    let waiting = tokio::spawn(listener.wait(Duration::from_secs(5)));
+    let waiting = tokio::spawn(listener.wait(Duration::from_secs(5), STATE));
 
     let _silent = TcpStream::connect((Ipv4Addr::LOCALHOST, port))
         .await
@@ -101,7 +141,7 @@ async fn wait_is_not_blocked_by_a_connection_that_sends_nothing() {
 async fn wait_returns_the_provider_error_of_the_redirect() {
     let listener = RedirectListener::bind(&[free_port()]).await.unwrap();
     let port = listener.port();
-    let waiting = tokio::spawn(listener.wait(Duration::from_secs(10)));
+    let waiting = tokio::spawn(listener.wait(Duration::from_secs(10), STATE));
 
     get(port, "/callback?error=access_denied&state=s-1").await;
 
@@ -112,10 +152,49 @@ async fn wait_returns_the_provider_error_of_the_redirect() {
 }
 
 #[tokio::test]
+async fn wait_answers_a_code_with_another_state_with_400_and_returns_the_matching_one() {
+    let listener = RedirectListener::bind(&[free_port()]).await.unwrap();
+    let port = listener.port();
+    let waiting = tokio::spawn(listener.wait(Duration::from_secs(10), STATE));
+
+    let other = get(port, "/callback?code=c-other&state=s-other").await;
+    get(port, "/callback?code=c-1&state=s-1").await;
+
+    assert_eq!(other.status(), 400);
+    assert!(matches!(
+        waiting.await.unwrap().unwrap(),
+        Callback::Code { ref code, .. } if code == "c-1"
+    ));
+}
+
+#[tokio::test]
+async fn wait_answers_an_error_with_another_or_no_state_with_400_and_keeps_waiting() {
+    let listener = RedirectListener::bind(&[free_port()]).await.unwrap();
+    let port = listener.port();
+    let waiting = tokio::spawn(listener.wait(Duration::from_secs(10), STATE));
+
+    let other = get(port, "/callback?error=access_denied&state=s-other").await;
+    let stateless = get(port, "/callback?error=access_denied").await;
+    get(port, "/callback?code=c-1&state=s-1").await;
+
+    assert_eq!(
+        (other.status().as_u16(), stateless.status().as_u16()),
+        (400, 400)
+    );
+    assert!(matches!(
+        waiting.await.unwrap().unwrap(),
+        Callback::Code { .. }
+    ));
+}
+
+#[tokio::test]
 async fn wait_fails_with_timed_out_without_a_redirect() {
     let listener = RedirectListener::bind(&[free_port()]).await.unwrap();
 
-    let error = listener.wait(Duration::from_millis(50)).await.unwrap_err();
+    let error = listener
+        .wait(Duration::from_millis(50), STATE)
+        .await
+        .unwrap_err();
 
     assert!(
         matches!(

@@ -1,7 +1,7 @@
 use serde_json::json;
 
 use super::*;
-use crate::auth::testing::{CLIENT_ID, claims, jwt};
+use crate::auth::testing::{CLIENT_ID, ID_TOKEN_SUBJECT, claims, jwt};
 
 const ISSUER: &str = "https://login.example.com/pool-1";
 const NONCE: &str = "n-0S6_WzA2Mj";
@@ -11,11 +11,12 @@ fn expected(nonce: Option<&str>) -> Expected<'_> {
         issuer: ISSUER,
         client_id: CLIENT_ID,
         nonce,
+        subject: None,
         now: SystemTime::now(),
     }
 }
 
-fn reason(result: Result<u64, Error>) -> LoginFailure {
+fn reason(result: Result<Checked, Error>) -> LoginFailure {
     match result {
         Err(Error::Login { reason, .. }) => reason,
         other => panic!("expected a login error, got {other:?}"),
@@ -23,18 +24,90 @@ fn reason(result: Result<u64, Error>) -> LoginFailure {
 }
 
 #[test]
-fn a_valid_token_yields_its_expiry() {
+fn a_valid_token_yields_its_expiry_and_subject() {
     let claims = claims(ISSUER, Some(NONCE), 3600);
 
-    let expiry = check(&jwt(&claims), &expected(Some(NONCE))).unwrap();
+    let checked = check(&jwt(&claims), &expected(Some(NONCE))).unwrap();
 
-    assert_eq!(json!(expiry), claims["exp"]);
+    assert_eq!(json!(checked.expires_at), claims["exp"]);
+    assert_eq!(checked.subject, ID_TOKEN_SUBJECT);
 }
 
 #[test]
-fn an_audience_list_that_contains_the_client_id_is_accepted() {
+fn an_audience_list_that_contains_the_client_id_is_accepted_when_azp_is_the_client_id() {
     let mut claims = claims(ISSUER, None, 3600);
     claims["aud"] = json!(["other-client", CLIENT_ID]);
+    claims["azp"] = json!(CLIENT_ID);
+
+    assert!(check(&jwt(&claims), &expected(None)).is_ok());
+}
+
+#[test]
+fn an_audience_list_of_one_entry_needs_no_azp() {
+    let mut claims = claims(ISSUER, None, 3600);
+    claims["aud"] = json!([CLIENT_ID]);
+
+    assert!(check(&jwt(&claims), &expected(None)).is_ok());
+}
+
+#[test]
+fn an_audience_list_of_several_entries_without_azp_is_rejected() {
+    let mut claims = claims(ISSUER, None, 3600);
+    claims["aud"] = json!(["other-client", CLIENT_ID]);
+
+    let reason = reason(check(&jwt(&claims), &expected(None)));
+
+    assert_eq!(reason, LoginFailure::InvalidIdToken);
+}
+
+#[test]
+fn an_azp_naming_another_client_is_rejected() {
+    let mut claims = claims(ISSUER, None, 3600);
+    claims["aud"] = json!(["other-client", CLIENT_ID]);
+    claims["azp"] = json!("other-client");
+
+    let reason = reason(check(&jwt(&claims), &expected(None)));
+
+    assert_eq!(reason, LoginFailure::InvalidIdToken);
+}
+
+#[test]
+fn a_subject_other_than_the_expected_one_is_rejected() {
+    let claims = claims(ISSUER, None, 3600);
+    let expected = Expected {
+        subject: Some("user-5678"),
+        ..expected(None)
+    };
+
+    let reason = reason(check(&jwt(&claims), &expected));
+
+    assert_eq!(reason, LoginFailure::InvalidIdToken);
+}
+
+#[test]
+fn the_expected_subject_is_accepted() {
+    let claims = claims(ISSUER, None, 3600);
+    let expected = Expected {
+        subject: Some(ID_TOKEN_SUBJECT),
+        ..expected(None)
+    };
+
+    assert!(check(&jwt(&claims), &expected).is_ok());
+}
+
+#[test]
+fn a_token_without_sub_is_rejected() {
+    let mut claims = claims(ISSUER, None, 3600);
+    claims.as_object_mut().unwrap().remove("sub");
+
+    let reason = reason(check(&jwt(&claims), &expected(None)));
+
+    assert_eq!(reason, LoginFailure::InvalidIdToken);
+}
+
+#[test]
+fn an_expiry_less_than_60_s_in_the_past_is_accepted() {
+    let claims = claims(ISSUER, None, -30);
 
     assert!(check(&jwt(&claims), &expected(None)).is_ok());
 }
@@ -59,8 +132,27 @@ fn a_wrong_audience_is_rejected() {
 }
 
 #[test]
-fn an_expiry_in_the_past_is_rejected() {
-    let claims = claims(ISSUER, None, -10);
+fn an_expiry_more_than_60_s_in_the_past_is_rejected() {
+    let claims = claims(ISSUER, None, -120);
+
+    let reason = reason(check(&jwt(&claims), &expected(None)));
+
+    assert_eq!(reason, LoginFailure::InvalidIdToken);
+}
+
+#[test]
+fn an_exp_of_u64_max_is_rejected() {
+    let mut claims = claims(ISSUER, None, 3600);
+    claims["exp"] = json!(u64::MAX);
+
+    let reason = reason(check(&jwt(&claims), &expected(None)));
+
+    assert_eq!(reason, LoginFailure::InvalidIdToken);
+}
+
+#[test]
+fn an_expiry_more_than_one_day_ahead_is_rejected() {
+    let claims = claims(ISSUER, None, 86_400 + 120);
 
     let reason = reason(check(&jwt(&claims), &expected(None)));
 
