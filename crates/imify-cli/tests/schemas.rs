@@ -17,6 +17,13 @@ const CASES: &[(&str, &[&str])] = &[
         "event.json",
         &["imify__output__renderer__tests__event_stream_json.snap"],
     ),
+    (
+        "datasets-ls.json",
+        &[
+            "cli__datasets_ls_json.snap",
+            "cli__datasets_ls_empty_json.snap",
+        ],
+    ),
     ("whoami.json", &["cli__whoami_json.snap"]),
 ];
 

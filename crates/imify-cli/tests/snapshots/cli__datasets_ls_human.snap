@@ -1,0 +1,8 @@
+---
+source: crates/imify-cli/tests/cli.rs
+expression: text(&output.stdout)
+---
+ID                                    TASK                  FORMAT        EMBODIMENT  EPISODES  ACCEPTED
+0b6f3c2e-8d1a-4f7e-9a51-2c4d6e8f0a13  Pick up the red cube  lerobot_v3    so100             50        48
+9a4c1e7b-3f2d-4b8a-a6c5-0d1e2f3a4b5c  Pour water            lerobot_v2_1  so100              9         7
+5e2d7a90-1c3b-4e6f-8a7d-9b0c1d2e3f45  Stack two blocks      lerobot_v3    koch              12        12

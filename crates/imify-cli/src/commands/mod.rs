@@ -1,6 +1,7 @@
 //! Command implementations and what they share: the API client and result output.
 
 pub mod auth;
+pub mod datasets;
 
 use crate::output::renderer::{Render, Renderer};
 use crate::output::{AUTH_REQUIRED_HINT, CliError, Environment, ErrorCode};

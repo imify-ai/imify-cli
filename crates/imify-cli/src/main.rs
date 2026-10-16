@@ -5,7 +5,7 @@ mod output;
 use std::ffi::OsString;
 use std::process::ExitCode;
 
-use cli::Command;
+use cli::{Command, DatasetsCommand};
 use output::renderer::Renderer;
 use output::{CliError, Environment, ErrorCode, Settings};
 
@@ -40,6 +40,9 @@ fn run(
     match command {
         None => Ok(()),
         Some(Command::Whoami) => runtime()?.block_on(commands::auth::whoami(env, renderer)),
+        Some(Command::Datasets {
+            command: DatasetsCommand::Ls(args),
+        }) => runtime()?.block_on(commands::datasets::ls(env, args, renderer)),
     }
 }
 

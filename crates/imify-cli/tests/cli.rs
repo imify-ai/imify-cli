@@ -262,3 +262,175 @@ async fn whoami_error_envelope_contains_no_part_of_the_token() {
         assert!(!stderr.contains(part), "{stderr}");
     }
 }
+
+const PICK_ID: &str = "0b6f3c2e-8d1a-4f7e-9a51-2c4d6e8f0a13";
+const STACK_ID: &str = "5e2d7a90-1c3b-4e6f-8a7d-9b0c1d2e3f45";
+const POUR_ID: &str = "9a4c1e7b-3f2d-4b8a-a6c5-0d1e2f3a4b5c";
+
+fn dataset_body(
+    id: &str,
+    task: &str,
+    format: &str,
+    embodiment: &str,
+    episodes: u64,
+    accepted: u64,
+) -> serde_json::Value {
+    json!({
+        "id": id,
+        "task_description": task,
+        "dataset_format": format,
+        "embodiment_label": embodiment,
+        "embodiment_fingerprint": format!("{embodiment}-f3a9c1"),
+        "cameras": ["wrist", "top"],
+        "action_dim": 6,
+        "created_at": "2026-10-01T09:30:00Z",
+        "episode_count": episodes,
+        "accepted_count": accepted
+    })
+}
+
+fn datasets_body() -> serde_json::Value {
+    json!([
+        dataset_body(STACK_ID, "Stack two blocks", "lerobot_v3", "koch", 12, 12),
+        dataset_body(
+            PICK_ID,
+            "Pick up the red cube",
+            "lerobot_v3",
+            "so100",
+            50,
+            48
+        ),
+        dataset_body(POUR_ID, "Pour water", "lerobot_v2_1", "so100", 9, 7),
+    ])
+}
+
+async fn api_with_datasets(status: u16, body: serde_json::Value) -> MockServer {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/datasets"))
+        .respond_with(ResponseTemplate::new(status).set_body_json(body))
+        .mount(&server)
+        .await;
+    server
+}
+
+fn datasets_ls(server: &MockServer, extra_args: &[&str]) -> Output {
+    let mut args = vec!["datasets", "ls"];
+    args.extend_from_slice(extra_args);
+    imify(
+        &args,
+        &[("IMIFY_TOKEN", TOKEN), ("IMIFY_API_URL", &server.uri())],
+    )
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn datasets_ls_prints_the_datasets_as_a_table() {
+    let server = api_with_datasets(200, datasets_body()).await;
+
+    let output = datasets_ls(&server, &[]);
+
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    insta::assert_snapshot!("datasets_ls_human", text(&output.stdout));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn datasets_ls_json_prints_every_field_as_an_array() {
+    let server = api_with_datasets(200, datasets_body()).await;
+
+    let output = datasets_ls(&server, &["--json"]);
+
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    insta::assert_snapshot!("datasets_ls_json", text(&output.stdout));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn datasets_ls_without_datasets_prints_no_datasets() {
+    let server = api_with_datasets(200, json!([])).await;
+
+    let output = datasets_ls(&server, &[]);
+
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    insta::assert_snapshot!("datasets_ls_empty_human", text(&output.stdout));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn datasets_ls_json_without_datasets_prints_an_empty_array() {
+    let server = api_with_datasets(200, json!([])).await;
+
+    let output = datasets_ls(&server, &["--json"]);
+
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    insta::assert_snapshot!("datasets_ls_empty_json", text(&output.stdout));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn datasets_ls_json_filters_and_sorts_before_printing() {
+    let server = api_with_datasets(200, datasets_body()).await;
+
+    let output = datasets_ls(
+        &server,
+        &["--json", "--format", "lerobot_v3", "--sort", "episodes"],
+    );
+
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    let datasets: Vec<serde_json::Value> = serde_json::from_slice(&output.stdout).unwrap();
+    let ids: Vec<&str> = datasets
+        .iter()
+        .map(|dataset| dataset["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, [STACK_ID, PICK_ID]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn datasets_ls_without_imify_token_fails_with_auth_required_and_sends_no_request() {
+    let server = api_with_datasets(200, datasets_body()).await;
+
+    let output = imify(
+        &["datasets", "ls", "--json"],
+        &[("IMIFY_API_URL", &server.uri())],
+    );
+
+    assert_eq!(output.status.code(), Some(3));
+    assert!(server.received_requests().await.unwrap().is_empty());
+    let envelope: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
+    assert_eq!(envelope["error"]["code"], "auth_required");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn datasets_ls_with_a_rejected_token_fails_with_auth_rejected() {
+    let server = api_with_datasets(401, json!({"detail": "Invalid token"})).await;
+
+    let output = datasets_ls(&server, &["--json"]);
+
+    assert_eq!(output.status.code(), Some(3));
+    let envelope: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
+    assert_eq!(envelope["error"]["code"], "auth_rejected");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn datasets_ls_with_a_body_that_is_not_a_list_of_datasets_fails_with_internal() {
+    let server = api_with_datasets(200, json!({"items": []})).await;
+
+    let output = datasets_ls(&server, &["--json"]);
+
+    assert_eq!(output.status.code(), Some(1));
+    let envelope: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
+    assert_eq!(envelope["error"]["code"], "internal");
+}
+
+#[test]
+fn datasets_ls_with_an_unknown_sort_field_is_a_usage_error() {
+    let output = imify(&["datasets", "ls", "--json", "--sort", "size"], &[]);
+
+    assert_eq!(output.status.code(), Some(2));
+    let envelope: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
+    assert_eq!(envelope["error"]["code"], "invalid_argument");
+}
+
+#[test]
+fn datasets_ls_help_shows_examples() {
+    let output = imify(&["datasets", "ls", "--help"], &[]);
+
+    assert!(output.status.success());
+    assert!(text(&output.stdout).contains("Examples:\n  imify datasets ls\n"));
+}
