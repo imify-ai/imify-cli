@@ -182,6 +182,25 @@ async fn put_after_a_failed_attempt_returns_the_hash_of_the_stored_attempt() {
 }
 
 #[tokio::test]
+async fn put_does_not_follow_a_redirect_to_plain_http_on_another_host() {
+    let server = MockServer::start().await;
+    Mock::given(method("PUT"))
+        .respond_with(
+            ResponseTemplate::new(307).insert_header("location", "http://upload.example.com/a"),
+        )
+        .mount(&server)
+        .await;
+    let root = dataset(b"0123456789");
+
+    let error = put_data_file(&server, root.path()).await.unwrap_err();
+
+    assert!(
+        matches!(error, Error::UnexpectedResponse { status: 307, .. }),
+        "{error:?}"
+    );
+}
+
+#[tokio::test]
 async fn put_of_a_file_replaced_by_a_symbolic_link_after_planning_sends_nothing() {
     let server = MockServer::start().await;
     Mock::given(method("PUT"))

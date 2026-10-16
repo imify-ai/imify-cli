@@ -22,7 +22,7 @@ use tokio_util::io::ReaderStream;
 
 use super::plan::PlannedFile;
 use super::session::{SessionId, session_url};
-use crate::client::{MAX_REDIRECTS, decode, may_follow_redirect, network_error};
+use crate::client::{MAX_REDIRECTS, decode, may_follow_upload_redirect, network_error};
 use crate::{Client, Error};
 
 /// Bytes read from disk and handed to the HTTP stack at once, per file in flight.
@@ -187,7 +187,7 @@ fn changed_size(upload: &FileUpload<'_>) -> Error {
 fn redirect_target(current: &Url, response: &Response) -> Option<Url> {
     let location = response.headers().get(LOCATION)?.to_str().ok()?;
     let next = current.join(location).ok()?;
-    may_follow_redirect(response.status(), current, &next).then_some(next)
+    may_follow_upload_redirect(response.status(), current, &next).then_some(next)
 }
 
 async fn check_stored(file: &PlannedFile, response: Response) -> Result<(), Error> {
