@@ -98,6 +98,54 @@ async fn oidc_settings_fails_with_config_for_an_http_base_url_on_a_non_loopback_
 }
 
 #[tokio::test]
+async fn oidc_settings_follows_a_redirect_within_the_api_origin() {
+    let server = MockServer::start().await;
+    mount_config(
+        &server,
+        "/config.json",
+        ResponseTemplate::new(307).insert_header("location", "/v2/config.json"),
+    )
+    .await;
+    mount_config(
+        &server,
+        "/v2/config.json",
+        ResponseTemplate::new(200).set_body_json(settings_body()),
+    )
+    .await;
+
+    let settings = client(&server.uri()).oidc_settings().await;
+
+    assert!(settings.is_ok(), "{settings:?}");
+}
+
+#[tokio::test]
+async fn oidc_settings_does_not_follow_a_redirect_to_another_origin() {
+    let server = MockServer::start().await;
+    let target = MockServer::start().await;
+    mount_config(
+        &target,
+        "/config.json",
+        ResponseTemplate::new(200).set_body_json(settings_body()),
+    )
+    .await;
+    mount_config(
+        &server,
+        "/config.json",
+        ResponseTemplate::new(307)
+            .insert_header("location", format!("{}/config.json", target.uri())),
+    )
+    .await;
+
+    let error = client(&server.uri()).oidc_settings().await.unwrap_err();
+
+    assert!(
+        matches!(error, Error::UnexpectedResponse { status: 307, .. }),
+        "{error:?}"
+    );
+    assert!(target.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
 async fn oidc_settings_fails_with_not_found_when_the_host_serves_no_config_json() {
     let server = MockServer::start().await;
     mount_config(&server, "/config.json", ResponseTemplate::new(404)).await;

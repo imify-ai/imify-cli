@@ -1,5 +1,6 @@
 use serde_json::json;
-use wiremock::ResponseTemplate;
+use wiremock::matchers::any;
+use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use super::*;
 use crate::auth::testing::{CLIENT_ID, MockProvider, REFRESH_TOKEN, client};
@@ -9,6 +10,129 @@ fn config_message(result: Result<Provider, Error>) -> String {
         Err(Error::Config { message }) => message,
         other => panic!("expected a config error, got {other:?}"),
     }
+}
+
+/// A server that answers every request with 200 and records it.
+async fn redirect_target() -> MockServer {
+    let target = MockServer::start().await;
+    Mock::given(any())
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
+        .mount(&target)
+        .await;
+    target
+}
+
+async fn received_count(server: &MockServer) -> usize {
+    server.received_requests().await.unwrap().len()
+}
+
+fn token_endpoint(provider: &MockProvider) -> Url {
+    Url::parse(&format!("{}/oauth2/token", provider.issuer())).unwrap()
+}
+
+#[tokio::test]
+async fn a_307_from_the_token_endpoint_is_not_followed() {
+    let provider = MockProvider::start().await;
+    let target = redirect_target().await;
+    provider
+        .mount_token(
+            ResponseTemplate::new(307)
+                .insert_header("location", format!("{}/oauth2/token", target.uri())),
+        )
+        .await;
+
+    let error = refresh(
+        &client(&provider.issuer()),
+        &token_endpoint(&provider),
+        CLIENT_ID,
+        REFRESH_TOKEN,
+    )
+    .await
+    .unwrap_err();
+
+    assert!(
+        matches!(
+            error,
+            TokenError::Failed(Error::UnexpectedResponse { status: 307, .. })
+        ),
+        "{error:?}"
+    );
+    assert_eq!(received_count(&target).await, 0);
+}
+
+#[tokio::test]
+async fn a_308_from_the_token_endpoint_to_the_same_origin_is_not_followed() {
+    let provider = MockProvider::start().await;
+    provider
+        .mount_token(ResponseTemplate::new(308).insert_header("location", "/oauth2/other-token"))
+        .await;
+
+    let error = refresh(
+        &client(&provider.issuer()),
+        &token_endpoint(&provider),
+        CLIENT_ID,
+        REFRESH_TOKEN,
+    )
+    .await
+    .unwrap_err();
+
+    assert!(
+        matches!(
+            error,
+            TokenError::Failed(Error::UnexpectedResponse { status: 308, .. })
+        ),
+        "{error:?}"
+    );
+    assert_eq!(received_count(&provider.server).await, 1);
+}
+
+#[tokio::test]
+async fn a_307_from_the_revocation_endpoint_is_not_followed() {
+    let provider = MockProvider::start().await;
+    let target = redirect_target().await;
+    Mock::given(any())
+        .respond_with(
+            ResponseTemplate::new(307)
+                .insert_header("location", format!("{}/oauth2/revoke", target.uri())),
+        )
+        .mount(&provider.server)
+        .await;
+    let endpoint = Url::parse(&format!("{}/oauth2/revocation", provider.issuer())).unwrap();
+
+    let result = revoke(
+        &client(&provider.issuer()),
+        &endpoint,
+        CLIENT_ID,
+        REFRESH_TOKEN,
+    )
+    .await;
+
+    assert!(
+        matches!(result, Err(Error::UnexpectedResponse { status: 307, .. })),
+        "{result:?}"
+    );
+    assert_eq!(received_count(&target).await, 0);
+}
+
+#[tokio::test]
+async fn discovery_does_not_follow_a_redirect_to_another_origin() {
+    let provider = MockProvider::start_without_discovery().await;
+    let target = redirect_target().await;
+    Mock::given(any())
+        .respond_with(ResponseTemplate::new(307).insert_header(
+            "location",
+            format!("{}/.well-known/openid-configuration", target.uri()),
+        ))
+        .mount(&provider.server)
+        .await;
+
+    let result = discover(&client(&provider.issuer()), &provider.settings()).await;
+
+    assert!(
+        matches!(result, Err(Error::UnexpectedResponse { status: 307, .. })),
+        "{result:?}"
+    );
+    assert_eq!(received_count(&target).await, 0);
 }
 
 #[tokio::test]

@@ -6,12 +6,12 @@ use std::fmt;
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use reqwest::header::HeaderMap;
-use reqwest::{Method, StatusCode, Url};
+use reqwest::{StatusCode, Url};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
 use super::Revocation;
-use crate::client::{network_error, require_secure};
+use crate::client::{network_error, redirect_not_followed, require_secure};
 use crate::error::from_response;
 use crate::retry::RetryMode;
 use crate::{Client, Error, LoginFailure, OidcSettings};
@@ -55,9 +55,7 @@ pub(crate) async fn discover(client: &Client, settings: &OidcSettings) -> Result
         ),
         "issuer",
     )?;
-    let document: DiscoveryDocument = client
-        .execute_unauthenticated(RetryMode::Idempotent, Method::GET, document_url)
-        .await?;
+    let document: DiscoveryDocument = client.get_same_origin(document_url).await?;
     if document.issuer.trim_end_matches('/') != settings.issuer.trim_end_matches('/') {
         return Err(Error::Config {
             message: format!(
@@ -286,6 +284,9 @@ struct FormResponse {
 
 impl FormResponse {
     fn into_error(self, secrets: &[&str]) -> TokenError {
+        if self.status.is_redirection() {
+            return TokenError::Failed(redirect_not_followed(self.status, &self.headers));
+        }
         let rejection = matches!(
             self.status,
             StatusCode::BAD_REQUEST | StatusCode::UNAUTHORIZED
@@ -318,8 +319,8 @@ fn redact(text: &str, secrets: &[&str]) -> String {
         })
 }
 
-/// Posts `form` without an `Authorization` header. Retries connection failures and rate
-/// limits.
+/// Posts `form` without an `Authorization` header and without following redirects.
+/// Retries connection failures and rate limits.
 async fn post_form(
     client: &Client,
     url: &Url,
@@ -331,7 +332,7 @@ async fn post_form(
             |_, _, _| {},
             || async {
                 let response = client
-                    .http()
+                    .form_http()?
                     .post(url.clone())
                     .form(form)
                     .send()

@@ -1,7 +1,7 @@
 //! The HTTP client every API call goes through.
 
 use std::future::Future;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderValue, LOCATION};
@@ -25,8 +25,10 @@ pub(crate) const MAX_REDIRECTS: usize = 5;
 /// an `Authorization: Bearer` header. Failed requests are retried according to the
 /// client's [`RetryPolicy`]. Redirects with status 307 and 308 are followed, up to 5 in a
 /// row and never from `https` to `http`; the `Authorization` header is not sent to
-/// another host or port. Other redirects fail with [`Error::UnexpectedResponse`]. Cloning
-/// is cheap; clones share their connection pools.
+/// another host or port. Other redirects fail with [`Error::UnexpectedResponse`]. Requests
+/// to the identity provider differ: `config.json` and the discovery document follow
+/// redirects only within their origin, and token and revocation requests follow none.
+/// Cloning is cheap; clones share their connection pools.
 ///
 /// # Examples
 ///
@@ -43,6 +45,7 @@ pub(crate) const MAX_REDIRECTS: usize = 5;
 pub struct Client {
     http: reqwest::Client,
     upload_http: reqwest::Client,
+    provider_http: Arc<ProviderHttp>,
     base_url: Url,
     token_source: Option<Arc<dyn TokenSource>>,
     retry_policy: RetryPolicy,
@@ -107,16 +110,20 @@ impl Client {
         .await
     }
 
-    /// Sends a request without an `Authorization` header to `url` and decodes the JSON
-    /// response as `T`, retrying failures that `mode` allows.
-    pub(crate) async fn execute_unauthenticated<T: DeserializeOwned>(
-        &self,
-        mode: RetryMode,
-        method: Method,
-        url: Url,
-    ) -> Result<T, Error> {
-        self.execute_unauthenticated_with(mode, method, url, &decode_json)
-            .await
+    /// Sends a `GET` without an `Authorization` header to `url` and decodes the JSON
+    /// response as `T`, retrying failures the retry policy allows. Follows redirects only
+    /// within the origin of `url`.
+    pub(crate) async fn get_same_origin<T: DeserializeOwned>(&self, url: Url) -> Result<T, Error> {
+        let http = self.provider_http.same_origin()?;
+        self.retry(
+            RetryMode::Idempotent,
+            |_, _, _| {},
+            || async {
+                let response = http.get(url.clone()).send().await.map_err(network_error)?;
+                decode_with(response, &decode_json).await
+            },
+        )
+        .await
     }
 
     /// Sends a request without an `Authorization` header to `url` and turns the response
@@ -167,10 +174,10 @@ impl Client {
         }
     }
 
-    /// The HTTP client for requests the client methods do not cover, such as form posts.
-    /// It sends no `Authorization` header by itself.
-    pub(crate) fn http(&self) -> &reqwest::Client {
-        &self.http
+    /// The HTTP client for form posts to the identity provider. It sends no
+    /// `Authorization` header and follows no redirects.
+    pub(crate) fn form_http(&self) -> Result<&reqwest::Client, Error> {
+        self.provider_http.no_redirects()
     }
 
     /// The HTTP client for streamed file uploads. It has no read timeout; the caller
@@ -287,7 +294,8 @@ pub(crate) fn decode_json<T: DeserializeOwned>(
     })
 }
 
-fn redirect_not_followed(status: StatusCode, headers: &HeaderMap) -> Error {
+/// The error for a redirect that was not followed, naming its `Location`.
+pub(crate) fn redirect_not_followed(status: StatusCode, headers: &HeaderMap) -> Error {
     let location = headers
         .get(LOCATION)
         .and_then(|value| value.to_str().ok())
@@ -320,6 +328,88 @@ fn redirect_policy() -> redirect::Policy {
             attempt.stop()
         }
     })
+}
+
+/// Like [`redirect_policy`], and only to the origin of the first request.
+fn same_origin_redirect_policy() -> redirect::Policy {
+    redirect::Policy::custom(|attempt| {
+        let previous = attempt.previous();
+        let same_origin = previous
+            .first()
+            .is_some_and(|first| first.origin() == attempt.url().origin());
+        let allowed = same_origin
+            && previous.len() <= MAX_REDIRECTS
+            && previous
+                .last()
+                .is_some_and(|last| may_follow_redirect(attempt.status(), last, attempt.url()));
+        if allowed {
+            attempt.follow()
+        } else {
+            attempt.stop()
+        }
+    })
+}
+
+/// The settings every HTTP client of a [`Client`] shares.
+#[derive(Debug, Clone)]
+struct HttpSettings {
+    user_agent: HeaderValue,
+    connect_timeout: Duration,
+    read_timeout: Duration,
+}
+
+impl HttpSettings {
+    fn builder(&self, redirects: redirect::Policy) -> reqwest::ClientBuilder {
+        reqwest::Client::builder()
+            .user_agent(self.user_agent.clone())
+            .connect_timeout(self.connect_timeout)
+            .redirect(redirects)
+    }
+}
+
+/// The HTTP clients for identity provider requests. Each is built on first use, since
+/// building one loads the TLS root certificates.
+#[derive(Debug)]
+struct ProviderHttp {
+    settings: HttpSettings,
+    same_origin: OnceLock<reqwest::Client>,
+    no_redirects: OnceLock<reqwest::Client>,
+}
+
+impl ProviderHttp {
+    fn new(settings: HttpSettings) -> Self {
+        Self {
+            settings,
+            same_origin: OnceLock::new(),
+            no_redirects: OnceLock::new(),
+        }
+    }
+
+    /// Follows redirects only within the origin of the request.
+    fn same_origin(&self) -> Result<&reqwest::Client, Error> {
+        self.get_or_build(&self.same_origin, same_origin_redirect_policy)
+    }
+
+    /// Follows no redirects.
+    fn no_redirects(&self) -> Result<&reqwest::Client, Error> {
+        self.get_or_build(&self.no_redirects, redirect::Policy::none)
+    }
+
+    fn get_or_build<'a>(
+        &self,
+        cell: &'a OnceLock<reqwest::Client>,
+        redirects: fn() -> redirect::Policy,
+    ) -> Result<&'a reqwest::Client, Error> {
+        if let Some(http) = cell.get() {
+            return Ok(http);
+        }
+        let http = build_http(
+            self.settings
+                .builder(redirects())
+                .read_timeout(self.settings.read_timeout),
+        )?;
+        Ok(cell.get_or_init(|| http))
+    }
 }
 
 pub(crate) fn network_error(error: reqwest::Error) -> Error {
@@ -454,17 +544,21 @@ impl ClientBuilder {
         let user_agent = HeaderValue::try_from(self.user_agent).map_err(|_| Error::Config {
             message: "user agent contains characters not allowed in an HTTP header".to_owned(),
         })?;
-        let http_builder = || {
-            reqwest::Client::builder()
-                .user_agent(user_agent.clone())
-                .connect_timeout(self.connect_timeout)
-                .redirect(redirect_policy())
+        let settings = HttpSettings {
+            user_agent,
+            connect_timeout: self.connect_timeout,
+            read_timeout: self.read_timeout,
         };
-        let http = build_http(http_builder().read_timeout(self.read_timeout))?;
-        let upload_http = build_http(http_builder())?;
+        let http = build_http(
+            settings
+                .builder(redirect_policy())
+                .read_timeout(self.read_timeout),
+        )?;
+        let upload_http = build_http(settings.builder(redirect_policy()))?;
         Ok(Client {
             http,
             upload_http,
+            provider_http: Arc::new(ProviderHttp::new(settings)),
             base_url,
             token_source: self.token_source,
             retry_policy: self.retry_policy,

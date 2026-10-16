@@ -1,9 +1,6 @@
 //! The identity provider settings a host publishes.
 
-use reqwest::Method;
-
 use crate::client::require_secure;
-use crate::retry::RetryMode;
 use crate::{Client, Error};
 
 /// Issuer and client id of the host's identity provider client.
@@ -51,8 +48,8 @@ struct ConfigJson {
 
 impl Client {
     /// Reads the identity provider settings from `config.json` under the base URL: the
-    /// keys `authority` (the issuer) and `clientId`. Sends no `Authorization` header and
-    /// ignores other keys.
+    /// keys `authority` (the issuer) and `clientId`. Sends no `Authorization` header,
+    /// follows redirects only within the API origin and ignores other keys.
     ///
     /// # Errors
     ///
@@ -73,9 +70,7 @@ impl Client {
     /// ```
     pub async fn oidc_settings(&self) -> Result<OidcSettings, Error> {
         require_secure(self.base_url().clone(), "API")?;
-        let config: ConfigJson = self
-            .execute_unauthenticated(RetryMode::Idempotent, Method::GET, self.url("config.json")?)
-            .await?;
+        let config: ConfigJson = self.get_same_origin(self.url("config.json")?).await?;
         Ok(OidcSettings::new(config.authority, config.client_id))
     }
 }
