@@ -53,6 +53,15 @@ pub enum Command {
         after_help = "Example:\n  IMIFY_TOKEN=<token> IMIFY_API_URL=https://api.example.com imify whoami"
     )]
     Whoami,
+    #[command(
+        about = "Check the configuration, the API and the access token",
+        long_about = "Check the configuration, the API and the access token.
+
+Writes a report to stdout. Exits with the error code of the first failing check, or 0 when no check fails. Contacts only the host in IMIFY_API_URL.",
+        after_help = "Example:
+  IMIFY_TOKEN=<token> IMIFY_API_URL=https://api.example.com imify doctor"
+    )]
+    Doctor,
     /// Work with datasets
     Datasets {
         #[command(subcommand)]

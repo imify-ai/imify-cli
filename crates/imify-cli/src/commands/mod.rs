@@ -2,6 +2,7 @@
 
 pub mod auth;
 pub mod datasets;
+pub mod doctor;
 
 use crate::output::renderer::{Render, Renderer};
 use crate::output::{AUTH_REQUIRED_HINT, CliError, Environment, ErrorCode};
@@ -17,14 +18,7 @@ const API_URL_VARIABLE: &str = "IMIFY_API_URL";
 /// URL, or when the token source cannot be read. Returns `auth_required` when no token
 /// source is available.
 pub fn client(env: &Environment) -> Result<imify::Client, CliError> {
-    let api_url = env.api_url.as_deref().unwrap_or_default().trim();
-    if api_url.is_empty() {
-        return Err(CliError::new(
-            ErrorCode::InvalidArgument,
-            format!("{API_URL_VARIABLE} is not set."),
-        )
-        .with_hint(api_url_hint()));
-    }
+    let api_url = api_url(env)?;
     let Some(token_source) = auth::token_source()? else {
         return Err(CliError::new(
             ErrorCode::AuthRequired,
@@ -38,13 +32,34 @@ pub fn client(env: &Environment) -> Result<imify::Client, CliError> {
     imify::Client::builder(api_url)
         .token_source(token_source)
         .build()
-        .map_err(|error| {
-            CliError::new(
-                ErrorCode::InvalidArgument,
-                format!("{API_URL_VARIABLE} is invalid: {error}"),
-            )
-            .with_hint(api_url_hint())
-        })
+        .map_err(|error| invalid_api_url(&error))
+}
+
+/// The API host from `IMIFY_API_URL`, without surrounding whitespace.
+///
+/// # Errors
+///
+/// Returns `invalid_argument` when `IMIFY_API_URL` is unset or empty.
+pub fn api_url(env: &Environment) -> Result<&str, CliError> {
+    let api_url = env.api_url.as_deref().unwrap_or_default().trim();
+    if api_url.is_empty() {
+        return Err(CliError::new(
+            ErrorCode::InvalidArgument,
+            format!("{API_URL_VARIABLE} is not set."),
+        )
+        .with_hint(api_url_hint()));
+    }
+    Ok(api_url)
+}
+
+/// The `invalid_argument` error for an `IMIFY_API_URL` the SDK rejects when it builds a
+/// client.
+pub fn invalid_api_url(error: &imify::Error) -> CliError {
+    CliError::new(
+        ErrorCode::InvalidArgument,
+        format!("{API_URL_VARIABLE} is invalid: {error}"),
+    )
+    .with_hint(api_url_hint())
 }
 
 fn api_url_hint() -> String {

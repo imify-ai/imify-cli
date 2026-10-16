@@ -36,6 +36,7 @@ crates/imify/src/
   error.rs          Error, the single error type of the SDK
   retry.rs          RetryPolicy, retry decisions and backoff
   discovery.rs      OidcSettings: the host's identity provider issuer and client id
+  health.rs         Health, Readiness: liveness and readiness of the API
   auth/             TokenSource trait and its implementations; browser login (PKCE,
                     localhost redirect listener, ID token checks), CredentialStore trait,
                     StoredLogin with refresh, token revocation

@@ -25,6 +25,7 @@
 use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::Error;
 
@@ -107,6 +108,25 @@ impl Token {
     /// ```
     pub fn new(value: impl Into<String>) -> Self {
         Self(value.into())
+    }
+
+    /// The `exp` claim when the token is a JWT, read without verifying the signature.
+    /// `None` for an opaque token or a JWT without a numeric `exp`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let token = imify::auth::Token::new("opaque-token");
+    /// assert_eq!(token.expires_at(), None);
+    /// ```
+    #[must_use]
+    pub fn expires_at(&self) -> Option<SystemTime> {
+        #[derive(serde::Deserialize)]
+        struct Expiry {
+            exp: u64,
+        }
+        let expiry: Expiry = id_token::payload(&self.0).ok()?;
+        UNIX_EPOCH.checked_add(Duration::from_secs(expiry.exp))
     }
 
     pub(crate) fn secret(&self) -> &str {

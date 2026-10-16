@@ -970,3 +970,343 @@ fn datasets_upload_help_shows_examples() {
         "Examples:\n  imify datasets upload ./pick-cube --task \"Pick up the red cube\"\n"
     ));
 }
+
+/// An unsigned JWT for `user-1234` that expires at 2100-01-01T00:00:00Z.
+const VALID_JWT: &str =
+    "eyJhbGciOiJub25lIn0.eyJzdWIiOiJ1c2VyLTEyMzQiLCJleHAiOjQxMDI0NDQ4MDB9.c2lnbmF0dXJl";
+/// An unsigned JWT for `user-1234` that expired at 2001-09-09T01:46:40Z.
+const EXPIRED_JWT: &str =
+    "eyJhbGciOiJub25lIn0.eyJzdWIiOiJ1c2VyLTEyMzQiLCJleHAiOjEwMDAwMDAwMDB9.c2lnbmF0dXJl";
+
+fn health_ok() -> ResponseTemplate {
+    ResponseTemplate::new(200).set_body_json(json!({"status": "ok"}))
+}
+
+fn ready(status: u16, storage: &str) -> ResponseTemplate {
+    let overall = if storage == "ok" { "ok" } else { "degraded" };
+    ResponseTemplate::new(status)
+        .set_body_json(json!({"status": overall, "db": "ok", "storage": storage}))
+}
+
+fn me_ok() -> ResponseTemplate {
+    ResponseTemplate::new(200).set_body_json(user_body())
+}
+
+/// An API that answers the three requests doctor sends.
+async fn doctor_api(
+    health: ResponseTemplate,
+    readiness: ResponseTemplate,
+    me: ResponseTemplate,
+) -> MockServer {
+    let server = MockServer::start().await;
+    for (route, response) in [
+        ("/api/health", health),
+        ("/api/health/ready", readiness),
+        ("/api/v1/me", me),
+    ] {
+        Mock::given(method("GET"))
+            .and(path(route))
+            .respond_with(response)
+            .mount(&server)
+            .await;
+    }
+    server
+}
+
+async fn healthy_api() -> MockServer {
+    doctor_api(health_ok(), ready(200, "ok"), me_ok()).await
+}
+
+fn doctor(api_url: Option<&str>, token: Option<&str>, extra_args: &[&str]) -> Output {
+    let mut args = vec!["doctor"];
+    args.extend_from_slice(extra_args);
+    let mut env = Vec::new();
+    if let Some(api_url) = api_url {
+        env.push(("IMIFY_API_URL", api_url));
+    }
+    if let Some(token) = token {
+        env.push(("IMIFY_TOKEN", token));
+    }
+    imify(&args, &env)
+}
+
+/// Replaces the parts of a doctor report that vary between runs and machines: the mock
+/// server's port, the latency and the platform.
+fn normalize_doctor_text(text: &str, server_uri: &str) -> String {
+    let platform = format!("({} {})", std::env::consts::OS, std::env::consts::ARCH);
+    let mut normalized = text
+        .replace(server_uri, "http://127.0.0.1:<port>")
+        .replace(&platform, "(<os> <arch>)");
+    let label = "Reachable in ";
+    if let Some(start) = normalized.find(label).map(|index| index + label.len()) {
+        let digits = normalized[start..]
+            .chars()
+            .take_while(char::is_ascii_digit)
+            .count();
+        normalized.replace_range(start..start + digits, "<n>");
+    }
+    normalized
+}
+
+/// The JSON report with `latency_ms` and `clock_skew_ms` set to 0 when present, and the
+/// varying text replaced as in [`normalize_doctor_text`]. `null` when stdout is not JSON.
+fn normalize_doctor_json(stdout: &[u8], server_uri: &str) -> String {
+    let mut report: serde_json::Value = serde_json::from_slice(stdout).unwrap_or_default();
+    for field in ["latency_ms", "clock_skew_ms"] {
+        if !report[field].is_null() {
+            report[field] = json!(0);
+        }
+    }
+    report["platform"] = json!({"os": "<os>", "arch": "<arch>"});
+    normalize_doctor_text(&report.to_string(), server_uri)
+}
+
+/// `(name, status)` of every check in a JSON report; empty when stdout is not a report.
+fn doctor_statuses(stdout: &[u8]) -> Vec<(String, String)> {
+    let report: serde_json::Value = serde_json::from_slice(stdout).unwrap_or_default();
+    let field =
+        |check: &serde_json::Value, name: &str| check[name].as_str().unwrap_or_default().to_owned();
+    report["checks"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|check| (field(check, "name"), field(check, "status")))
+        .collect()
+}
+
+fn statuses(expected: &[(&str, &str)]) -> Vec<(String, String)> {
+    expected
+        .iter()
+        .map(|(name, status)| ((*name).to_owned(), (*status).to_owned()))
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn doctor_with_every_check_passing_prints_the_report_and_exits_0() {
+    let server = healthy_api().await;
+
+    let output = doctor(Some(&server.uri()), Some(VALID_JWT), &[]);
+
+    assert_eq!(output.status.code(), Some(0), "{}", text(&output.stderr));
+    assert_eq!(text(&output.stderr), "");
+    insta::assert_snapshot!(
+        "doctor_ok_human",
+        normalize_doctor_text(&text(&output.stdout), &server.uri())
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn doctor_json_with_every_check_passing_prints_one_document() {
+    let server = healthy_api().await;
+
+    let output = doctor(Some(&server.uri()), Some(VALID_JWT), &["--json"]);
+
+    assert_eq!(output.status.code(), Some(0), "{}", text(&output.stderr));
+    insta::assert_snapshot!(
+        "doctor_ok_json",
+        normalize_doctor_json(&output.stdout, &server.uri())
+    );
+}
+
+#[test]
+fn doctor_without_imify_api_url_skips_the_api_checks_and_fails_with_invalid_argument() {
+    let output = doctor(None, Some(VALID_JWT), &["--json"]);
+
+    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(error_code(&output).as_deref(), Some("invalid_argument"));
+    assert_eq!(
+        doctor_statuses(&output.stdout),
+        statuses(&[
+            ("api_url", "fail"),
+            ("health", "skip"),
+            ("readiness", "skip"),
+            ("clock", "skip"),
+            ("token", "ok"),
+            ("token_expiry", "ok"),
+            ("account", "skip"),
+        ])
+    );
+    insta::assert_snapshot!(
+        "doctor_no_api_url_json",
+        normalize_doctor_json(&output.stdout, "http://unused")
+    );
+}
+
+#[test]
+fn doctor_against_a_host_that_is_not_listening_fails_with_network() {
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+
+    let output = doctor(
+        Some(&format!("http://127.0.0.1:{port}")),
+        Some(TOKEN),
+        &["--json"],
+    );
+
+    assert_eq!(output.status.code(), Some(7));
+    assert_eq!(error_code(&output).as_deref(), Some("network"));
+    assert_eq!(
+        doctor_statuses(&output.stdout),
+        statuses(&[
+            ("api_url", "ok"),
+            ("health", "fail"),
+            ("readiness", "skip"),
+            ("clock", "skip"),
+            ("token", "ok"),
+            ("token_expiry", "skip"),
+            ("account", "skip"),
+        ])
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn doctor_with_health_answering_503_fails_with_server() {
+    let server = doctor_api(ResponseTemplate::new(503), ready(200, "ok"), me_ok()).await;
+
+    let output = doctor(Some(&server.uri()), Some(TOKEN), &["--json"]);
+
+    assert_eq!(output.status.code(), Some(7));
+    assert_eq!(error_code(&output).as_deref(), Some("server"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn doctor_with_unready_storage_fails_the_readiness_check_naming_storage() {
+    let server = doctor_api(health_ok(), ready(503, "unreachable"), me_ok()).await;
+
+    let output = doctor(Some(&server.uri()), Some(TOKEN), &["--json"]);
+
+    assert_eq!(output.status.code(), Some(7));
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let readiness = &report["checks"][2];
+    assert_eq!(
+        (&readiness["name"], &readiness["status"], &readiness["code"]),
+        (&json!("readiness"), &json!("fail"), &json!("server"))
+    );
+    assert!(
+        readiness["message"]
+            .as_str()
+            .unwrap()
+            .contains("storage unreachable")
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn doctor_with_a_server_clock_far_behind_warns_and_exits_0() {
+    let server = doctor_api(
+        health_ok().insert_header("date", "Sun, 06 Nov 1994 08:49:37 GMT"),
+        ready(200, "ok"),
+        me_ok(),
+    )
+    .await;
+
+    let output = doctor(Some(&server.uri()), Some(TOKEN), &["--json"]);
+
+    assert_eq!(output.status.code(), Some(0), "{}", text(&output.stderr));
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["checks"][3]["status"], "warn");
+    assert!(report["clock_skew_ms"].as_i64().unwrap() < -60_000);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn doctor_without_imify_token_fails_with_auth_required_and_does_not_call_me() {
+    let server = healthy_api().await;
+
+    let output = doctor(Some(&server.uri()), None, &["--json"]);
+
+    assert_eq!(output.status.code(), Some(3));
+    assert_eq!(error_code(&output).as_deref(), Some("auth_required"));
+    let statuses = doctor_statuses(&output.stdout);
+    assert_eq!(statuses[4], ("token".to_owned(), "fail".to_owned()));
+    assert_eq!(statuses[6], ("account".to_owned(), "skip".to_owned()));
+    let requests = server.received_requests().await.unwrap();
+    assert!(
+        requests
+            .iter()
+            .all(|request| request.url.path() != "/api/v1/me")
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn doctor_with_an_expired_jwt_fails_with_auth_rejected_and_still_checks_the_account() {
+    let server = healthy_api().await;
+
+    let output = doctor(Some(&server.uri()), Some(EXPIRED_JWT), &["--json"]);
+
+    assert_eq!(output.status.code(), Some(3));
+    assert_eq!(error_code(&output).as_deref(), Some("auth_rejected"));
+    let statuses = doctor_statuses(&output.stdout);
+    assert_eq!(statuses[5], ("token_expiry".to_owned(), "fail".to_owned()));
+    assert_eq!(statuses[6], ("account".to_owned(), "ok".to_owned()));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn doctor_with_a_token_the_api_rejects_fails_with_auth_rejected() {
+    let server = doctor_api(
+        health_ok(),
+        ready(200, "ok"),
+        ResponseTemplate::new(401).set_body_json(json!({"detail": "Invalid token"})),
+    )
+    .await;
+
+    let output = doctor(Some(&server.uri()), Some(TOKEN), &["--json"]);
+
+    assert_eq!(output.status.code(), Some(3));
+    assert_eq!(error_code(&output).as_deref(), Some("auth_rejected"));
+    assert_eq!(
+        doctor_statuses(&output.stdout)[6],
+        ("account".to_owned(), "fail".to_owned())
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn doctor_with_several_failures_names_them_all_and_carries_the_first_code() {
+    let server = doctor_api(ResponseTemplate::new(503), ready(200, "ok"), me_ok()).await;
+
+    let output = doctor(Some(&server.uri()), None, &["--json"]);
+
+    assert_eq!(output.status.code(), Some(7));
+    insta::assert_snapshot!("doctor_failed_envelope_json", text(&output.stderr));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn doctor_with_a_failing_check_writes_the_report_to_stdout_and_the_error_to_stderr() {
+    let server = healthy_api().await;
+
+    let output = doctor(Some(&server.uri()), None, &[]);
+
+    assert_eq!(output.status.code(), Some(3));
+    insta::assert_snapshot!(
+        "doctor_token_missing_human",
+        normalize_doctor_text(&text(&output.stdout), &server.uri())
+    );
+    insta::assert_snapshot!("doctor_token_missing_human_stderr", text(&output.stderr));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn doctor_trace_output_and_json_report_contain_no_part_of_the_token() {
+    let server = healthy_api().await;
+
+    let traced = doctor(Some(&server.uri()), Some(VALID_JWT), &["-vv"]);
+    let json = doctor(Some(&server.uri()), Some(VALID_JWT), &["--json"]);
+
+    assert_eq!(traced.status.code(), Some(0), "{}", text(&traced.stderr));
+    for output in [&traced, &json] {
+        let all = format!("{}{}", text(&output.stdout), text(&output.stderr));
+        for part in VALID_JWT.split('.') {
+            assert!(!all.contains(part), "{all}");
+        }
+    }
+}
+
+#[test]
+fn doctor_help_shows_the_example() {
+    let output = imify(&["doctor", "--help"], &[]);
+
+    assert!(output.status.success());
+    assert!(text(&output.stdout).contains(
+        "Example:\n  IMIFY_TOKEN=<token> IMIFY_API_URL=https://api.example.com imify doctor\n"
+    ));
+}

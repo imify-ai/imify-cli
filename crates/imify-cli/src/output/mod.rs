@@ -11,13 +11,14 @@ mod error;
 pub mod interaction;
 pub mod renderer;
 pub mod table;
+pub mod time;
 
 use std::ffi::OsString;
 use std::io::{self, IsTerminal};
 
 use tracing::level_filters::LevelFilter;
 
-pub use self::error::{AUTH_REQUIRED_HINT, CliError, ErrorCode};
+pub use self::error::{AUTH_REJECTED_HINT, AUTH_REQUIRED_HINT, CliError, ErrorCode};
 use self::renderer::{HumanRenderer, JsonRenderer, Renderer};
 use crate::cli::GlobalArgs;
 

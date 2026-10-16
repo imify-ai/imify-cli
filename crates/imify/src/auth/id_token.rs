@@ -1,4 +1,5 @@
-//! Claim checks on ID tokens received directly from the token endpoint.
+//! JWT payload decoding and the claim checks on ID tokens received directly from the
+//! token endpoint.
 //!
 //! The signature is not verified: the token arrives over a direct TLS connection to the
 //! token endpoint (OIDC Core 1.0, section 3.1.3.7).
@@ -8,6 +9,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde::Deserialize;
+use serde::de::DeserializeOwned;
 
 use crate::{Error, LoginFailure};
 
@@ -73,17 +75,36 @@ pub(crate) fn check(token: &str, expected: &Expected<'_>) -> Result<u64, Error> 
 }
 
 fn decode(token: &str) -> Result<Claims, Error> {
+    payload(token).map_err(|error| match error {
+        PayloadError::NotJwt => invalid("the ID token is not a JWT"),
+        PayloadError::NotBase64Url => invalid("the ID token payload is not base64url"),
+        PayloadError::Claims => invalid("the ID token payload lacks iss, aud or exp"),
+    })
+}
+
+/// Why [`payload`] cannot decode a token.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PayloadError {
+    /// The token does not have three dot-separated segments.
+    NotJwt,
+    /// The payload segment is not base64url.
+    NotBase64Url,
+    /// The payload is not JSON of the shape `T`.
+    Claims,
+}
+
+/// Decodes the payload segment of the JWT `token` as `T`, without verifying the signature.
+pub(crate) fn payload<T: DeserializeOwned>(token: &str) -> Result<T, PayloadError> {
     let mut parts = token.split('.');
     let (Some(_header), Some(payload), Some(_signature), None) =
         (parts.next(), parts.next(), parts.next(), parts.next())
     else {
-        return Err(invalid("the ID token is not a JWT"));
+        return Err(PayloadError::NotJwt);
     };
     let payload = URL_SAFE_NO_PAD
         .decode(payload.trim_end_matches('='))
-        .map_err(|_| invalid("the ID token payload is not base64url"))?;
-    serde_json::from_slice(&payload)
-        .map_err(|_| invalid("the ID token payload lacks iss, aud or exp"))
+        .map_err(|_| PayloadError::NotBase64Url)?;
+    serde_json::from_slice(&payload).map_err(|_| PayloadError::Claims)
 }
 
 fn invalid(message: &str) -> Error {
