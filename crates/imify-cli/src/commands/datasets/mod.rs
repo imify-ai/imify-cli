@@ -234,7 +234,9 @@ fn write_findings(w: &mut dyn Write, findings: &[Finding]) -> io::Result<()> {
     });
     for (row, finding) in rows.iter().zip(findings) {
         for (cell, width) in row.iter().zip(widths) {
-            write!(w, "{cell:width$}{COLUMN_GAP}")?;
+            // Padded by hand: a format width above `u16::MAX` panics.
+            let padding = width.saturating_sub(cell.chars().count());
+            write!(w, "{cell}{}{COLUMN_GAP}", " ".repeat(padding))?;
         }
         writeln!(w, "{}", printable(&finding.message))?;
     }
@@ -425,5 +427,52 @@ mod tests {
         let selected = select(datasets, &args);
 
         assert_eq!(ids(&selected), ["a"]);
+    }
+
+    /// The findings of a v2.1 dataset with a video feature named `name`.
+    fn findings_with_video_feature(name: &str) -> Report {
+        let dataset = imify_test_support::DatasetBuilder::new(imify_test_support::Format::V2_1)
+            .episodes(1)
+            .build()
+            .unwrap();
+        let info_path = dataset.root().join("meta/info.json");
+        let mut info: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&info_path).unwrap()).unwrap();
+        info["features"][name] = serde_json::json!({"dtype": "video"});
+        std::fs::write(&info_path, serde_json::to_vec(&info).unwrap()).unwrap();
+        imify::validate::validate_dataset(dataset.root()).unwrap()
+    }
+
+    #[test]
+    fn findings_with_a_path_longer_than_any_format_width_are_written_in_full() {
+        let name = "x".repeat(70_000);
+        let report = findings_with_video_feature(&name);
+        let mut output = Vec::new();
+
+        write_findings(&mut output, &report.findings).unwrap();
+
+        let text = String::from_utf8(output).unwrap();
+        assert!(
+            text.contains(&format!("videos/chunk-000/{name}/")),
+            "{text:.200}"
+        );
+    }
+
+    #[test]
+    fn findings_columns_are_padded_to_the_longest_cell() {
+        let report = findings_with_video_feature("wrist");
+        let mut output = Vec::new();
+
+        write_findings(&mut output, &report.findings).unwrap();
+
+        let text = String::from_utf8(output).unwrap();
+        let message_columns: Vec<usize> = text
+            .lines()
+            .map(|line| line.find("The ").unwrap())
+            .collect();
+        assert!(
+            message_columns.windows(2).all(|pair| pair[0] == pair[1]),
+            "{text}"
+        );
     }
 }
