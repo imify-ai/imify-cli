@@ -1,6 +1,6 @@
 [package]
 name = "imify"
-version = "0.0.0"
+version = "0.1.0"
 description = "Rust SDK for the imify platform API"
 readme = "README.md"
 keywords = ["imify", "robotics", "datasets", "lerobot", "sdk"]
