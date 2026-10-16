@@ -18,9 +18,6 @@ const LOCK_FILE_NAME: &str = "credentials.json.lock";
 /// The largest credentials file read, in bytes.
 const MAX_FILE_SIZE: u64 = 1024 * 1024;
 
-/// Permission bits that let users other than the owner access the file.
-const GROUP_AND_OTHER: u32 = 0o077;
-
 /// Permission bits that let users other than the owner change the directory.
 const GROUP_AND_OTHER_WRITE: u32 = 0o022;
 
@@ -140,10 +137,12 @@ impl FileStore {
         if stat.st_uid != rustix::process::geteuid().as_raw() {
             return Err(self.error("the file belongs to another user"));
         }
-        let mode = u32::from(stat.st_mode) & 0o777;
-        if permissions == Permissions::OwnerOnly && mode & GROUP_AND_OTHER != 0 {
+        // `st_mode` is 16 bits wide on macOS and 32 bits on Linux; `Mode` hides the width.
+        let mode = Mode::from_raw_mode(stat.st_mode) & (Mode::RWXU | Mode::RWXG | Mode::RWXO);
+        if permissions == Permissions::OwnerOnly && mode.intersects(Mode::RWXG | Mode::RWXO) {
             return Err(self.error(format!(
-                "other users can access the file (mode {mode:o}); run `chmod 600 {}`",
+                "other users can access the file (mode {:o}); run `chmod 600 {}`",
+                mode.bits(),
                 self.path.display()
             )));
         }
