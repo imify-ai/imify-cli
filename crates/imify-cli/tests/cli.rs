@@ -8,13 +8,19 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 
 const TOKEN: &str = "tok_7f3a9c-secret";
 
-fn imify(args: &[&str], env: &[(&str, &str)]) -> Output {
+/// The `imify` binary without the environment variables the CLI reads.
+fn imify_command() -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_imify"));
     command
         .env_remove("IMIFY_OUTPUT")
         .env_remove("NO_COLOR")
         .env_remove("IMIFY_TOKEN")
         .env_remove("IMIFY_API_URL");
+    command
+}
+
+fn imify(args: &[&str], env: &[(&str, &str)]) -> Output {
+    let mut command = imify_command();
     for (key, value) in env {
         command.env(key, value);
     }
@@ -441,15 +447,12 @@ fn datasets_ls_help_shows_examples() {
 fn validate_path(dataset: &SyntheticDataset, path: &str, extra_args: &[&str]) -> Output {
     let mut args = vec!["datasets", "validate", path];
     args.extend_from_slice(extra_args);
-    let mut command = Command::new(env!("CARGO_BIN_EXE_imify"));
-    command
+    imify_command()
         .current_dir(dataset.root())
-        .env_remove("IMIFY_OUTPUT")
-        .env_remove("NO_COLOR")
-        .env_remove("IMIFY_TOKEN")
-        .env_remove("IMIFY_API_URL")
-        .args(args);
-    command.assert().get_output().clone()
+        .args(args)
+        .assert()
+        .get_output()
+        .clone()
 }
 
 fn validate(dataset: &SyntheticDataset, extra_args: &[&str]) -> Output {
