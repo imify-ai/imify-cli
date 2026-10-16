@@ -365,7 +365,7 @@ impl Render for Planned<'_> {
             writeln!(
                 w,
                 "Skipped {}: symbolic links are not uploaded.",
-                link.path()
+                printable(link.path())
             )?;
         }
         Ok(())
