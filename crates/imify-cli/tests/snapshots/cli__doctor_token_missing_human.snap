@@ -9,6 +9,6 @@ ok    health        Reachable in <n> ms.
 ok    readiness     Database ok, storage ok.
 ok    clock         The local clock is within 60 s of the server.
 fail  token         IMIFY_TOKEN is not set.
-                    hint: Set `IMIFY_TOKEN` to an access token.
+                    hint: Run `imify login`, or set `IMIFY_TOKEN` to a token.
 skip  token_expiry  Skipped because token did not pass.
 skip  account       Skipped because token did not pass.

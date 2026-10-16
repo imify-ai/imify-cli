@@ -48,6 +48,8 @@ crates/imify-cli/src/
   main.rs           parse, dispatch, map errors to exit codes
   cli.rs            global flags and the top-level command enum
   commands/         one module per noun: datasets, auth, config, doctor
+  credentials/      where a login is stored: OS keychain, file; selection by IMIFY_CREDENTIAL_STORE
+  browser.rs        opens the sign-in URL in the system browser
   config/           profiles, file locations, environment overrides
   output/           Renderer (human, json), error envelope, exit codes
   tui/              inline viewport, theme, terminal restore
@@ -60,7 +62,7 @@ Each seam is a trait with one production implementation and test doubles. They e
 | Seam | Crate | Production implementation | Planned addition |
 |---|---|---|---|
 | `TokenSource` | imify | `EnvToken` (`IMIFY_TOKEN`), `StoredLogin` | platform-issued API tokens |
-| `CredentialStore` | imify (trait), imify-cli (stores) | OS keychain | file readable only by the user |
+| `CredentialStore` | imify (trait), imify-cli (stores) | OS keychain, file readable only by the user | none |
 | `Transport` | imify | streaming `PUT` per file | direct-to-storage upload with server verification |
 | `Renderer` | imify-cli | human (tables, inline TUI) | none; `json` is the second implementation |
 

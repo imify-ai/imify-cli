@@ -20,20 +20,33 @@ doc = false
 [dependencies]
 anstream = "1.0"
 clap = { version = "4.5", features = ["derive"] }
+directories = "6.0"
 imify = { path = "../imify", version = "0.0.0" }
+keyring-core = "1.0.1"
 ratatui = { version = "0.30", default-features = false, features = ["crossterm"] }
+rustix = { version = "1.1.2", features = ["fs", "process", "termios"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+tempfile = "3.20"
+thiserror = "2.0"
 tokio = { version = "1.47", features = ["macros", "rt", "signal", "sync", "time"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "std"] }
+url = "2.5"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+apple-native-keyring-store = { version = "1.0.2", features = ["keychain"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+zbus-secret-service-keyring-store = { version = "1.0.1", features = ["rt-tokio-crypto-rust"] }
 
 [dev-dependencies]
 assert_cmd = "2"
+base64 = "0.22.1"
 imify-test-support = { path = "../imify-test-support" }
 insta = "1.49"
 jsonschema = { version = "0.58", default-features = false }
-tempfile = "3"
+rustix = { version = "1.1.2", features = ["pty"] }
 tokio = { version = "1.47", features = ["macros", "rt-multi-thread", "test-util"] }
 wiremock = "0.6.5"
 

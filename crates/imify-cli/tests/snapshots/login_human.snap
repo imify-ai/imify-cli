@@ -1,0 +1,6 @@
+---
+source: crates/imify-cli/src/commands/auth/tests.rs
+expression: text
+---
+Logged in to http://127.0.0.1:<port> as Ada Lovelace (admin).
+Credentials stored in <config dir>/credentials.json.

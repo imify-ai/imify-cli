@@ -1,6 +1,9 @@
 //! Stable error codes, their exit codes and the error envelope.
 
+use imify::LoginFailure;
 use serde::Serialize;
+
+use crate::credentials::{FileStoreError, KeychainError};
 
 /// A stable, documented error code. The `snake_case` name is part of the JSON contract.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -14,6 +17,10 @@ pub enum ErrorCode {
     AuthRequired,
     /// The server rejected the access token.
     AuthRejected,
+    /// The stored login has expired or was revoked.
+    AuthExpired,
+    /// The browser login did not complete.
+    LoginFailed,
     /// The access token is valid but lacks the permission for the request.
     PermissionDenied,
     /// The requested resource does not exist.
@@ -37,11 +44,13 @@ pub enum ErrorCode {
 impl ErrorCode {
     /// Every error code, in documentation order.
     #[cfg(test)]
-    pub const ALL: [Self; 13] = [
+    pub const ALL: [Self; 15] = [
         Self::Internal,
         Self::InvalidArgument,
         Self::AuthRequired,
         Self::AuthRejected,
+        Self::AuthExpired,
+        Self::LoginFailed,
         Self::PermissionDenied,
         Self::NotFound,
         Self::DatasetInvalid,
@@ -58,7 +67,11 @@ impl ErrorCode {
         match self {
             Self::Internal => 1,
             Self::InvalidArgument => 2,
-            Self::AuthRequired | Self::AuthRejected | Self::PermissionDenied => 3,
+            Self::AuthRequired
+            | Self::AuthRejected
+            | Self::AuthExpired
+            | Self::LoginFailed
+            | Self::PermissionDenied => 3,
             Self::NotFound => 4,
             Self::DatasetInvalid => 5,
             Self::Conflict => 6,
@@ -119,10 +132,26 @@ impl From<clap::Error> for CliError {
 }
 
 /// The hint for an `auth_required` error.
-pub const AUTH_REQUIRED_HINT: &str = "Set `IMIFY_TOKEN` to an access token.";
+pub const AUTH_REQUIRED_HINT: &str = "Run `imify login`, or set `IMIFY_TOKEN` to a token.";
 
-/// The hint for an `auth_rejected` error.
+/// The hint for an `auth_rejected` error when the token comes from `IMIFY_TOKEN`.
 pub const AUTH_REJECTED_HINT: &str = "Set `IMIFY_TOKEN` to a valid, unexpired token.";
+
+/// The hint when the user has to sign in again.
+pub const LOGIN_HINT: &str = "Run `imify login`.";
+
+/// The hint for a login that the redirect listener cannot complete.
+const NO_BROWSER_HINT: &str = "Run `imify login --no-browser`.";
+
+/// The hint for a pasted URL that is not the redirect URL.
+pub const PASTE_HINT: &str = "Paste the full URL from the browser's address bar.";
+
+/// The hint for a keychain that refuses access.
+const LOCKED_KEYCHAIN_HINT: &str = "Unlock your keyring, or set `IMIFY_CREDENTIAL_STORE=file`.";
+
+/// The hint for a failing keychain.
+const CREDENTIAL_STORE_HINT: &str =
+    "Set `IMIFY_CREDENTIAL_STORE=file` to store the login in a file.";
 
 impl From<imify::Error> for CliError {
     fn from(error: imify::Error) -> Self {
@@ -149,8 +178,38 @@ impl From<imify::Error> for CliError {
             imify::Error::Server { .. } => Self::new(ErrorCode::Server, message),
             imify::Error::Network { .. } => Self::new(ErrorCode::Network, message),
             imify::Error::Config { .. } => Self::new(ErrorCode::InvalidArgument, message),
+            imify::Error::Login { reason, .. } => login_error(reason, message),
+            imify::Error::CredentialStore { source } if source.is::<FileStoreError>() => {
+                Self::new(ErrorCode::Internal, message)
+            }
+            imify::Error::CredentialStore { source }
+                if matches!(
+                    source.downcast_ref::<KeychainError>(),
+                    Some(KeychainError::Locked(_))
+                ) =>
+            {
+                Self::new(ErrorCode::Internal, message).with_hint(LOCKED_KEYCHAIN_HINT)
+            }
+            imify::Error::CredentialStore { .. } => {
+                Self::new(ErrorCode::Internal, message).with_hint(CREDENTIAL_STORE_HINT)
+            }
             _ => Self::new(ErrorCode::Internal, message),
         }
+    }
+}
+
+fn login_error(reason: LoginFailure, message: String) -> CliError {
+    match reason {
+        LoginFailure::Expired => {
+            CliError::new(ErrorCode::AuthExpired, message).with_hint(LOGIN_HINT)
+        }
+        LoginFailure::InvalidRedirectUrl => {
+            CliError::new(ErrorCode::InvalidArgument, message).with_hint(PASTE_HINT)
+        }
+        LoginFailure::TimedOut | LoginFailure::PortsInUse => {
+            CliError::new(ErrorCode::LoginFailed, message).with_hint(NO_BROWSER_HINT)
+        }
+        _ => CliError::new(ErrorCode::LoginFailed, message),
     }
 }
 
@@ -174,6 +233,8 @@ mod tests {
                 (ErrorCode::InvalidArgument, 2),
                 (ErrorCode::AuthRequired, 3),
                 (ErrorCode::AuthRejected, 3),
+                (ErrorCode::AuthExpired, 3),
+                (ErrorCode::LoginFailed, 3),
                 (ErrorCode::PermissionDenied, 3),
                 (ErrorCode::NotFound, 4),
                 (ErrorCode::DatasetInvalid, 5),
@@ -201,6 +262,8 @@ mod tests {
                 "invalid_argument",
                 "auth_required",
                 "auth_rejected",
+                "auth_expired",
+                "login_failed",
                 "permission_denied",
                 "not_found",
                 "dataset_invalid",
@@ -414,6 +477,65 @@ mod tests {
         ];
 
         assert_eq!(codes, [ErrorCode::Internal, ErrorCode::Internal]);
+    }
+
+    fn login_error(reason: LoginFailure) -> CliError {
+        CliError::from(imify::Error::Login {
+            reason,
+            message: "the login failed".into(),
+        })
+    }
+
+    #[test]
+    fn an_expired_stored_login_maps_to_auth_expired_with_the_login_hint() {
+        let error = login_error(LoginFailure::Expired);
+
+        assert_eq!(
+            (error.code, error.hint.as_deref()),
+            (ErrorCode::AuthExpired, Some("Run `imify login`."))
+        );
+    }
+
+    #[test]
+    fn an_incomplete_browser_login_maps_to_login_failed() {
+        let codes = [
+            LoginFailure::Denied,
+            LoginFailure::StateMismatch,
+            LoginFailure::InvalidIdToken,
+            LoginFailure::Provider,
+            LoginFailure::TimedOut,
+            LoginFailure::PortsInUse,
+        ]
+        .map(|reason| login_error(reason).code);
+
+        assert_eq!(codes, [ErrorCode::LoginFailed; 6]);
+    }
+
+    #[test]
+    fn a_timed_out_or_blocked_redirect_hints_at_no_browser() {
+        let hints = [LoginFailure::TimedOut, LoginFailure::PortsInUse]
+            .map(|reason| login_error(reason).hint);
+
+        assert_eq!(
+            hints,
+            [
+                Some("Run `imify login --no-browser`.".to_owned()),
+                Some("Run `imify login --no-browser`.".to_owned())
+            ]
+        );
+    }
+
+    #[test]
+    fn an_invalid_pasted_url_maps_to_invalid_argument() {
+        let error = login_error(LoginFailure::InvalidRedirectUrl);
+
+        assert_eq!(
+            (error.code, error.hint.as_deref()),
+            (
+                ErrorCode::InvalidArgument,
+                Some("Paste the full URL from the browser's address bar.")
+            )
+        );
     }
 
     #[test]

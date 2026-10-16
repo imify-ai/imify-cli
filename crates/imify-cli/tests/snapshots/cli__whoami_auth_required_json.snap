@@ -1,5 +1,6 @@
 ---
 source: crates/imify-cli/tests/cli.rs
-expression: text(&output.stderr)
+assertion_line: 194
+expression: "text(&output.stderr).replace(&server.uri(), \"http://127.0.0.1:<port>\")"
 ---
-{"error":{"code":"auth_required","message":"No access token: IMIFY_TOKEN is not set.","hint":"Set `IMIFY_TOKEN` to an access token."}}
+{"error":{"code":"auth_required","message":"Not logged in to http://127.0.0.1:<port>, and IMIFY_TOKEN is not set.","hint":"Run `imify login`, or set `IMIFY_TOKEN` to a token."}}

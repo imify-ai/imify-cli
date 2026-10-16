@@ -1,5 +1,7 @@
+mod browser;
 mod cli;
 mod commands;
+mod credentials;
 mod output;
 mod tui;
 
@@ -43,6 +45,10 @@ fn run(
         None => Ok(()),
         Some(Command::Whoami) => runtime()?.block_on(commands::auth::whoami(env, renderer)),
         Some(Command::Doctor) => runtime()?.block_on(commands::doctor::doctor(env, renderer)),
+        Some(Command::Login { no_browser }) => {
+            runtime()?.block_on(commands::auth::login(env, *no_browser, renderer))
+        }
+        Some(Command::Logout) => runtime()?.block_on(commands::auth::logout(env, renderer)),
         Some(Command::Datasets {
             command: DatasetsCommand::Ls(args),
         }) => runtime()?.block_on(commands::datasets::ls(env, args, renderer)),
@@ -86,10 +92,15 @@ fn report(renderer: &mut dyn Renderer, error: &CliError) -> ExitCode {
 }
 
 fn init_tracing(settings: &Settings) {
+    use tracing_subscriber::layer::SubscriberExt as _;
+    use tracing_subscriber::util::SubscriberInitExt as _;
+
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
         .with_max_level(settings.log_level())
         .with_target(false)
         .without_time()
+        .finish()
+        .with(output::log_filter(settings.log_level()))
         .init();
 }

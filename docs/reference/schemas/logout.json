@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "imify logout result",
+  "description": "Written to stdout by `imify logout --json`.",
+  "type": "object",
+  "required": ["host", "removed", "revoked"],
+  "properties": {
+    "host": {
+      "description": "The API URL the login belonged to.",
+      "type": "string",
+      "minLength": 1
+    },
+    "removed": {
+      "description": "Whether a stored login existed and was removed.",
+      "type": "boolean"
+    },
+    "revoked": {
+      "description": "Whether the identity provider revoked the refresh token. Issued ID tokens stay valid until they expire.",
+      "type": "boolean"
+    }
+  }
+}
