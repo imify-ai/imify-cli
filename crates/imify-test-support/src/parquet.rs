@@ -1,13 +1,15 @@
-//! Minimal writer for uncompressed parquet files with flat, required columns.
+//! Minimal writer for parquet files with flat, required columns.
 
 use std::io;
 use std::sync::Arc;
 
-use parquet::basic::{LogicalType, Repetition, Type as PhysicalType};
+use parquet::basic::{self, LogicalType, Repetition, Type as PhysicalType};
 use parquet::data_type::{ByteArray, ByteArrayType, FloatType, Int64Type};
 use parquet::file::properties::WriterProperties;
 use parquet::file::writer::SerializedFileWriter;
 use parquet::schema::types::Type;
+
+use crate::Compression;
 
 /// Values of one column.
 #[derive(Debug)]
@@ -57,12 +59,32 @@ impl Column {
     }
 }
 
-/// Encodes `columns` as a parquet file with one row group.
+/// Encodes `columns` as an uncompressed parquet file with one row group.
 pub(crate) fn encode(columns: &[Column]) -> io::Result<Vec<u8>> {
-    encode_parquet(columns).map_err(io::Error::other)
+    encode_compressed(columns, Compression::Uncompressed)
 }
 
-fn encode_parquet(columns: &[Column]) -> parquet::errors::Result<Vec<u8>> {
+/// Encodes `columns` as a parquet file with one row group, every column compressed with
+/// `compression`.
+pub(crate) fn encode_compressed(
+    columns: &[Column],
+    compression: Compression,
+) -> io::Result<Vec<u8>> {
+    encode_parquet(columns, codec(compression)).map_err(io::Error::other)
+}
+
+fn codec(compression: Compression) -> basic::Compression {
+    match compression {
+        Compression::Uncompressed => basic::Compression::UNCOMPRESSED,
+        Compression::Snappy => basic::Compression::SNAPPY,
+        Compression::Gzip => basic::Compression::GZIP(basic::GzipLevel::default()),
+    }
+}
+
+fn encode_parquet(
+    columns: &[Column],
+    codec: basic::Compression,
+) -> parquet::errors::Result<Vec<u8>> {
     let fields = columns
         .iter()
         .map(|column| column.schema().map(Arc::new))
@@ -73,6 +95,7 @@ fn encode_parquet(columns: &[Column]) -> parquet::errors::Result<Vec<u8>> {
     // A fixed `created_by` keeps the bytes independent of the parquet crate version.
     let properties = WriterProperties::builder()
         .set_created_by("imify-test-support".to_owned())
+        .set_compression(codec)
         .build();
 
     let mut writer = SerializedFileWriter::new(Vec::new(), Arc::new(schema), Arc::new(properties))?;

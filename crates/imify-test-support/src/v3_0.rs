@@ -17,7 +17,7 @@ pub(crate) fn layout(shape: &Shape) -> io::Result<Layout> {
     let mut files = BTreeMap::new();
     files.insert(
         PathBuf::from("data/chunk-000/file-000.parquet"),
-        frames.to_parquet()?,
+        frames.to_parquet(shape.data_compression)?,
     );
     for key in shape.video_keys() {
         let path = format!("videos/{key}/chunk-000/file-000.mp4");
@@ -56,7 +56,12 @@ fn episodes(shape: &Shape) -> io::Result<Vec<u8>> {
 
     let mut columns = vec![
         Column::int64("episode_index", episodes.clone()),
-        Column::int64("length", vec![frames; episodes.len()]),
+        Column::int64(
+            "length",
+            (0..shape.episodes)
+                .map(|episode| i64::from(shape.declared_length(episode)))
+                .collect(),
+        ),
         Column::int64("data/chunk_index", zeros()),
         Column::int64("data/file_index", zeros()),
         Column::int64(

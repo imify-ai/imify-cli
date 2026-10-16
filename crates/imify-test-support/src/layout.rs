@@ -6,6 +6,7 @@ use std::path::PathBuf;
 
 use serde_json::{Map, Value, json};
 
+use crate::Compression;
 use crate::parquet::{self, Column};
 
 /// Rows per chunk directory, declared as `chunks_size` in `info.json`.
@@ -22,6 +23,22 @@ pub(crate) struct Shape {
     pub(crate) fps: u32,
     pub(crate) cameras: Vec<String>,
     pub(crate) video_size: usize,
+    pub(crate) data_compression: Compression,
+    /// The timestamps of episode 0.
+    pub(crate) clock: Clock,
+    /// Frames the episodes index declares for episode 0 beyond its row count.
+    pub(crate) declared_surplus: u32,
+}
+
+/// How the timestamps of episode 0 deviate from one frame period per frame.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum Clock {
+    #[default]
+    Regular,
+    /// Frames 0 and 1 carry each other's timestamp.
+    SwappedStart,
+    /// Every frame after frame 0 is one frame period late.
+    Gap,
 }
 
 impl Shape {
@@ -33,6 +50,26 @@ impl Shape {
         self.cameras
             .iter()
             .map(|camera| format!("observation.images.{camera}"))
+    }
+
+    /// The `length` the episodes index declares for `episode`.
+    pub(crate) fn declared_length(&self, episode: u32) -> u32 {
+        if episode == 0 {
+            self.frames_per_episode + self.declared_surplus
+        } else {
+            self.frames_per_episode
+        }
+    }
+
+    /// Timestamp of `frame` in `episode`, in seconds.
+    fn timestamp(&self, episode: u32, frame: u32) -> f32 {
+        let tick = match (episode, self.clock, frame) {
+            (0, Clock::SwappedStart, 0) if self.frames_per_episode > 1 => 1,
+            (0, Clock::SwappedStart, 1) => 0,
+            (0, Clock::Gap, 1..) => frame + 1,
+            _ => frame,
+        };
+        frames_to_seconds(tick, self.fps)
     }
 
     /// Duration of one episode in seconds.
@@ -116,7 +153,7 @@ impl Frames {
             for frame in 0..shape.frames_per_episode {
                 let index =
                     u64::from(episode) * u64::from(shape.frames_per_episode) + u64::from(frame);
-                frames.timestamp.push(frames_to_seconds(frame, shape.fps));
+                frames.timestamp.push(shape.timestamp(episode, frame));
                 frames.frame_index.push(i64::from(frame));
                 frames.episode_index.push(i64::from(episode));
                 frames.index.push(to_i64(index));
@@ -127,14 +164,17 @@ impl Frames {
     }
 
     /// The frames as a data parquet file.
-    pub(crate) fn to_parquet(&self) -> io::Result<Vec<u8>> {
-        parquet::encode(&[
-            Column::float("timestamp", self.timestamp.clone()),
-            Column::int64("frame_index", self.frame_index.clone()),
-            Column::int64("episode_index", self.episode_index.clone()),
-            Column::int64("index", self.index.clone()),
-            Column::int64("task_index", self.task_index.clone()),
-        ])
+    pub(crate) fn to_parquet(&self, compression: Compression) -> io::Result<Vec<u8>> {
+        parquet::encode_compressed(
+            &[
+                Column::float("timestamp", self.timestamp.clone()),
+                Column::int64("frame_index", self.frame_index.clone()),
+                Column::int64("episode_index", self.episode_index.clone()),
+                Column::int64("index", self.index.clone()),
+                Column::int64("task_index", self.task_index.clone()),
+            ],
+            compression,
+        )
     }
 
     /// Per-feature `min`, `max`, `mean`, `std` and `count` of the scalar features.

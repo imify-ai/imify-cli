@@ -12,7 +12,8 @@
 //! # Ok::<(), std::io::Error>(())
 //! ```
 //!
-//! A dataset holds `meta/` files, uncompressed parquet data and placeholder video files
+//! A dataset holds `meta/` files, parquet data (uncompressed unless
+//! [`DatasetBuilder::data_compression`] sets a codec) and placeholder video files
 //! that are not real MP4. The same configuration always produces byte-identical files.
 #![deny(missing_docs)]
 
@@ -29,7 +30,7 @@ use std::path::{Component, Path, PathBuf};
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
-use crate::layout::{Layout, Shape};
+use crate::layout::{Clock, Layout, Shape};
 
 const INFO_PATH: &str = "meta/info.json";
 const MALFORMED_INFO: &[u8] = b"{\"codebase_version\": \n";
@@ -86,12 +87,48 @@ pub enum Defect {
     CorruptDataFile,
     /// The first video file is not written.
     MissingVideo,
+    /// The first data parquet file is not written.
+    MissingDataFile,
+    /// The episodes index declares a `length` for episode 0 that is one frame more than
+    /// its row count.
+    EpisodeLength,
+    /// Frames 0 and 1 of episode 0 carry each other's timestamp, so the timestamps of
+    /// episode 0 do not increase. Takes precedence over [`Defect::TimestampGap`].
+    NonMonotonicTimestamps,
+    /// Every frame of episode 0 after frame 0 is one frame period late, as if a frame was
+    /// dropped. The timestamps still increase.
+    TimestampGap,
+    /// The episodes index is not written: `meta/episodes.jsonl` for v2.1, every file under
+    /// `meta/episodes/` for v3.0.
+    MissingEpisodesIndex,
+}
+
+/// Compression codec of the data parquet files. Parquet files under `meta/` are always
+/// uncompressed.
+///
+/// ```
+/// use imify_test_support::{Compression, DatasetBuilder, Format};
+///
+/// let dataset = DatasetBuilder::new(Format::V3_0)
+///     .data_compression(Compression::Gzip)
+///     .build()?;
+/// # Ok::<(), std::io::Error>(())
+/// ```
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Compression {
+    /// No compression.
+    #[default]
+    Uncompressed,
+    /// Snappy.
+    Snappy,
+    /// Gzip at the default level.
+    Gzip,
 }
 
 /// Configures and writes a synthetic dataset.
 ///
 /// Defaults: 2 episodes of 10 frames each, 30 fps, one camera `front`, 1 KiB per video
-/// file, no defects.
+/// file, uncompressed data, no defects.
 ///
 /// ```
 /// use imify_test_support::{DatasetBuilder, Format};
@@ -131,6 +168,9 @@ impl DatasetBuilder {
                 fps: 30,
                 cameras: vec!["front".to_owned()],
                 video_size: 1024,
+                data_compression: Compression::Uncompressed,
+                clock: Clock::Regular,
+                declared_surplus: 0,
             },
             defects: Vec::new(),
         }
@@ -206,6 +246,19 @@ impl DatasetBuilder {
         self
     }
 
+    /// Sets the compression codec of the data parquet files.
+    ///
+    /// ```
+    /// use imify_test_support::{Compression, DatasetBuilder, Format};
+    ///
+    /// let builder = DatasetBuilder::new(Format::V2_1).data_compression(Compression::Snappy);
+    /// ```
+    #[must_use]
+    pub fn data_compression(mut self, compression: Compression) -> Self {
+        self.shape.data_compression = compression;
+        self
+    }
+
     /// Adds a defect. Defects combine; for repeated overrides of the same `info.json`
     /// field, the last one wins.
     ///
@@ -277,8 +330,8 @@ impl DatasetBuilder {
             mut info,
             mut files,
         } = match self.format {
-            Format::V2_1 => v2_1::layout(&self.shape)?,
-            Format::V3_0 => v3_0::layout(&self.shape)?,
+            Format::V2_1 => v2_1::layout(&self.shape())?,
+            Format::V3_0 => v3_0::layout(&self.shape())?,
         };
         for defect in &self.defects {
             override_info(&mut info, defect);
@@ -290,6 +343,20 @@ impl DatasetBuilder {
             apply_to_files(&mut files, defect)?;
         }
         Ok(files)
+    }
+
+    /// The configured shape with the content defects applied.
+    fn shape(&self) -> Shape {
+        let mut shape = self.shape.clone();
+        if self.defects.contains(&Defect::NonMonotonicTimestamps) {
+            shape.clock = Clock::SwappedStart;
+        } else if self.defects.contains(&Defect::TimestampGap) {
+            shape.clock = Clock::Gap;
+        }
+        if self.defects.contains(&Defect::EpisodeLength) {
+            shape.declared_surplus = 1;
+        }
+        shape
     }
 
     fn info_file(&self, info: &Value) -> io::Result<Option<Vec<u8>>> {
@@ -323,18 +390,21 @@ fn apply_to_files(files: &mut BTreeMap<PathBuf, Vec<u8>>, defect: &Defect) -> io
                 bytes.truncate(CORRUPT_LENGTH);
             }
         }
-        Defect::MissingVideo => {
-            let first = files
-                .keys()
-                .find(|path| path.starts_with("videos"))
-                .cloned();
-            if let Some(path) = first {
-                files.remove(&path);
-            }
-        }
+        Defect::MissingVideo => remove_first_under(files, "videos"),
+        Defect::MissingDataFile => remove_first_under(files, "data"),
+        Defect::MissingEpisodesIndex => files.retain(|path, _| {
+            path != Path::new("meta/episodes.jsonl") && !path.starts_with("meta/episodes")
+        }),
         _ => {}
     }
     Ok(())
+}
+
+fn remove_first_under(files: &mut BTreeMap<PathBuf, Vec<u8>>, dir: &str) {
+    let first = files.keys().find(|path| path.starts_with(dir)).cloned();
+    if let Some(path) = first {
+        files.remove(&path);
+    }
 }
 
 fn first_under<'a>(
