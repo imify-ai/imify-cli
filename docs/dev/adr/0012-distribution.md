@@ -8,7 +8,8 @@ Installation must be one command, releases must be reproducible and verifiable, 
 
 ## Decision
 - release-plz derives versions and changelogs from conventional commits through a release PR. Merging it tags `vX.Y.Z`.
-- The tag triggers dist, which builds macOS (arm64, x86_64), Linux (arm64, x86_64, static musl x86_64) and Windows (x86_64) archives, sha256 checksums, GitHub artifact attestations, and shell and PowerShell installers.
+- The tag triggers dist, which builds macOS (arm64, x86_64) and Linux (arm64, x86_64, static musl x86_64) archives, sha256 checksums, GitHub artifact attestations, and a shell installer.
+- macOS and Linux are the supported platforms.
 - Binaries are not code-signed in the first release.
 
 ## Consequences

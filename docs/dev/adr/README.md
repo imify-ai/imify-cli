@@ -1,6 +1,6 @@
 # Architecture decision records
 
-One file per decision, numbered in order. A decision is changed by a new ADR that supersedes the old one; accepted ADRs are not edited except to set their status to `Superseded by NNNN`.
+One file per decision, numbered in order. A decision is changed by a new ADR that supersedes the old one; accepted ADRs are not edited except to set their status to `Superseded by NNNN`. Before the first release (0.1.0), accepted ADRs may be amended in place; git history keeps the previous text.
 
 | ADR | Decision |
 |---|---|
