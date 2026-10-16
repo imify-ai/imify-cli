@@ -12,7 +12,24 @@ After the first release:
 curl --proto '=https' --tlsv1.2 -LsSf https://github.com/imify-ai/imify-cli/releases/latest/download/imify-cli-installer.sh | sh
 ```
 
+The installer places `imify` in `$CARGO_HOME/bin` (default `~/.cargo/bin`) and adds that directory to `PATH` in your shell profile. To leave the shell profile unchanged, set `IMIFY_CLI_NO_MODIFY_PATH=1` and add the directory to `PATH` yourself:
+
+```sh
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/imify-ai/imify-cli/releases/latest/download/imify-cli-installer.sh | IMIFY_CLI_NO_MODIFY_PATH=1 sh
+```
+
 From source: `cargo install --locked --git https://github.com/imify-ai/imify-cli imify-cli`.
+
+### Verify a download
+
+Each release archive has a `.sha256` checksum file and a GitHub artifact attestation. Download an archive from the [releases page](https://github.com/imify-ai/imify-cli/releases) and check both:
+
+```sh
+sha256sum --check imify-cli-x86_64-unknown-linux-gnu.tar.xz.sha256
+gh attestation verify imify-cli-x86_64-unknown-linux-gnu.tar.xz --repo imify-ai/imify-cli
+```
+
+On macOS, use `shasum -a 256 --check` in place of `sha256sum --check`. `gh attestation verify` confirms that the archive was built by the release workflow of `imify-ai/imify-cli`.
 
 ## Usage
 
