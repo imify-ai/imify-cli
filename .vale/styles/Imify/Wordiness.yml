@@ -1,0 +1,12 @@
+extends: substitution
+message: "Use '%s' instead of '%s'."
+level: warning
+ignorecase: true
+swap:
+  in order to: to
+  a number of: some
+  a variety of: several
+  due to the fact that: because
+  at this point in time: now
+  is able to: can
+  make use of: use

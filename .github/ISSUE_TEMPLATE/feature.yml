@@ -1,0 +1,22 @@
+name: Feature request
+description: A new command, flag or SDK capability
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What you are trying to do and what blocks you today.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed interface
+      description: The command or SDK call you would like to run, with an example.
+      render: shell
+  - type: textarea
+    id: automation
+    attributes:
+      label: Scripting and agent use
+      description: How the result would be consumed by a script or agent, if at all.

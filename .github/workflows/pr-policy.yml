@@ -1,0 +1,57 @@
+name: pr-policy
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  policy:
+    runs-on: ubuntu-latest
+    env:
+      PR_TITLE: ${{ github.event.pull_request.title }}
+      PR_BODY: ${{ github.event.pull_request.body }}
+      BASE_SHA: ${{ github.event.pull_request.base.sha }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: PR title is a conventional commit header
+        run: |
+          printf '%s\n' "$PR_TITLE" > "$RUNNER_TEMP/title"
+          scripts/policy/check-message.sh conventional "$RUNNER_TEMP/title"
+
+      - name: PR body has no attribution lines
+        run: |
+          printf '%s\n' "$PR_BODY" > "$RUNNER_TEMP/body"
+          scripts/policy/check-message.sh attribution "$RUNNER_TEMP/body"
+
+      - name: Commits have no attribution lines
+        run: |
+          status=0
+          for sha in $(git rev-list "$BASE_SHA..$HEAD_SHA"); do
+            git log -1 --format=%B "$sha" > "$RUNNER_TEMP/msg"
+            scripts/policy/check-message.sh attribution "$RUNNER_TEMP/msg" || { echo "in commit $sha"; status=1; }
+          done
+          exit "$status"
+
+      - name: PR body follows the house style
+        env:
+          VALE_VERSION: 3.24.0
+        run: |
+          curl -fsSL "https://github.com/errata-ai/vale/releases/download/v${VALE_VERSION}/vale_${VALE_VERSION}_Linux_64-bit.tar.gz" \
+            | tar -xz -C "$RUNNER_TEMP" vale
+          cp "$RUNNER_TEMP/body" "$RUNNER_TEMP/pr-body.md"
+          "$RUNNER_TEMP/vale" --config .vale.ini "$RUNNER_TEMP/pr-body.md"
+
+      - name: List guarded paths
+        run: |
+          if guarded=$(git diff --name-only "$BASE_SHA" "$HEAD_SHA" | scripts/policy/guarded-files.sh); then
+            echo "no guarded paths touched" >> "$GITHUB_STEP_SUMMARY"
+          else
+            { echo "### Guarded paths: maintainer merge only"; echo '```'; echo "$guarded"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          fi

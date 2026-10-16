@@ -1,0 +1,16 @@
+# Changes to these paths are merged by the maintainer only.
+# One glob per line; `*` also matches `/`.
+.github/*
+Cargo.toml
+rustfmt.toml
+clippy.toml
+deny.toml
+_typos.toml
+.vale.ini
+.vale/*
+release-plz.toml
+dist-workspace.toml
+scripts/policy/*
+scripts/check.sh
+crates/imify/src/auth*
+crates/imify-cli/src/commands/auth*

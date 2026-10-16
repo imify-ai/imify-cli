@@ -1,0 +1,27 @@
+extends: existence
+message: "Remove '%s'. It claims a quality instead of stating a fact."
+level: error
+ignorecase: true
+tokens:
+  - seamless(ly)?
+  - robust
+  - leverag(e|es|ed|ing)
+  - comprehensive
+  - powerful
+  - cutting[- ]edge
+  - state[- ]of[- ]the[- ]art
+  - best[- ]in[- ]class
+  - world[- ]class
+  - blazing(ly)?[- ]fast
+  - effortless(ly)?
+  - game[- ]chang(er|ing)
+  - revolutionary
+  - supercharg(e|es|ed|ing)
+  - empower(s|ed|ing)?
+  - unlock(s|ed|ing)?
+  - elevat(e|es|ed|ing)
+  - holistic
+  - synerg(y|ies)
+  - delv(e|es|ed|ing)
+  - harness(es|ed|ing)? the power
+  - in today's
