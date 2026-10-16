@@ -1,5 +1,13 @@
 [graph]
 all-features = true
+# Must match `targets` in dist-workspace.toml.
+targets = [
+    "aarch64-apple-darwin",
+    "x86_64-apple-darwin",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-unknown-linux-gnu",
+    "x86_64-unknown-linux-musl",
+]
 
 [advisories]
 version = 2
