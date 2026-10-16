@@ -1,0 +1,9 @@
+---
+source: crates/imify-cli/tests/cli.rs
+expression: text(&output.stdout)
+---
+{"errors":0,"findings":[],"type":"validated","warnings":0}
+{"bytes":8338,"files":6,"skipped":[],"type":"planned"}
+{"bytes_done":8338,"files_done":6,"session_id":"3f2c9a","type":"session_resumed"}
+{"type":"completing"}
+{"bytes":8338,"dry_run":false,"episodes":2,"files":6,"format":"lerobot_v3","fps":30.0,"name":"pick-cube","resumed":true,"robot_type":"so100","session_id":"3f2c9a","status":"ready","task":"Pick up the red cube","type":"result"}

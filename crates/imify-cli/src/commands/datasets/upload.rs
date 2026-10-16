@@ -1,13 +1,19 @@
 //! `imify datasets upload`: validates a local dataset and uploads it into an ingest session.
 
 use std::io::{self, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use imify::ingest::{NewSession, Session, SessionStatus, UploadEvent, UploadPlan, Uploader};
+use imify::JournalError;
+use imify::ingest::{
+    NewSession, ResumePolicy, Session, SessionStatus, UploadEvent, UploadPlan, Uploader,
+};
 use imify::validate::Report;
 use tokio::sync::mpsc::{self, UnboundedSender};
 
+use super::journal::journal_dir;
 use super::{
     dataset_root_error, finding_json, invalid_report_error, unreadable_root, write_findings,
 };
@@ -23,28 +29,36 @@ use crate::tui::{self, Outcome, Progress, format};
 /// Width of the key column of the human result.
 const KEY_WIDTH: usize = 10;
 
-/// `imify datasets upload <path> --task <text>`: validates the dataset, uploads it into a new
+/// `imify datasets upload <path> --task <text>`: validates the dataset, uploads it into an
 /// ingest session and writes the session.
 ///
 /// Writes `validated` and `planned`, then the upload's progress, then the `result` event. With
-/// `--dry-run`, stops after `planned` and needs no client.
+/// `--dry-run`, stops after `planned` and needs no client. Otherwise the upload keeps a journal
+/// in the [`journal_dir`] and continues the session of an interrupted upload of `<path>`;
+/// `--resume` requires such a session, `--restart` discards it.
 ///
 /// # Errors
 ///
-/// Returns the error of building the client before the dataset is read. Returns
-/// `invalid_argument` when `<path>` is not a readable directory or a file changes during the
-/// upload, `dataset_invalid` when the report has an error or the API rejects the dataset,
-/// `interrupted` on Ctrl-C, and the mapped API error otherwise.
+/// Returns the error of building the client and of locating the journal directory before the
+/// dataset is read. Returns `invalid_argument` when `<path>` is not a readable directory or a
+/// file changes during the upload, `dataset_invalid` when the report has an error or the API
+/// rejects the dataset, `not_found` for `--resume` without an interrupted upload, `conflict`
+/// when the journal belongs to another upload or is corrupt, `interrupted` on Ctrl-C, and the
+/// mapped API error otherwise.
 pub async fn upload(
     env: &Environment,
     settings: &Settings,
     args: &UploadArgs,
     renderer: &mut dyn Renderer,
 ) -> Result<(), CliError> {
-    let client = if args.dry_run {
+    let target = if args.dry_run {
         None
     } else {
-        Some(client(env)?)
+        Some(Target {
+            client: client(env)?,
+            journal_dir: journal_dir(env)?,
+            policy: resume_policy(args.resume, args.restart),
+        })
     };
     let name = session_name(&args.path)?;
     let report = imify::validate::validate_dataset(&args.path).map_err(dataset_root_error)?;
@@ -63,15 +77,41 @@ pub async fn upload(
         files: plan.files().len(),
         bytes: plan.total_bytes(),
         session: None,
+        resumed: false,
     };
-    let Some(client) = client else {
+    let Some(target) = target else {
         return write_event(renderer, &result);
     };
 
     let new_session = NewSession::new(name.as_str()).task_description(args.task.as_str());
-    let session = send(client, settings, &plan, &new_session, renderer).await?;
-    result.session = Some(&session);
+    let sent = send(target, settings, &plan, &new_session, renderer).await?;
+    result.session = Some(&sent.session);
+    result.resumed = sent.resumed;
     write_event(renderer, &result)
+}
+
+/// Where an upload goes: the API client, and the journal that lets it continue an interrupted
+/// upload.
+struct Target {
+    client: imify::Client,
+    journal_dir: PathBuf,
+    policy: ResumePolicy,
+}
+
+/// The policy for the journal: `--resume` requires a journaled session, `--restart` discards
+/// it, and without either a journaled session is continued when one exists.
+fn resume_policy(resume: bool, restart: bool) -> ResumePolicy {
+    match (resume, restart) {
+        (true, _) => ResumePolicy::Required,
+        (false, true) => ResumePolicy::Restart,
+        (false, false) => ResumePolicy::IfJournaled,
+    }
+}
+
+/// The completed session of an upload and whether the upload continued a journaled session.
+struct Sent {
+    session: Session,
+    resumed: bool,
 }
 
 /// The session name: the final component of the canonicalized `path`.
@@ -98,19 +138,29 @@ fn session_name(path: &Path) -> Result<String, CliError> {
         })
 }
 
-/// Uploads `plan` into a new session and reports the progress in a live view or as event
-/// lines.
+/// Uploads `plan` into a new or a journaled session and reports the progress in a live view or
+/// as event lines.
 async fn send(
-    client: imify::Client,
+    target: Target,
     settings: &Settings,
     plan: &UploadPlan,
     new_session: &NewSession,
     renderer: &mut dyn Renderer,
-) -> Result<Session, CliError> {
+) -> Result<Sent, CliError> {
     let start = Instant::now();
     let (events, received) = mpsc::unbounded_channel();
     let live = settings.live_view;
-    let uploader = Uploader::new(client).on_event(forwarder(events.clone(), start, live));
+    let resumed = Arc::new(AtomicBool::new(false));
+    let forward = forwarder(events.clone(), start, live);
+    let resumed_flag = Arc::clone(&resumed);
+    let uploader = Uploader::new(target.client)
+        .journal(target.journal_dir, target.policy)
+        .on_event(move |event| {
+            if matches!(event, UploadEvent::SessionResumed { .. }) {
+                resumed_flag.store(true, Ordering::Relaxed);
+            }
+            forward(event);
+        });
     let operation = async {
         let result = uploader.upload(plan, new_session).await;
         if live {
@@ -139,7 +189,10 @@ async fn send(
         .await
         .map_err(|error| progress_error(&error))?
     {
-        Outcome::Finished(result) => result.map_err(upload_error),
+        Outcome::Finished(result) => result.map_err(upload_error).map(|session| Sent {
+            session,
+            resumed: resumed.load(Ordering::Relaxed),
+        }),
         Outcome::Interrupted => Err(CliError::interrupted()),
     }
 }
@@ -173,9 +226,11 @@ fn send_progress(events: &UnboundedSender<UploadProgress>, start: Instant, step:
 }
 
 /// Maps an upload error: [`imify::Error::Validation`] becomes `dataset_invalid` with the
-/// API's message, [`imify::Error::Io`] becomes `invalid_argument` naming the file.
+/// API's message, [`imify::Error::Io`] becomes `invalid_argument` naming the file, and
+/// [`imify::Error::Journal`] is mapped by [`journal_error`].
 fn upload_error(error: imify::Error) -> CliError {
     match error {
+        imify::Error::Journal { path, reason } => journal_error(&path, reason),
         imify::Error::Validation { message, .. } => {
             CliError::new(ErrorCode::DatasetInvalid, message)
         }
@@ -188,6 +243,40 @@ fn upload_error(error: imify::Error) -> CliError {
         )
         .with_hint("Run the upload again when the dataset files no longer change."),
         other => other.into(),
+    }
+}
+
+/// The hint for a journal that cannot be continued.
+const RESTART_HINT: &str = "Run again with `--restart`.";
+
+/// Maps an unusable journal: missing for `--resume` becomes `not_found`, mismatched or corrupt
+/// becomes `conflict` with the hint to restart, and an I/O failure becomes `internal`.
+fn journal_error(path: &Path, reason: JournalError) -> CliError {
+    match reason {
+        JournalError::Missing => CliError::new(
+            ErrorCode::NotFound,
+            "No interrupted upload of this dataset directory to resume.",
+        )
+        .with_hint("Run without `--resume`."),
+        JournalError::Mismatch(detail) => CliError::new(
+            ErrorCode::Conflict,
+            format!(
+                "The interrupted upload of this dataset directory cannot be continued: {detail}."
+            ),
+        )
+        .with_hint(RESTART_HINT),
+        JournalError::Corrupt(detail) => CliError::new(
+            ErrorCode::Conflict,
+            format!(
+                "The upload journal {} is corrupt: {detail}.",
+                path.display()
+            ),
+        )
+        .with_hint(RESTART_HINT),
+        other => CliError::new(
+            ErrorCode::Internal,
+            format!("Cannot use the upload journal {}: {other}.", path.display()),
+        ),
     }
 }
 
@@ -263,6 +352,8 @@ struct UploadResult<'a> {
     bytes: u64,
     /// `None` for a dry run.
     session: Option<&'a Session>,
+    /// Whether the upload continued a journaled session.
+    resumed: bool,
 }
 
 fn status_text(status: &SessionStatus) -> &str {
@@ -295,6 +386,7 @@ impl Render for UploadResult<'_> {
                 ("fps".to_owned(), session.fps.into()),
                 ("episodes".to_owned(), session.total_episodes.into()),
                 ("status".to_owned(), status_text(&session.status).into()),
+                ("resumed".to_owned(), self.resumed.into()),
             ]);
         }
         result
@@ -345,6 +437,13 @@ pub enum UploadStep {
     SessionCreated {
         session: String,
     },
+    /// The upload continues a journaled session; `files_done` files of `bytes_done` bytes are
+    /// not sent again.
+    SessionResumed {
+        session: String,
+        files_done: usize,
+        bytes_done: u64,
+    },
     FileStarted {
         path: String,
         size: u64,
@@ -381,6 +480,15 @@ impl UploadStep {
             UploadEvent::SessionCreated { session } => Self::SessionCreated {
                 session: session.to_string(),
             },
+            UploadEvent::SessionResumed {
+                session,
+                files_done,
+                bytes_done,
+            } => Self::SessionResumed {
+                session: session.to_string(),
+                files_done: *files_done,
+                bytes_done: *bytes_done,
+            },
             UploadEvent::FileStarted { path, size } => Self::FileStarted {
                 path: path.clone(),
                 size: *size,
@@ -414,6 +522,7 @@ impl Render for UploadProgress {
     fn kind(&self) -> &'static str {
         match self.step {
             UploadStep::SessionCreated { .. } => "session_created",
+            UploadStep::SessionResumed { .. } => "session_resumed",
             UploadStep::FileStarted { .. } => "file_started",
             UploadStep::FileProgress { .. } => "file_progress",
             UploadStep::FileRetrying { .. } => "file_retrying",
@@ -428,6 +537,15 @@ impl Render for UploadProgress {
     fn json(&self) -> serde_json::Value {
         match &self.step {
             UploadStep::SessionCreated { session } => serde_json::json!({ "session_id": session }),
+            UploadStep::SessionResumed {
+                session,
+                files_done,
+                bytes_done,
+            } => serde_json::json!({
+                "session_id": session,
+                "files_done": files_done,
+                "bytes_done": bytes_done,
+            }),
             UploadStep::FileStarted { path, size } | UploadStep::FileFinished { path, size } => {
                 serde_json::json!({ "path": path, "size": size })
             }
@@ -453,6 +571,15 @@ impl Render for UploadProgress {
             UploadStep::SessionCreated { session } => {
                 writeln!(w, "Created ingest session {session}.")
             }
+            UploadStep::SessionResumed {
+                session,
+                files_done,
+                bytes_done,
+            } => writeln!(
+                w,
+                "Resumed ingest session {session}: {files_done} files ({}) already uploaded.",
+                format::bytes(*bytes_done)
+            ),
             UploadStep::FileStarted { path, size } => {
                 writeln!(w, "Uploading {path} ({}).", format::bytes(*size))
             }
@@ -562,6 +689,118 @@ mod tests {
         });
 
         assert_eq!(error.code, ErrorCode::Internal);
+    }
+
+    fn journal_error(reason: imify::JournalError) -> CliError {
+        upload_error(imify::Error::Journal {
+            path: PathBuf::from("uploads/3f2c.jsonl"),
+            reason,
+        })
+    }
+
+    #[test]
+    fn missing_journal_maps_to_not_found_with_the_hint_to_run_without_resume() {
+        let error = journal_error(imify::JournalError::Missing);
+
+        assert_eq!(
+            (error.code, error.hint.as_deref()),
+            (ErrorCode::NotFound, Some("Run without `--resume`."))
+        );
+    }
+
+    #[test]
+    fn mismatched_or_corrupt_journal_maps_to_conflict_with_the_hint_to_restart() {
+        let errors = [
+            journal_error(imify::JournalError::Mismatch(
+                "the task description differs".into(),
+            )),
+            journal_error(imify::JournalError::Corrupt(
+                "line 2 is not valid JSON".into(),
+            )),
+        ];
+
+        for error in errors {
+            assert_eq!(
+                (error.code, error.hint.as_deref()),
+                (ErrorCode::Conflict, Some("Run again with `--restart`.")),
+                "{}",
+                error.message
+            );
+        }
+    }
+
+    #[test]
+    fn mismatched_journal_message_names_the_reason() {
+        let error = journal_error(imify::JournalError::Mismatch(
+            "the task description differs".into(),
+        ));
+
+        assert!(
+            error.message.contains("the task description differs"),
+            "{}",
+            error.message
+        );
+    }
+
+    #[test]
+    fn unusable_journal_file_maps_to_internal() {
+        let error = journal_error(imify::JournalError::Io(io::Error::other(
+            "permission denied",
+        )));
+
+        assert_eq!(error.code, ErrorCode::Internal);
+    }
+
+    #[test]
+    fn resume_policy_follows_the_resume_and_restart_flags() {
+        let policies = [(false, false), (true, false), (false, true)]
+            .map(|(resume, restart)| resume_policy(resume, restart));
+
+        assert_eq!(
+            policies,
+            [
+                ResumePolicy::IfJournaled,
+                ResumePolicy::Required,
+                ResumePolicy::Restart
+            ]
+        );
+    }
+
+    fn session_resumed() -> UploadProgress {
+        UploadProgress {
+            at: Duration::ZERO,
+            step: UploadStep::from_event(&UploadEvent::SessionResumed {
+                session: imify::ingest::SessionId::new("3f2c9a"),
+                files_done: 3,
+                bytes_done: 2048,
+            })
+            .unwrap(),
+        }
+    }
+
+    #[test]
+    fn session_resumed_json_carries_the_session_and_what_is_already_done() {
+        let event = session_resumed();
+
+        assert_eq!(
+            (event.kind(), event.json()),
+            (
+                "session_resumed",
+                serde_json::json!({ "session_id": "3f2c9a", "files_done": 3, "bytes_done": 2048 })
+            )
+        );
+    }
+
+    #[test]
+    fn session_resumed_line_names_the_session_and_what_is_already_done() {
+        let mut line = Vec::new();
+
+        session_resumed().human(&mut line).unwrap();
+
+        assert_eq!(
+            String::from_utf8(line).unwrap(),
+            "Resumed ingest session 3f2c9a: 3 files (2.0 KiB) already uploaded.\n"
+        );
     }
 
     fn file_progress() -> UploadEvent {

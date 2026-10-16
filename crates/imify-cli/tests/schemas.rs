@@ -37,6 +37,7 @@ const CASES: &[(&str, &[&str])] = &[
         "datasets-upload.json",
         &[
             "cli__datasets_upload_json.snap",
+            "cli__datasets_upload_resumed_json.snap",
             "cli__datasets_upload_dry_run_json.snap",
         ],
     ),

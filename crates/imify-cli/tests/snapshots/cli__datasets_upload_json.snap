@@ -18,4 +18,4 @@ expression: "with_sorted_transfers(&text(&output.stdout), \"\\\"file_\", \"\\\"c
 {"path":"videos/observation.images.front/chunk-000/file-000.mp4","size":1024,"type":"file_started"}
 {"path":"videos/observation.images.front/chunk-000/file-000.mp4","size":1024,"type":"file_finished"}
 {"type":"completing"}
-{"bytes":8338,"dry_run":false,"episodes":2,"files":6,"format":"lerobot_v3","fps":30.0,"name":"pick-cube","robot_type":"so100","session_id":"3f2c9a","status":"ready","task":"Pick up the red cube","type":"result"}
+{"bytes":8338,"dry_run":false,"episodes":2,"files":6,"format":"lerobot_v3","fps":30.0,"name":"pick-cube","resumed":false,"robot_type":"so100","session_id":"3f2c9a","status":"ready","task":"Pick up the red cube","type":"result"}

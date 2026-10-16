@@ -12,6 +12,7 @@
         "validated",
         "planned",
         "session_created",
+        "session_resumed",
         "file_started",
         "file_retrying",
         "file_finished",
@@ -30,6 +31,9 @@
     },
     {
       "$ref": "#/$defs/session_created"
+    },
+    {
+      "$ref": "#/$defs/session_resumed"
     },
     {
       "$ref": "#/$defs/file_started"
@@ -130,6 +134,33 @@
         "session_id": {
           "type": "string",
           "minLength": 1
+        }
+      }
+    },
+    "session_resumed": {
+      "description": "The upload continues the ingest session of an interrupted upload. Written instead of `session_created`.",
+      "type": "object",
+      "required": [
+        "type",
+        "session_id",
+        "files_done",
+        "bytes_done"
+      ],
+      "properties": {
+        "type": {
+          "const": "session_resumed"
+        },
+        "session_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "files_done": {
+          "description": "Files the session already stores; they are not sent again.",
+          "$ref": "#/$defs/count"
+        },
+        "bytes_done": {
+          "description": "Total size of those files in bytes.",
+          "$ref": "#/$defs/count"
         }
       }
     },
@@ -278,7 +309,8 @@
           "robot_type",
           "fps",
           "episodes",
-          "status"
+          "status",
+          "resumed"
         ],
         "properties": {
           "session_id": {
@@ -315,13 +347,26 @@
             "description": "`ready`, `uploading`, or another value of the API.",
             "type": "string",
             "minLength": 1
+          },
+          "resumed": {
+            "description": "`true` when the upload continued the ingest session of an interrupted upload.",
+            "type": "boolean"
           }
         }
       },
       "else": {
         "not": {
-          "required": [
-            "session_id"
+          "anyOf": [
+            {
+              "required": [
+                "session_id"
+              ]
+            },
+            {
+              "required": [
+                "resumed"
+              ]
+            }
           ]
         }
       }

@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::process::Output;
 
@@ -598,33 +599,43 @@ impl Respond for Store {
 /// `complete`.
 async fn ingest_api_completing_with(complete: ResponseTemplate) -> MockServer {
     let server = MockServer::start().await;
+    mount_ingest_api(&server, complete).await;
+    server
+}
+
+/// Mounts the mocks of [`ingest_api_completing_with`] on `server`.
+async fn mount_ingest_api(server: &MockServer, complete: ResponseTemplate) {
     Mock::given(method("POST"))
         .and(path(SESSIONS))
         .respond_with(ResponseTemplate::new(201).set_body_json(session_body("uploading")))
-        .mount(&server)
+        .mount(server)
         .await;
     Mock::given(method("PUT"))
         .and(path_regex(format!("^{FILES}")))
         .respond_with(Store)
-        .mount(&server)
+        .mount(server)
         .await;
     Mock::given(method("POST"))
         .and(path(COMPLETE))
         .respond_with(complete)
-        .mount(&server)
+        .mount(server)
         .await;
-    server
+}
+
+fn completed() -> ResponseTemplate {
+    ResponseTemplate::new(200).set_body_json(completed_session_body())
 }
 
 async fn ingest_api() -> MockServer {
-    ingest_api_completing_with(ResponseTemplate::new(200).set_body_json(completed_session_body()))
-        .await
+    ingest_api_completing_with(completed()).await
 }
 
-/// A synthetic dataset in a directory named `pick-cube`, removed on drop.
+/// A synthetic dataset in a directory named `pick-cube`, next to a home directory for the
+/// upload journal; both removed on drop.
 struct PickCube {
     _parent: tempfile::TempDir,
     root: PathBuf,
+    home: PathBuf,
     files: Vec<PathBuf>,
 }
 
@@ -637,15 +648,46 @@ fn pick_cube(defects: &[Defect]) -> std::io::Result<PickCube> {
     );
     let files = builder.write_to(&root)?;
     Ok(PickCube {
+        home: parent.path().join("home"),
         _parent: parent,
         root,
         files,
     })
 }
 
+impl PickCube {
+    /// The upload journal directory with `HOME` and `XDG_STATE_HOME` set by [`upload_task`].
+    fn journal_dir(&self) -> PathBuf {
+        if cfg!(target_os = "macos") {
+            self.home.join("Library/Application Support/imify/uploads")
+        } else {
+            self.home.join(".local/state/imify/uploads")
+        }
+    }
+
+    /// The files of the dataset as the API names them: relative, with `/` separators.
+    fn upload_paths(&self) -> BTreeSet<String> {
+        self.files
+            .iter()
+            .map(|file| file.to_string_lossy().into_owned())
+            .collect()
+    }
+}
+
 /// Runs `imify datasets upload . --task <TASK>` in the dataset root, with the token and the
 /// URL of `server` when one is given.
 fn upload(dataset: &PickCube, server: Option<&MockServer>, extra_args: &[&str]) -> Output {
+    upload_task(dataset, server, TASK, extra_args)
+}
+
+/// Runs `imify datasets upload . --task <task>` like [`upload`]. `HOME` is a directory next to
+/// the dataset and `XDG_STATE_HOME` is unset, so the journal is in [`PickCube::journal_dir`].
+fn upload_task(
+    dataset: &PickCube,
+    server: Option<&MockServer>,
+    task: &str,
+    extra_args: &[&str],
+) -> Output {
     let mut command = imify_command();
     if let Some(server) = server {
         command
@@ -653,8 +695,10 @@ fn upload(dataset: &PickCube, server: Option<&MockServer>, extra_args: &[&str]) 
             .env("IMIFY_API_URL", server.uri());
     }
     command
+        .env("HOME", &dataset.home)
+        .env_remove("XDG_STATE_HOME")
         .current_dir(&dataset.root)
-        .args(["datasets", "upload", ".", "--task", TASK])
+        .args(["datasets", "upload", ".", "--task", task])
         .args(extra_args)
         .assert()
         .get_output()
@@ -959,6 +1003,205 @@ async fn datasets_upload_retries_a_file_answered_with_503_and_reports_the_retry(
     assert_eq!(retry_events.len(), 1);
     assert_eq!(retry_events[0]["path"], retried.as_str());
     assert_eq!(retry_events[0]["attempt"], 1);
+}
+
+/// The files the requests store in session `3f2c9a`, in request order.
+fn stored_paths(requests: &[Request]) -> Vec<String> {
+    requests
+        .iter()
+        .filter(|request| request.method.as_str() == "PUT")
+        .filter_map(|request| request.url.path().strip_prefix(FILES))
+        .map(str::to_owned)
+        .collect()
+}
+
+fn session_creations(requests: &[Request]) -> usize {
+    requests
+        .iter()
+        .filter(|request| request.method.as_str() == "POST" && request.url.path() == SESSIONS)
+        .count()
+}
+
+/// The `path` of every event of type `kind`.
+fn event_paths(events: &[serde_json::Value], kind: &str) -> BTreeSet<String> {
+    events
+        .iter()
+        .filter(|event| event["type"] == kind)
+        .filter_map(|event| event["path"].as_str())
+        .map(str::to_owned)
+        .collect()
+}
+
+/// Runs an upload that stores every file and is rejected at `complete`, which leaves a
+/// journal of every file. Returns the server with its requests cleared and `complete`
+/// answering with the completed session.
+async fn upload_rejected_at_complete(dataset: &PickCube) -> MockServer {
+    let server = ingest_api_completing_with(
+        ResponseTemplate::new(400).set_body_json(json!({"detail": "No episodes found in data/"})),
+    )
+    .await;
+    let output = upload(dataset, Some(&server), &["--json"]);
+    assert_eq!(output.status.code(), Some(5), "{}", text(&output.stderr));
+    server.reset().await;
+    mount_ingest_api(&server, completed()).await;
+    server
+}
+
+/// The data file [`upload_failing_at_a_data_file`] rejects.
+const REJECTED: &str = "data/chunk-000/file-000.parquet";
+
+/// Runs an upload whose first data file is rejected, which leaves a journal of the files
+/// stored before. Returns the server, its `complete` and file mocks unchanged, and the files
+/// the first run reported as stored.
+async fn upload_failing_at_a_data_file(
+    dataset: &PickCube,
+) -> serde_json::Result<(MockServer, BTreeSet<String>)> {
+    let server = ingest_api().await;
+    Mock::given(method("PUT"))
+        .and(path(format!("{FILES}{REJECTED}")))
+        .respond_with(
+            ResponseTemplate::new(400).set_body_json(json!({"detail": "Unsupported file"})),
+        )
+        .up_to_n_times(1)
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    let output = upload(dataset, Some(&server), &["--json"]);
+    assert_eq!(output.status.code(), Some(5), "{}", text(&output.stderr));
+    let stored = event_paths(&json_lines(&output.stdout)?, "file_finished");
+    assert!(stored.contains("meta/info.json"), "{stored:?}");
+    assert!(!stored.contains(REJECTED), "{stored:?}");
+    Ok((server, stored))
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn datasets_upload_after_a_failed_upload_resumes_the_session_and_sends_only_the_remaining_files()
+ {
+    let dataset = pick_cube(&[]).unwrap();
+    let (server, stored) = upload_failing_at_a_data_file(&dataset).await.unwrap();
+    let first_run = server.received_requests().await.unwrap().len();
+
+    let output = upload(&dataset, Some(&server), &["--json"]);
+
+    assert_eq!(output.status.code(), Some(0), "{}", text(&output.stderr));
+    let requests = server.received_requests().await.unwrap()[first_run..].to_vec();
+    let sent: BTreeSet<String> = stored_paths(&requests).into_iter().collect();
+    let remaining: BTreeSet<String> = dataset
+        .upload_paths()
+        .difference(&stored)
+        .cloned()
+        .collect();
+    assert_eq!(sent, remaining);
+    assert_eq!(session_creations(&requests), 0);
+    let events = json_lines(&output.stdout).unwrap();
+    let resumed = events
+        .iter()
+        .find(|event| event["type"] == "session_resumed")
+        .unwrap();
+    assert_eq!(resumed["session_id"], SESSION_ID);
+    assert_eq!(resumed["files_done"], stored.len());
+    let result = events.last().unwrap();
+    assert_eq!(
+        (&result["session_id"], &result["resumed"]),
+        (&json!(SESSION_ID), &json!(true))
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn datasets_upload_json_of_a_resumed_upload_reports_the_files_already_stored() {
+    let dataset = pick_cube(&[]).unwrap();
+    let server = upload_rejected_at_complete(&dataset).await;
+
+    let output = upload(&dataset, Some(&server), &["--json"]);
+
+    assert_eq!(output.status.code(), Some(0), "{}", text(&output.stderr));
+    insta::assert_snapshot!("datasets_upload_resumed_json", text(&output.stdout));
+    assert_eq!(
+        stored_paths(&server.received_requests().await.unwrap()),
+        Vec::<String>::new()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn datasets_upload_removes_the_journal_once_the_session_is_complete() {
+    let dataset = pick_cube(&[]).unwrap();
+    let (server, _) = upload_failing_at_a_data_file(&dataset).await.unwrap();
+    let journals_before = std::fs::read_dir(dataset.journal_dir()).unwrap().count();
+
+    let output = upload(&dataset, Some(&server), &["--json"]);
+
+    assert_eq!(output.status.code(), Some(0), "{}", text(&output.stderr));
+    assert_eq!(journals_before, 1);
+    assert_eq!(std::fs::read_dir(dataset.journal_dir()).unwrap().count(), 0);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn datasets_upload_resume_without_an_interrupted_upload_fails_with_not_found_and_sends_no_request()
+ {
+    let server = ingest_api().await;
+    let dataset = pick_cube(&[]).unwrap();
+
+    let output = upload(&dataset, Some(&server), &["--resume", "--json"]);
+
+    assert_eq!(output.status.code(), Some(4), "{}", text(&output.stderr));
+    let envelope: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
+    assert_eq!(envelope["error"]["code"], "not_found");
+    assert_eq!(envelope["error"]["hint"], "Run without `--resume`.");
+    assert!(server.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn datasets_upload_with_another_task_than_the_interrupted_upload_fails_with_conflict() {
+    let dataset = pick_cube(&[]).unwrap();
+    let (server, _) = upload_failing_at_a_data_file(&dataset).await.unwrap();
+    let first_run = server.received_requests().await.unwrap().len();
+
+    let output = upload_task(&dataset, Some(&server), "Stack the blocks", &["--json"]);
+
+    assert_eq!(output.status.code(), Some(6), "{}", text(&output.stderr));
+    let envelope: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
+    assert_eq!(envelope["error"]["code"], "conflict");
+    assert_eq!(envelope["error"]["hint"], "Run again with `--restart`.");
+    assert_eq!(server.received_requests().await.unwrap().len(), first_run);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn datasets_upload_restart_creates_a_new_session_and_sends_every_file() {
+    let dataset = pick_cube(&[]).unwrap();
+    let (server, _) = upload_failing_at_a_data_file(&dataset).await.unwrap();
+    let first_run = server.received_requests().await.unwrap().len();
+
+    let output = upload(&dataset, Some(&server), &["--restart", "--json"]);
+
+    assert_eq!(output.status.code(), Some(0), "{}", text(&output.stderr));
+    let requests = server.received_requests().await.unwrap()[first_run..].to_vec();
+    assert_eq!(session_creations(&requests), 1);
+    let sent: BTreeSet<String> = stored_paths(&requests).into_iter().collect();
+    assert_eq!(sent, dataset.upload_paths());
+    let events = json_lines(&output.stdout).unwrap();
+    assert!(types(&events).contains(&"session_created"), "{events:?}");
+    assert!(!types(&events).contains(&"session_resumed"), "{events:?}");
+    assert_eq!(events.last().unwrap()["resumed"], false);
+}
+
+#[test]
+fn datasets_upload_with_resume_and_restart_is_a_usage_error() {
+    let output = imify(
+        &[
+            "datasets",
+            "upload",
+            ".",
+            "--task",
+            TASK,
+            "--resume",
+            "--restart",
+            "--json",
+        ],
+        &[],
+    );
+
+    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(error_code(&output).as_deref(), Some("invalid_argument"));
 }
 
 #[test]
