@@ -698,6 +698,58 @@ async fn restart_deletes_the_journal() {
     assert_eq!((result.is_err(), resumable.journal_files()), (true, vec![]));
 }
 
+/// Returns whether the only journal in `journals` has an entry for `path`.
+fn is_journaled(journals: &Path, path: &str) -> bool {
+    let entries: Vec<_> = fs::read_dir(journals).unwrap().collect();
+    let [Ok(journal)] = &entries[..] else {
+        return false;
+    };
+    fs::read_to_string(journal.path())
+        .unwrap()
+        .lines()
+        .skip(1)
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .any(|entry| entry["path"] == path)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn every_file_is_journaled_before_its_file_finished_event_with_concurrency_4() {
+    let server = session_server().await;
+    let files = data_files(16);
+    let root = dataset(&files.iter().map(String::as_str).collect::<Vec<_>>());
+    let journals = tempfile::tempdir().unwrap();
+    let journal_dir = journals.path().to_owned();
+    let finished = Arc::new(Mutex::new(Vec::new()));
+    let sink = Arc::clone(&finished);
+    let transport = Arc::new(RecordingTransport::default());
+
+    uploader(&server.uri(), &transport, 4)
+        .journal(journals.path(), ResumePolicy::IfJournaled)
+        .on_event(move |event| {
+            if let UploadEvent::FileFinished { path, .. } = event {
+                let journaled = is_journaled(&journal_dir, path);
+                sink.lock().unwrap().push((path.clone(), journaled));
+            }
+        })
+        .upload(
+            &UploadPlan::from_dir(root.path()).unwrap(),
+            &NewSession::new("pick-place"),
+        )
+        .await
+        .unwrap();
+
+    let finished = finished.lock().unwrap().clone();
+    let not_journaled: Vec<&String> = finished
+        .iter()
+        .filter(|(_, journaled)| !journaled)
+        .map(|(path, _)| path)
+        .collect();
+    assert_eq!(
+        (finished.len(), not_journaled),
+        (files.len() + 1, Vec::<&String>::new())
+    );
+}
+
 #[tokio::test]
 async fn successful_complete_deletes_the_journal() {
     let server = session_server().await;

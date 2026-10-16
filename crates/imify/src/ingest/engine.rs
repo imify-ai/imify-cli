@@ -224,7 +224,8 @@ impl Uploader {
         plan: &UploadPlan,
         session: &NewSession,
     ) -> Result<Session, Error> {
-        let journal = JournalFile::locate(&settings.dir, self.client.base_url(), plan.root())?;
+        let journal =
+            JournalFile::locate(&settings.dir, self.client.base_url(), plan.root()).await?;
         let resumed = self
             .resume(&journal, settings.policy, plan, session)
             .await?;
@@ -240,7 +241,7 @@ impl Uploader {
         )
         .await?;
         let completed = self.complete(&journaled.session).await?;
-        journal.delete()?;
+        journal.delete().await?;
         Ok(completed)
     }
 
@@ -254,10 +255,10 @@ impl Uploader {
         settings: &NewSession,
     ) -> Result<Option<Journaled<'a>>, Error> {
         if policy == ResumePolicy::Restart {
-            journal.delete()?;
+            journal.delete().await?;
             return Ok(None);
         }
-        let Some(recorded) = journal.load()? else {
+        let Some(recorded) = journal.load().await? else {
             return match policy {
                 ResumePolicy::Required => Err(journal.error(JournalError::Missing)),
                 ResumePolicy::IfJournaled | ResumePolicy::Restart => Ok(None),
@@ -268,7 +269,7 @@ impl Uploader {
         remaining.retain(|file| !stored.contains(file.path()));
         let resumed = Journaled {
             session: recorded.session(),
-            writer: journal.writer()?,
+            writer: journal.writer().await?,
             remaining: Cow::Owned(remaining),
         };
         self.emit(&UploadEvent::SessionResumed {
@@ -288,7 +289,7 @@ impl Uploader {
     ) -> Result<Journaled<'a>, Error> {
         let created = self.create_session(settings).await?;
         Ok(Journaled {
-            writer: journal.create(&created.id, settings)?,
+            writer: journal.create(&created.id, settings).await?,
             session: created.id,
             remaining: Cow::Borrowed(plan),
         })
@@ -455,7 +456,7 @@ impl Uploader {
             })
             .await?;
         if let Some(journal) = batch.journal {
-            journal.append(file, &digest)?;
+            journal.append(file, &digest).await?;
         }
         self.emit(&UploadEvent::FileFinished {
             path: file.path().to_owned(),

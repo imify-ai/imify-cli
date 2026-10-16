@@ -3,6 +3,9 @@
 //!
 //! The first line is a [`Header`] with the session id. Each further line is an [`Entry`]
 //! for one file the API stored. A partial last line, left by a crash, is ignored.
+//!
+//! File system calls run on the blocking thread pool, so writing and flushing an entry
+//! does not hold up the tasks that send files.
 
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
@@ -11,7 +14,7 @@ use std::io::{self, Write as _};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use reqwest::Url;
@@ -57,7 +60,7 @@ struct Entry {
 }
 
 /// The journal file of the upload of one dataset directory to one API.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct JournalFile {
     path: PathBuf,
     api_url: String,
@@ -67,7 +70,15 @@ pub(crate) struct JournalFile {
 impl JournalFile {
     /// Creates `dir` with mode `0700` when it does not exist and returns the journal of
     /// the upload of `root` to `api_url` in it.
-    pub(crate) fn locate(dir: &Path, api_url: &Url, root: &Path) -> Result<Self, Error> {
+    pub(crate) async fn locate(dir: &Path, api_url: &Url, root: &Path) -> Result<Self, Error> {
+        let (owned_dir, api_url, root) = (dir.to_owned(), api_url.clone(), root.to_owned());
+        run_blocking(dir, move || {
+            Self::locate_blocking(&owned_dir, &api_url, &root)
+        })
+        .await
+    }
+
+    fn locate_blocking(dir: &Path, api_url: &Url, root: &Path) -> Result<Self, Error> {
         DirBuilder::new()
             .recursive(true)
             .mode(DIR_MODE)
@@ -95,7 +106,12 @@ impl JournalFile {
     }
 
     /// Reads the journal, `None` when it does not exist.
-    pub(crate) fn load(&self) -> Result<Option<Recorded>, Error> {
+    pub(crate) async fn load(&self) -> Result<Option<Recorded>, Error> {
+        let journal = self.clone();
+        run_blocking(&self.path, move || journal.load_blocking()).await
+    }
+
+    fn load_blocking(&self) -> Result<Option<Recorded>, Error> {
         match fs::read_to_string(&self.path) {
             Ok(text) => self.parse(&text).map(Some),
             Err(source) if source.kind() == io::ErrorKind::NotFound => Ok(None),
@@ -106,7 +122,7 @@ impl JournalFile {
     /// Writes a journal with only the header for `session` and opens it for appending.
     /// The header is written to a temporary file first and renamed into place, so a
     /// journal never exists without a header.
-    pub(crate) fn create(
+    pub(crate) async fn create(
         &self,
         session: &SessionId,
         settings: &NewSession,
@@ -119,6 +135,15 @@ impl JournalFile {
             name: settings.name.clone(),
             task_description: settings.task_description.clone(),
         };
+        let journal = self.clone();
+        run_blocking(&self.path, move || {
+            journal.write_header(&header)?;
+            journal.writer_blocking()
+        })
+        .await
+    }
+
+    fn write_header(&self, header: &Header) -> Result<(), Error> {
         let temporary = self.path.with_extension("jsonl.tmp");
         let write = || -> io::Result<()> {
             let mut file = OpenOptions::new()
@@ -127,28 +152,37 @@ impl JournalFile {
                 .truncate(true)
                 .mode(FILE_MODE)
                 .open(&temporary)?;
-            file.write_all(&json_line(&header)?)?;
+            file.write_all(&json_line(header)?)?;
             file.sync_all()?;
             fs::rename(&temporary, &self.path)
         };
-        write().map_err(|source| self.error(JournalError::Io(source)))?;
-        self.writer()
+        write().map_err(|source| self.error(JournalError::Io(source)))
     }
 
     /// Opens the existing journal for appending.
-    pub(crate) fn writer(&self) -> Result<JournalWriter, Error> {
+    pub(crate) async fn writer(&self) -> Result<JournalWriter, Error> {
+        let journal = self.clone();
+        run_blocking(&self.path, move || journal.writer_blocking()).await
+    }
+
+    fn writer_blocking(&self) -> Result<JournalWriter, Error> {
         let file = OpenOptions::new()
             .append(true)
             .open(&self.path)
             .map_err(|source| self.error(JournalError::Io(source)))?;
         Ok(JournalWriter {
             path: self.path.clone(),
-            file: Mutex::new(file),
+            file: Arc::new(Mutex::new(file)),
         })
     }
 
     /// Deletes the journal when it exists.
-    pub(crate) fn delete(&self) -> Result<(), Error> {
+    pub(crate) async fn delete(&self) -> Result<(), Error> {
+        let journal = self.clone();
+        run_blocking(&self.path, move || journal.delete_blocking()).await
+    }
+
+    fn delete_blocking(&self) -> Result<(), Error> {
         match fs::remove_file(&self.path) {
             Err(source) if source.kind() != io::ErrorKind::NotFound => {
                 Err(self.error(JournalError::Io(source)))
@@ -298,26 +332,51 @@ async fn file_sha256(path: &Path) -> Result<Digest, Error> {
 #[derive(Debug)]
 pub(crate) struct JournalWriter {
     path: PathBuf,
-    file: Mutex<File>,
+    file: Arc<Mutex<File>>,
 }
 
 impl JournalWriter {
-    /// Records that the API stored `file` with the content `digest`, and flushes the
-    /// entry to disk before returning.
-    pub(crate) fn append(&self, file: &PlannedFile, digest: &Digest) -> Result<(), Error> {
+    /// Records that the API stored `file` with the content `digest`. Returns once the
+    /// entry is on disk.
+    pub(crate) async fn append(&self, file: &PlannedFile, digest: &Digest) -> Result<(), Error> {
         let entry = Entry {
             path: file.path().to_owned(),
             size: file.size(),
             modified_ns: nanos_since_epoch(file.modified()),
             sha256: hex(digest),
         };
-        let write = || -> io::Result<()> {
-            let line = json_line(&entry)?;
-            let mut journal = self.file.lock().unwrap_or_else(PoisonError::into_inner);
-            journal.write_all(&line)?;
-            journal.sync_data()
-        };
-        write().map_err(|source| journal_error(&self.path, JournalError::Io(source)))
+        let line = json_line(&entry).map_err(|source| self.error(source))?;
+        let journal = Arc::clone(&self.file);
+        let path = self.path.clone();
+        run_blocking(&self.path, move || {
+            // One `write_all` per line under the lock keeps concurrent entries whole.
+            let mut journal = journal.lock().unwrap_or_else(PoisonError::into_inner);
+            journal
+                .write_all(&line)
+                .and_then(|()| journal.sync_data())
+                .map_err(|source| journal_error(&path, JournalError::Io(source)))
+        })
+        .await
+    }
+
+    fn error(&self, source: io::Error) -> Error {
+        journal_error(&self.path, JournalError::Io(source))
+    }
+}
+
+/// Runs `work` on the blocking thread pool. A task that panics or is cancelled fails
+/// with [`JournalError::Io`] for the journal at `path`.
+async fn run_blocking<T, F>(path: &Path, work: F) -> Result<T, Error>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, Error> + Send + 'static,
+{
+    match tokio::task::spawn_blocking(work).await {
+        Ok(result) => result,
+        Err(join_error) => Err(journal_error(
+            path,
+            JournalError::Io(io::Error::from(join_error)),
+        )),
     }
 }
 
