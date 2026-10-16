@@ -6,7 +6,7 @@ use std::path::Path;
 
 use serde_json::{Map, Value};
 
-use super::template::Template;
+use super::template::{self, Template};
 use super::{Finding, FindingCode};
 
 /// Path of the info file relative to the dataset root.
@@ -214,11 +214,20 @@ impl Parser<'_> {
             );
             return Vec::new();
         };
-        features
+        let keys: Vec<String> = features
             .iter()
             .filter(|(_, feature)| feature.get("dtype").and_then(Value::as_str) == Some("video"))
             .map(|(name, _)| name.clone())
-            .collect()
+            .collect();
+        for key in keys.iter().filter(|key| !template::is_path_segment(key)) {
+            self.report(
+                FindingCode::InfoMalformed,
+                format!(
+                    "the video feature {key:?} cannot be a directory name: it is empty, contains / or starts with a dot."
+                ),
+            );
+        }
+        keys
     }
 
     fn template(&mut self, field: &str, names: &[&str]) -> Option<Template> {

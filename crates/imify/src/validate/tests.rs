@@ -472,6 +472,105 @@ fn template_rejects_an_unsupported_format_spec_and_unbalanced_braces() {
     }
 }
 
+#[test]
+fn template_rejects_a_width_above_20() {
+    let error = Template::parse("{episode_index:021d}", &["episode_index"]).unwrap_err();
+
+    assert_eq!(error, "the width of {episode_index:021d} is larger than 20");
+}
+
+#[test]
+fn template_accepts_a_width_of_20() {
+    let template = Template::parse("{episode_index:020d}", &["episode_index"]).unwrap();
+
+    let path = template.expand(&[("episode_index", Arg::Int(u64::MAX))]);
+
+    assert_eq!(path, Path::new("18446744073709551615"));
+}
+
+#[test]
+fn template_rejects_a_width_that_overflows() {
+    let text = format!("{{episode_index:0{}d}}", "9".repeat(40));
+
+    assert!(Template::parse(&text, &["episode_index"]).is_err());
+}
+
+#[test]
+fn template_rejects_a_text_longer_than_1_kib() {
+    let text = format!("data/{}.parquet", "a".repeat(1024));
+
+    let error = Template::parse(&text, &["episode_index"]).unwrap_err();
+
+    assert_eq!(error, "the template is longer than 1024 bytes");
+}
+
+#[test]
+fn template_rejects_a_parent_directory_component() {
+    for text in [
+        "../data/{episode_index}.parquet",
+        "data/../../{episode_index}.parquet",
+        "data/{episode_index}/..",
+    ] {
+        let error = Template::parse(text, &["episode_index"]).unwrap_err();
+
+        assert_eq!(
+            error,
+            format!("{text} is not a relative path inside the dataset"),
+            "{text}"
+        );
+    }
+}
+
+#[test]
+fn template_rejects_an_absolute_path() {
+    for text in ["/data/{episode_index}.parquet", "//{episode_index}"] {
+        assert!(Template::parse(text, &["episode_index"]).is_err(), "{text}");
+    }
+}
+
+#[test]
+fn a_data_path_outside_the_dataset_is_info_malformed() {
+    let dataset = build(Format::V2_1, &[]);
+    write_info(&dataset, |info| {
+        info["data_path"] = "../outside/episode_{episode_index:06d}.parquet".into();
+    });
+
+    let report = report_of(&dataset);
+
+    assert_eq!(codes(&report), [FindingCode::InfoMalformed]);
+}
+
+#[test]
+fn a_video_path_with_a_huge_width_is_info_malformed() {
+    let dataset = build(Format::V3_0, &[]);
+    write_info(&dataset, |info| {
+        info["video_path"] =
+            "videos/{video_key}/chunk-{chunk_index:0999999999d}/file-{file_index:03d}.mp4".into();
+    });
+
+    let report = report_of(&dataset);
+
+    assert_eq!(codes(&report), [FindingCode::InfoMalformed]);
+}
+
+#[test]
+fn a_video_feature_name_that_cannot_be_a_path_segment_is_info_malformed() {
+    for name in ["..", ".", "front/../../x", ".hidden"] {
+        let dataset = build(Format::V3_0, &[]);
+        write_info(&dataset, |info| {
+            info["features"][name] = serde_json::json!({"dtype": "video"});
+        });
+
+        let report = report_of(&dataset);
+
+        assert!(
+            codes(&report).contains(&FindingCode::InfoMalformed),
+            "{name}: {:?}",
+            report.findings
+        );
+    }
+}
+
 /// The finding code table of `docs/guide/datasets-validate.md`: `(code, severity)` per row.
 fn guide_table() -> Vec<(String, String)> {
     let guide = std::fs::read_to_string(concat!(
