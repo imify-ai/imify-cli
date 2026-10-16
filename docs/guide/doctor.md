@@ -4,7 +4,7 @@
 $ imify doctor
 imify-cli 0.1.0 (macos aarch64)
 
-ok    api_url       https://api.example.com
+ok    api_url       https://api.example.com (IMIFY_API_URL)
 ok    health        Reachable in 84 ms.
 ok    readiness     Database ok, storage ok.
 warn  clock         The local clock is 95 s behind the server.
@@ -14,7 +14,7 @@ ok    token_expiry  Expires at 2026-10-16T12:00:00Z.
 ok    account       Ada Lovelace (admin).
 ```
 
-`imify doctor` checks the CLI configuration, the API at `IMIFY_API_URL` and the access token in `IMIFY_TOKEN`, then writes a report to stdout. It contacts only the host in `IMIFY_API_URL` and sends three requests: `GET /api/health` and `GET /api/health/ready` without a token, then `GET /api/v1/me` with the token. Requests are not retried and time out after 10 s without progress.
+`imify doctor` checks the CLI configuration, the API and the access token, then writes a report to stdout. It contacts only the API host, which `--api-url`, `IMIFY_API_URL`, the config file or the default selects (see [Configuration](configuration.md)), and sends three requests: `GET /api/health` and `GET /api/health/ready` without a token, then `GET /api/v1/me` with the token. Requests are not retried and time out after 10 s without progress.
 
 Each line is one check: status, name and message. A `fail` or `warn` line with a hint is followed by a `hint:` line.
 
@@ -29,7 +29,7 @@ Each line is one check: status, name and message. A `fail` or `warn` line with a
 
 | Name | Fails when (error code) | Warns when | Skipped when |
 |---|---|---|---|
-| `api_url` | `IMIFY_API_URL` is unset, not a URL, has a user name, password, query or fragment, or uses `http` for a host other than `localhost`, `127.0.0.1` or `::1` (`invalid_argument`). | | |
+| `api_url` | The API URL is not a URL, has a user name, password, query or fragment, or uses `http` for a host other than `localhost`, `127.0.0.1` or `::1` (`invalid_argument`). The message names the source. | | |
 | `health` | `GET /api/health` fails (`network`, `server`, `not_found`, `rate_limited`, `internal`), or its `status` is not `ok` (`server`). | | `api_url` failed. |
 | `readiness` | The API reports a `status` other than `ok` (`server`). The message names the state of the database and the storage. Also fails when the request fails. | | `health` did not pass. |
 | `clock` | | The local clock differs from the response's `Date` header by more than 60 s. | `health` did not pass, or the response has no `Date` header. |
@@ -59,7 +59,7 @@ hint: Set `IMIFY_TOKEN` to an access token.
 
 ```console
 $ imify doctor --json
-{"api_url":"https://api.example.com","checks":[{"code":null,"hint":null,"message":"https://api.example.com","name":"api_url","status":"ok"}],"cli_version":"0.1.0","clock_skew_ms":-95000,"latency_ms":84,"platform":{"arch":"aarch64","os":"macos"},"readiness":{"db":"ok","status":"ok","storage":"ok"},"token_expires_at":"2026-10-16T12:00:00Z","token_source":"env","user":{"name":"Ada Lovelace","role":"admin","subject":"user-1234"}}
+{"api_url":"https://api.example.com","api_url_source":"env","checks":[{"code":null,"hint":null,"message":"https://api.example.com (IMIFY_API_URL)","name":"api_url","status":"ok"}],"cli_version":"0.1.0","clock_skew_ms":-95000,"latency_ms":84,"platform":{"arch":"aarch64","os":"macos"},"readiness":{"db":"ok","status":"ok","storage":"ok"},"token_expires_at":"2026-10-16T12:00:00Z","token_source":"env","user":{"name":"Ada Lovelace","role":"admin","subject":"user-1234"}}
 ```
 
 The example shows one of the seven checks.
@@ -68,7 +68,8 @@ The example shows one of the seven checks.
 |---|---|
 | `cli_version` | Version of the CLI. |
 | `platform` | `os` and `arch` the CLI was built for. |
-| `api_url` | The value of `IMIFY_API_URL`. |
+| `api_url` | The API URL the checks used. |
+| `api_url_source` | Where the API URL comes from: `flag`, `env`, `config` or `default`. |
 | `latency_ms` | Duration of `GET /api/health` in milliseconds. |
 | `clock_skew_ms` | The server's `Date` minus the local time in milliseconds. Negative when the local clock is ahead. The `Date` header has a resolution of 1 s. |
 | `readiness` | `status`, `db` and `storage` from `GET /api/health/ready`. |
