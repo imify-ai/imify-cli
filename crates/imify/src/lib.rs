@@ -25,6 +25,7 @@ pub mod datasets;
 mod error;
 pub mod ingest;
 mod retry;
+pub mod validate;
 
 pub use account::User;
 pub use client::{Client, ClientBuilder};

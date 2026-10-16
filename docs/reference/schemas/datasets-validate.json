@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "imify datasets validate result",
+  "description": "Written to stdout by `imify datasets validate <path> --json`, for valid and invalid datasets.",
+  "type": "object",
+  "required": ["codebase_version", "valid", "findings"],
+  "properties": {
+    "codebase_version": {
+      "description": "The `codebase_version` declared in `meta/info.json`, or null when it is missing or not a string.",
+      "type": ["string", "null"]
+    },
+    "valid": {
+      "description": "True when no finding has severity `error`.",
+      "type": "boolean"
+    },
+    "findings": {
+      "description": "Every finding, in check order.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/finding" }
+    }
+  },
+  "$defs": {
+    "finding": {
+      "type": "object",
+      "required": ["code", "severity", "path", "message"],
+      "properties": {
+        "code": {
+          "description": "Stable finding code. Each code has a fixed severity.",
+          "enum": [
+            "info_missing",
+            "info_malformed",
+            "codebase_version_unsupported",
+            "fps_invalid",
+            "parquet_unreadable",
+            "data_file_missing",
+            "episode_length_mismatch",
+            "timestamps_not_monotonic",
+            "unexpected_entry",
+            "episode_count_mismatch",
+            "episodes_index_unreadable",
+            "video_missing",
+            "timestamp_spacing",
+            "content_not_checked"
+          ]
+        },
+        "severity": {
+          "description": "`error` makes the dataset invalid; `warning` does not.",
+          "enum": ["error", "warning"]
+        },
+        "path": {
+          "description": "The file or directory concerned, relative to the dataset root, or null.",
+          "type": ["string", "null"]
+        },
+        "message": {
+          "description": "What is wrong.",
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    }
+  }
+}
