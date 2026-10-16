@@ -9,13 +9,6 @@ mod error;
     )
 )]
 pub mod interaction;
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "commands render through it; no command exists yet"
-    )
-)]
 pub mod renderer;
 pub mod table;
 
@@ -45,17 +38,27 @@ pub struct Environment {
     /// `IMIFY_API_URL`; `None` when unset or not valid UTF-8.
     pub api_url: Option<String>,
     pub stdin_is_tty: bool,
+    pub stderr_is_tty: bool,
+    /// `TERM`; `None` when unset or not valid UTF-8.
+    pub term: Option<String>,
 }
 
 impl Environment {
-    /// Reads `IMIFY_OUTPUT`, `NO_COLOR`, `IMIFY_API_URL` and whether stdin is a terminal.
+    /// Reads `IMIFY_OUTPUT`, `NO_COLOR`, `IMIFY_API_URL`, `TERM` and whether stdin and stderr are
+    /// terminals.
     pub fn capture() -> Self {
         Self {
             imify_output: std::env::var("IMIFY_OUTPUT").ok(),
             no_color: std::env::var_os("NO_COLOR"),
             api_url: std::env::var("IMIFY_API_URL").ok(),
             stdin_is_tty: io::stdin().is_terminal(),
+            stderr_is_tty: io::stderr().is_terminal(),
+            term: std::env::var("TERM").ok(),
         }
+    }
+
+    fn dumb_terminal(&self) -> bool {
+        self.term.as_deref() == Some("dumb")
     }
 
     fn no_color(&self) -> bool {
@@ -91,6 +94,8 @@ pub struct Settings {
     pub color: bool,
     pub yes: bool,
     pub stdin_is_tty: bool,
+    /// Human mode, not quiet, verbosity 0, stderr is a terminal, `TERM` is not `dumb`.
+    pub live_view: bool,
 }
 
 impl Settings {
@@ -115,6 +120,11 @@ impl Settings {
             color: !(args.no_color || env.no_color()),
             yes: args.yes,
             stdin_is_tty: env.stdin_is_tty,
+            live_view: mode == OutputMode::Human
+                && !args.quiet
+                && args.verbose == 0
+                && env.stderr_is_tty
+                && !env.dumb_terminal(),
         })
     }
 
@@ -136,6 +146,7 @@ impl Settings {
             color: !(flag_before_separator(args, "--no-color") || env.no_color()),
             yes: false,
             stdin_is_tty: env.stdin_is_tty,
+            live_view: false,
         }
     }
 
@@ -289,6 +300,85 @@ mod tests {
                 LevelFilter::TRACE
             ]
         );
+    }
+
+    fn terminal_env() -> Environment {
+        Environment {
+            stderr_is_tty: true,
+            term: Some("xterm-256color".to_owned()),
+            ..Environment::default()
+        }
+    }
+
+    fn live_view(global: &GlobalArgs, env: &Environment) -> bool {
+        Settings::resolve(global, env).unwrap().live_view
+    }
+
+    #[test]
+    fn live_view_is_on_in_human_mode_with_stderr_on_a_terminal() {
+        assert!(live_view(&GlobalArgs::default(), &terminal_env()));
+    }
+
+    #[test]
+    fn json_flag_turns_the_live_view_off() {
+        assert!(!live_view(&args(true, false), &terminal_env()));
+    }
+
+    #[test]
+    fn imify_output_json_turns_the_live_view_off() {
+        let env = Environment {
+            imify_output: Some("json".to_owned()),
+            ..terminal_env()
+        };
+
+        assert!(!live_view(&GlobalArgs::default(), &env));
+    }
+
+    #[test]
+    fn quiet_turns_the_live_view_off() {
+        let global = GlobalArgs {
+            quiet: true,
+            ..GlobalArgs::default()
+        };
+
+        assert!(!live_view(&global, &terminal_env()));
+    }
+
+    #[test]
+    fn verbose_turns_the_live_view_off() {
+        let global = GlobalArgs {
+            verbose: 1,
+            ..GlobalArgs::default()
+        };
+
+        assert!(!live_view(&global, &terminal_env()));
+    }
+
+    #[test]
+    fn stderr_not_on_a_terminal_turns_the_live_view_off() {
+        let env = Environment {
+            stderr_is_tty: false,
+            ..terminal_env()
+        };
+
+        assert!(!live_view(&GlobalArgs::default(), &env));
+    }
+
+    #[test]
+    fn dumb_terminal_turns_the_live_view_off() {
+        let env = Environment {
+            term: Some("dumb".to_owned()),
+            ..terminal_env()
+        };
+
+        assert!(!live_view(&GlobalArgs::default(), &env));
+    }
+
+    #[test]
+    fn fallback_settings_never_select_the_live_view() {
+        let settings = Settings::fallback(&os_args(&["imify", "--bad"]), &terminal_env());
+
+        assert!(!settings.live_view);
     }
 
     #[test]

@@ -1,0 +1,8 @@
+---
+source: crates/imify-cli/src/tui/tests.rs
+expression: text
+---
+Uploading 3 of 10 files
+ 30% ───────────────────────────────────────────────────────────────────────────
+done meta/episodes/chunk-000/file-000.parquet
+done videos/observation.images.front/chunk-000/file-000.mp4

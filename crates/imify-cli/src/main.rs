@@ -1,6 +1,7 @@
 mod cli;
 mod commands;
 mod output;
+mod tui;
 
 use std::ffi::OsString;
 use std::process::ExitCode;

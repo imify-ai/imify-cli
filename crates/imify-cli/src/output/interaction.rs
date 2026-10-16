@@ -67,6 +67,7 @@ mod tests {
             color: false,
             yes,
             stdin_is_tty,
+            live_view: false,
         }
     }
 
