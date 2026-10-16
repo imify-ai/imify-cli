@@ -1,21 +1,20 @@
 # Authentication
 
 ```console
-$ export IMIFY_API_URL=https://api.example.com
-$ imify login
+$ imify login --api-url https://api.example.com
 Signing in to https://api.example.com through login.example.com. Opening the browser.
 https://login.example.com/oauth2/authorize?...
 Logged in to https://api.example.com as Ada Lovelace (admin).
 Credentials stored in the keychain.
 ```
 
-`imify login` signs in to the host in `IMIFY_API_URL` and stores the login for that host. Every other command then uses it. One login is stored per host.
+`imify login` signs in to the API host and stores the login for that host. Every other command then uses it. One login is stored per host. The host is `https://platform.imify.ai` unless `--api-url`, `IMIFY_API_URL` or the config file selects another; see [Configuration](configuration.md).
 
-> **Log in only to an API URL you trust.** The host in `IMIFY_API_URL` names the identity provider you sign in at, and every command sends your token to that host. Before you sign in, check both hosts in the first line of `imify login`.
+> **Log in only to an API URL you trust.** The API host names the identity provider you sign in at, and every command sends your token to that host. Before you sign in, check both hosts in the first line of `imify login`.
 
 ## Log in
 
-`imify login` reads the host's identity provider from `<IMIFY_API_URL>/config.json`. It writes the API host, the identity provider's host and the sign-in URL to stderr, then opens the URL in the browser. After the sign-in, the browser returns to `http://localhost:28753/callback`, or to port 28754 or 28755 when the first port is taken. The command waits up to 5 minutes. It then confirms the account with the API and stores the login.
+`imify login` reads the host's identity provider from `<API URL>/config.json`. It writes the API host, the identity provider's host and the sign-in URL to stderr, then opens the URL in the browser. After the sign-in, the browser returns to `http://localhost:28753/callback`, or to port 28754 or 28755 when the first port is taken. The command waits up to 5 minutes. It then confirms the account with the API and stores the login.
 
 When the browser does not open, open the URL from stderr by hand.
 
@@ -76,7 +75,7 @@ Schema: [`logout.json`](../reference/schemas/logout.json).
 ## Token precedence
 
 1. `IMIFY_TOKEN`, when set and not empty.
-2. The stored login for the host in `IMIFY_API_URL`.
+2. The stored login for the API host.
 
 Without either, a command fails with `auth_required`. `imify login` warns when `IMIFY_TOKEN` is set, because the variable takes precedence over the new login.
 
@@ -106,7 +105,7 @@ Writers take a lock on `credentials.json.lock` in the same directory.
 - The file stores the ID token and the refresh token unencrypted. The root user and backups of the home directory can read them. Prefer the keychain where one exists.
 - On Linux, every process in the same desktop session can read entries from the Secret Service while the keyring is open.
 - On macOS, the Keychain can ask for permission again after an upgrade of `imify`, because the binary changed. Allow access to keep using the stored login.
-- `IMIFY_TOKEN` is not bound to a host: every command sends it to the host in `IMIFY_API_URL`. Other processes of the same user can read it from the environment.
+- `IMIFY_TOKEN` is not bound to a host: every command sends it to the API host. Other processes of the same user can read it from the environment.
 - On a shared machine, run `imify logout` when you are done. Logout revokes the refresh token; the current ID token stays valid until it expires.
 - `-v` and `-vv` log the imify crates only; HTTP and TLS libraries log at `warn` and above. Tokens never appear in the output.
 
@@ -114,10 +113,10 @@ Writers take a lock on `credentials.json.lock` in the same directory.
 
 | Variable | Effect |
 |---|---|
-| `IMIFY_API_URL` | The API host. Must use `https`, except for `localhost`, `127.0.0.1` and `::1`. A user name, password, query or fragment is refused. |
+| `IMIFY_API_URL` | The API host. `--api-url` takes precedence over it. Must use `https`, except for `localhost`, `127.0.0.1` and `::1`. A user name, password, query or fragment is refused. |
 | `IMIFY_TOKEN` | A token that takes precedence over the stored login. |
 | `IMIFY_CREDENTIAL_STORE` | `auto`, `keychain` or `file`. |
-| `IMIFY_CONFIG_DIR` | The directory of `credentials.json`. |
+| `IMIFY_CONFIG_DIR` | The directory of `credentials.json` and `config.toml`. |
 | `IMIFY_OIDC_ISSUER` | The identity provider's issuer URL, replacing `authority` from `config.json`. Must use `https`, except on loopback hosts. |
 | `IMIFY_OIDC_CLIENT_ID` | The client id, replacing `clientId` from `config.json`. |
 
@@ -127,7 +126,7 @@ With both `IMIFY_OIDC_ISSUER` and `IMIFY_OIDC_CLIENT_ID` set, `imify login` does
 
 | Code | Exit | Cause |
 |---|---|---|
-| `invalid_argument` | 2 | `IMIFY_API_URL` or the issuer is not `https` on a remote host, or `IMIFY_API_URL` has a user name, password, query or fragment; the host publishes no `config.json` and the overrides are unset; `IMIFY_CREDENTIAL_STORE` is unsupported; `--no-browser` without a terminal; the pasted text is not the redirect URL. |
+| `invalid_argument` | 2 | The API URL or the issuer is not `https` on a remote host, or the API URL has a user name, password, query or fragment; the host publishes no `config.json` and the overrides are unset; `IMIFY_CREDENTIAL_STORE` is unsupported; `--no-browser` without a terminal; the pasted text is not the redirect URL. |
 | `auth_required` | 3 | There is no login for the host, and `IMIFY_TOKEN` is not set. |
 | `auth_rejected` | 3 | The API rejected the token. |
 | `auth_expired` | 3 | The stored login has expired or was revoked. |

@@ -25,7 +25,7 @@ files     12 (1.4 GiB)
 | `--resume` | Continue the interrupted upload of `<path>`. Fails with `not_found` when there is none. |
 | `--restart` | Discard the interrupted upload of `<path>` and start a new ingest session. Cannot be combined with `--resume`. |
 
-The command requires `IMIFY_API_URL` and a login or `IMIFY_TOKEN`, as described in [Authentication](authentication.md), except with `--dry-run`. It checks them before it reads the dataset.
+The command requires a login or `IMIFY_TOKEN` for the API host, as described in [Authentication](authentication.md), except with `--dry-run`. It checks them before it reads the dataset.
 
 ## Steps
 
@@ -156,7 +156,7 @@ A journal cannot be continued when the `--task` value differs from the interrupt
 
 | Code | Exit | Cause |
 |---|---|---|
-| `invalid_argument` | 2 | `<path>` is not a readable directory or has no name, `--task` is missing or empty, `--resume` and `--restart` are combined, `IMIFY_API_URL` is unset or invalid, `HOME` is unset, or a file changed or became unreadable during the upload. |
+| `invalid_argument` | 2 | `<path>` is not a readable directory or has no name, `--task` is missing or empty, `--resume` and `--restart` are combined, the API URL is invalid, `HOME` is unset, or a file changed or became unreadable during the upload. |
 | `auth_required` | 3 | There is no login for the host, and `IMIFY_TOKEN` is not set. |
 | `auth_expired` | 3 | The stored login has expired or was revoked. |
 | `auth_rejected`, `permission_denied` | 3 | The API rejected the token, or the token lacks the permission. |

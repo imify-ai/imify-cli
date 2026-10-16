@@ -7,7 +7,8 @@ use imify::auth::TokenSource;
 use imify::{Client, ClientBuilder, Readiness, RetryPolicy, User};
 
 use super::auth::TokenOrigin;
-use super::{api_url, invalid_api_url, write_result};
+use super::write_result;
+use crate::config::{ResolvedApiUrl, Source, resolve_api_url};
 use crate::output::renderer::{Render, Renderer};
 use crate::output::sanitize::printable;
 use crate::output::time::rfc3339;
@@ -113,16 +114,19 @@ impl Check {
 }
 
 /// The `api_url` check of a URL the SDK accepted: `warn` for `http` to a host other than
-/// the loopback host.
-fn api_url_check(url: &str) -> Check {
+/// the loopback host. The message names the URL's source.
+fn api_url_check(url: &str, source: Source) -> Check {
     if sends_plain_http_off_host(url) {
         Check::warn(
             "api_url",
-            format!("{url} uses plain http to a host other than localhost."),
-            "Use an `https` URL in `IMIFY_API_URL`.",
+            format!(
+                "{url} ({}) uses plain http to a host other than localhost.",
+                source.api_url_label()
+            ),
+            "Use an `https` API URL.",
         )
     } else {
-        Check::ok("api_url", url)
+        Check::ok("api_url", format!("{url} ({})", source.api_url_label()))
     }
 }
 
@@ -231,6 +235,7 @@ fn client_builder(url: &str) -> ClientBuilder {
 #[derive(Debug, Default)]
 struct Report {
     api_url: Option<String>,
+    api_url_source: Option<Source>,
     latency_ms: Option<u64>,
     clock_skew_ms: Option<i64>,
     readiness: Option<Readiness>,
@@ -271,12 +276,12 @@ async fn diagnose(env: &Environment) -> Report {
     }
     check_clock(reachable.as_ref(), &mut report);
 
-    let host = api.as_ref().map(|(url, _)| url.as_str());
-    let token_source = check_token(env, host, &mut report).await;
+    let host = api.as_ref().map(|(api_url, _)| api_url.to_string());
+    let token_source = check_token(env, host.as_deref(), &mut report).await;
     match (&api, token_source) {
         (_, None) => report.push(Check::skip_after("account", "token")),
-        (Some((url, _)), Some(source)) if reachable.is_some() => {
-            check_account(url, source, &mut report).await;
+        (Some((api_url, _)), Some(source)) if reachable.is_some() => {
+            check_account(api_url, source, &mut report).await;
         }
         _ => report.push(Check::skip_after("account", "health")),
     }
@@ -284,19 +289,20 @@ async fn diagnose(env: &Environment) -> Report {
 }
 
 /// Runs the `api_url` check and returns the URL with a client without a token source.
-fn check_api_url(env: &Environment, report: &mut Report) -> Option<(String, Client)> {
-    let checked = api_url(env).and_then(|url| {
-        let url = url.as_str().trim_end_matches('/').to_owned();
-        client_builder(&url)
+fn check_api_url(env: &Environment, report: &mut Report) -> Option<(ResolvedApiUrl, Client)> {
+    let checked = resolve_api_url(env).and_then(|api_url| {
+        client_builder(&api_url.to_string())
             .build()
-            .map(|client| (url, client))
-            .map_err(|error| invalid_api_url(&error))
+            .map(|client| (api_url.clone(), client))
+            .map_err(|error| api_url.invalid(&error))
     });
     match checked {
-        Ok((url, client)) => {
-            report.push(api_url_check(&url));
-            report.api_url = Some(url.clone());
-            Some((url, client))
+        Ok((api_url, client)) => {
+            let url = api_url.to_string();
+            report.push(api_url_check(&url, api_url.source));
+            report.api_url = Some(url);
+            report.api_url_source = Some(api_url.source);
+            Some((api_url, client))
         }
         Err(error) => {
             report.push(Check::fail("api_url", error));
@@ -456,10 +462,17 @@ fn host_key_of(api_url: &str) -> String {
     )
 }
 
-async fn check_account(url: &str, source: impl TokenSource + 'static, report: &mut Report) {
-    let result = match client_builder(url).token_source(source).build() {
+async fn check_account(
+    api_url: &ResolvedApiUrl,
+    source: impl TokenSource + 'static,
+    report: &mut Report,
+) {
+    let result = match client_builder(&api_url.to_string())
+        .token_source(source)
+        .build()
+    {
         Ok(client) => client.me().await.map_err(CliError::from),
-        Err(error) => Err(invalid_api_url(&error)),
+        Err(error) => Err(api_url.invalid(&error)),
     };
     let check = match result {
         Ok(user) => {
@@ -494,6 +507,7 @@ impl Render for Report {
             "cli_version": env!("CARGO_PKG_VERSION"),
             "platform": {"os": std::env::consts::OS, "arch": std::env::consts::ARCH},
             "api_url": self.api_url,
+            "api_url_source": self.api_url_source.map(Source::as_str),
             "latency_ms": self.latency_ms,
             "clock_skew_ms": self.clock_skew_ms,
             "readiness": self.readiness.as_ref().map(|readiness| serde_json::json!({
@@ -549,7 +563,10 @@ mod tests {
 
     #[test]
     fn https_api_url_is_ok() {
-        assert_eq!(api_url_check("https://api.example.com").status, Status::Ok);
+        assert_eq!(
+            api_url_check("https://api.example.com", Source::Env).status,
+            Status::Ok
+        );
     }
 
     #[test]
@@ -560,13 +577,13 @@ mod tests {
             "http://[::1]:8000",
             "HTTP://LOCALHOST",
         ] {
-            assert_eq!(api_url_check(url).status, Status::Ok, "{url}");
+            assert_eq!(api_url_check(url, Source::Env).status, Status::Ok, "{url}");
         }
     }
 
     #[test]
     fn http_api_url_on_another_host_is_a_warning_with_a_hint() {
-        let check = api_url_check("http://api.example.com");
+        let check = api_url_check("http://api.example.com", Source::Env);
 
         assert_eq!(check.status, Status::Warn);
         assert!(check.hint.is_some());
@@ -575,7 +592,7 @@ mod tests {
     #[test]
     fn http_api_url_with_a_loopback_name_in_the_user_info_is_a_warning() {
         assert_eq!(
-            api_url_check("http://localhost@api.example.com").status,
+            api_url_check("http://localhost@api.example.com", Source::Env).status,
             Status::Warn
         );
     }

@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "imify config set result",
+  "description": "Written to stdout by `imify config set <key> <value> --json`: the stored value and the config file.",
+  "type": "object",
+  "required": ["key", "value", "path"],
+  "properties": {
+    "key": {
+      "description": "The setting, as named on the command line.",
+      "enum": ["api-url"]
+    },
+    "value": {
+      "description": "The stored value. An API URL is stored without a trailing slash.",
+      "type": "string",
+      "minLength": 1
+    },
+    "path": {
+      "description": "The config file.",
+      "type": "string",
+      "minLength": 1
+    }
+  }
+}

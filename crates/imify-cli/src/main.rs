@@ -1,20 +1,22 @@
 mod browser;
 mod cli;
 mod commands;
+mod config;
 mod credentials;
 mod output;
+mod private_file;
 mod tui;
 
 use std::ffi::OsString;
 use std::process::ExitCode;
 
-use cli::{Command, DatasetsCommand};
+use cli::{Command, ConfigCommand, DatasetsCommand};
 use output::renderer::Renderer;
 use output::{CliError, Environment, ErrorCode, Settings};
 
 fn main() -> ExitCode {
     let args: Vec<OsString> = std::env::args_os().collect();
-    let env = Environment::capture();
+    let mut env = Environment::capture();
     let fallback = Settings::fallback(&args, &env);
 
     let cli = match cli::parse(&args, fallback.color) {
@@ -27,6 +29,7 @@ fn main() -> ExitCode {
         Err(error) => return report(fallback.renderer().as_mut(), &error),
     };
     init_tracing(&settings);
+    env.api_url_flag.clone_from(&cli.global.api_url);
 
     let mut renderer = settings.renderer();
     match run(cli.command.as_ref(), &env, &settings, renderer.as_mut()) {
@@ -49,6 +52,12 @@ fn run(
             runtime()?.block_on(commands::auth::login(env, *no_browser, renderer))
         }
         Some(Command::Logout) => runtime()?.block_on(commands::auth::logout(env, renderer)),
+        Some(Command::Config { command }) => match command {
+            ConfigCommand::Get { key } => commands::config::get(env, *key, renderer),
+            ConfigCommand::Set { key, value } => commands::config::set(env, *key, value, renderer),
+            ConfigCommand::Unset { key } => commands::config::unset(env, *key, renderer),
+            ConfigCommand::List => commands::config::list(env, renderer),
+        },
         Some(Command::Datasets {
             command: DatasetsCommand::Ls(args),
         }) => runtime()?.block_on(commands::datasets::ls(env, args, renderer)),

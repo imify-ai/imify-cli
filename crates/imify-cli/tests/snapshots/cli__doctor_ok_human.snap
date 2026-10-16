@@ -4,7 +4,7 @@ expression: "normalize_doctor_text(&text(&output.stdout), &server.uri())"
 ---
 imify-cli 0.0.0 (<os> <arch>)
 
-ok    api_url       http://127.0.0.1:<port>
+ok    api_url       http://127.0.0.1:<port> (IMIFY_API_URL)
 ok    health        Reachable in <n> ms.
 ok    readiness     Database ok, storage ok.
 ok    clock         The local clock is within 60 s of the server.

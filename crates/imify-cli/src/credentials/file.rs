@@ -1,25 +1,17 @@
 //! The login in `credentials.json`, readable only by the user.
 
 use std::collections::BTreeMap;
-use std::fs::{DirBuilder, File};
-use std::io::{self, Read, Write};
 use std::os::fd::OwnedFd;
-use std::os::unix::fs::{DirBuilderExt, MetadataExt};
 use std::path::{Path, PathBuf};
 
 use imify::Error;
 use imify::auth::Credentials;
-use rustix::fs::{FileType, FlockOperation, Mode, OFlags};
-use rustix::io::Errno;
+use rustix::fs::FlockOperation;
+
+use crate::private_file::{self, Permissions, PrivateFileError};
 
 const FILE_NAME: &str = "credentials.json";
 const LOCK_FILE_NAME: &str = "credentials.json.lock";
-
-/// The largest credentials file read, in bytes.
-const MAX_FILE_SIZE: u64 = 1024 * 1024;
-
-/// Permission bits that let users other than the owner change the directory.
-const GROUP_AND_OTHER_WRITE: u32 = 0o022;
 
 /// The file's content: one entry per host key. Entries of other hosts are kept unparsed.
 type Entries = BTreeMap<String, serde_json::Value>;
@@ -35,15 +27,6 @@ type Entries = BTreeMap<String, serde_json::Value>;
 pub struct FileStore {
     path: PathBuf,
     host_key: String,
-}
-
-/// How strictly [`FileStore::read_bytes`] checks the file's permissions.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Permissions {
-    /// Other users must have no access.
-    OwnerOnly,
-    /// Any mode; used by `delete`, which rewrites or removes the file.
-    Any,
 }
 
 impl FileStore {
@@ -63,98 +46,26 @@ impl FileStore {
     }
 
     fn error(&self, message: impl Into<String>) -> Error {
-        error_at(&self.path, message)
+        store_error(PrivateFileError::new(&self.path, message))
     }
 
     /// Checks the directory. Returns `false` when it does not exist.
     fn check_dir(&self) -> Result<bool, Error> {
-        let dir = self.dir();
-        let metadata = match std::fs::metadata(dir) {
-            Ok(metadata) => metadata,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
-            Err(error) => return Err(error_at(dir, error.to_string())),
-        };
-        if !metadata.is_dir() {
-            return Err(error_at(dir, "not a directory"));
-        }
-        if metadata.uid() != rustix::process::geteuid().as_raw() {
-            return Err(error_at(
-                dir,
-                "the directory belongs to another user; set IMIFY_CONFIG_DIR to a directory you own",
-            ));
-        }
-        if metadata.mode() & GROUP_AND_OTHER_WRITE != 0 {
-            return Err(error_at(
-                dir,
-                format!(
-                    "other users can write to the directory; run `chmod 700 {}`",
-                    dir.display()
-                ),
-            ));
-        }
-        Ok(true)
+        private_file::check_dir(self.dir()).map_err(store_error)
     }
 
     fn create_dir(&self) -> Result<(), Error> {
-        DirBuilder::new()
-            .recursive(true)
-            .mode(0o700)
-            .create(self.dir())
-            .map_err(|error| self.error(format!("cannot create the directory: {error}")))?;
-        self.check_dir().map(drop)
+        private_file::create_dir(self.dir()).map_err(store_error)
     }
 
     /// Takes the advisory lock; it is released when the returned descriptor is dropped.
     fn lock(&self, operation: FlockOperation) -> Result<OwnedFd, Error> {
-        let path = self.dir().join(LOCK_FILE_NAME);
-        let lock = rustix::fs::open(
-            &path,
-            OFlags::RDWR | OFlags::CREATE | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-            Mode::RUSR | Mode::WUSR,
-        )
-        .map_err(|error| error_at(&path, format!("cannot open the lock file: {error}")))?;
-        rustix::fs::flock(&lock, operation)
-            .map_err(|error| error_at(&path, format!("cannot lock: {error}")))?;
-        Ok(lock)
+        private_file::lock(&self.dir().join(LOCK_FILE_NAME), operation).map_err(store_error)
     }
 
     /// The file's bytes, `None` when it does not exist.
     fn read_bytes(&self, permissions: Permissions) -> Result<Option<Vec<u8>>, Error> {
-        let fd = match rustix::fs::open(
-            &self.path,
-            OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
-            Mode::empty(),
-        ) {
-            Ok(fd) => fd,
-            Err(Errno::NOENT) => return Ok(None),
-            Err(Errno::LOOP) => return Err(self.error("the file is a symbolic link")),
-            Err(error) => return Err(self.error(error.to_string())),
-        };
-        let stat = rustix::fs::fstat(&fd).map_err(|error| self.error(error.to_string()))?;
-        if FileType::from_raw_mode(stat.st_mode) != FileType::RegularFile {
-            return Err(self.error("not a regular file"));
-        }
-        if stat.st_uid != rustix::process::geteuid().as_raw() {
-            return Err(self.error("the file belongs to another user"));
-        }
-        // `st_mode` is 16 bits wide on macOS and 32 bits on Linux; `Mode` hides the width.
-        let mode = Mode::from_raw_mode(stat.st_mode) & (Mode::RWXU | Mode::RWXG | Mode::RWXO);
-        if permissions == Permissions::OwnerOnly && mode.intersects(Mode::RWXG | Mode::RWXO) {
-            return Err(self.error(format!(
-                "other users can access the file (mode {:o}); run `chmod 600 {}`",
-                mode.bits(),
-                self.path.display()
-            )));
-        }
-        let mut content = Vec::new();
-        File::from(fd)
-            .take(MAX_FILE_SIZE + 1)
-            .read_to_end(&mut content)
-            .map_err(|error| self.error(error.to_string()))?;
-        if content.len() as u64 > MAX_FILE_SIZE {
-            return Err(self.error("the file is larger than 1 MiB"));
-        }
-        Ok(Some(content))
+        private_file::read(&self.path, permissions).map_err(store_error)
     }
 
     fn parse(&self, content: &[u8]) -> Result<Entries, Error> {
@@ -170,49 +81,21 @@ impl FileStore {
     }
 
     fn write(&self, entries: &Entries) -> Result<(), Error> {
-        let dir = self.dir();
         let content =
             serde_json::to_vec_pretty(entries).map_err(|error| self.error(error.to_string()))?;
-        // `NamedTempFile` creates the file with mode 0600.
-        let mut temporary = tempfile::NamedTempFile::new_in(dir)
-            .map_err(|error| self.error(format!("cannot create a temporary file: {error}")))?;
-        temporary
-            .write_all(&content)
-            .and_then(|()| temporary.as_file().sync_all())
-            .map_err(|error| self.error(error.to_string()))?;
-        temporary
-            .persist(&self.path)
-            .map_err(|error| self.error(error.error.to_string()))?;
-        self.sync_dir()
+        private_file::write(&self.path, &content).map_err(store_error)
     }
 
     fn remove(&self) -> Result<(), Error> {
-        std::fs::remove_file(&self.path).map_err(|error| self.error(error.to_string()))?;
-        self.sync_dir()
-    }
-
-    /// Makes the rename or removal in the directory durable.
-    fn sync_dir(&self) -> Result<(), Error> {
-        let dir = self.dir();
-        rustix::fs::open(
-            dir,
-            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
-            Mode::empty(),
-        )
-        .and_then(|fd| rustix::fs::fsync(&fd))
-        .map_err(|error| error_at(dir, format!("cannot sync the directory: {error}")))
+        private_file::remove(&self.path).map_err(store_error)
     }
 }
 
-fn error_at(path: &Path, message: impl Into<String>) -> Error {
+fn store_error(error: PrivateFileError) -> Error {
     Error::CredentialStore {
-        source: Box::new(FileStoreError {
-            path: path.to_path_buf(),
-            message: message.into(),
-        }),
+        source: Box::new(error),
     }
 }
-
 impl imify::auth::CredentialStore for FileStore {
     fn load(&self) -> Result<Option<Credentials>, Error> {
         if !self.check_dir()? {
@@ -264,12 +147,4 @@ impl imify::auth::CredentialStore for FileStore {
         }
         Ok(true)
     }
-}
-
-/// The credentials file or its directory cannot be used.
-#[derive(Debug, thiserror::Error)]
-#[error("{}: {message}", path.display())]
-pub struct FileStoreError {
-    path: PathBuf,
-    message: String,
 }

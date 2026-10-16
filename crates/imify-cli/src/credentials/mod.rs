@@ -12,7 +12,7 @@ use imify::Error;
 use imify::auth::{CredentialStore, Credentials};
 use url::Url;
 
-pub use self::file::{FileStore, FileStoreError};
+pub use self::file::FileStore;
 pub use self::keychain::{Keychain, KeychainError, KeychainStore};
 use crate::output::{CliError, Environment, ErrorCode};
 

@@ -32,6 +32,7 @@ Human output escapes control characters and Unicode format characters, such as b
 | `-v`, `-vv` | | Logs at debug or trace level to stderr. |
 | `--yes` | | Confirms without prompting. |
 | `--no-color` | `NO_COLOR` (non-empty) | Disables color. |
+| `--api-url <URL>` | `IMIFY_API_URL` | The API host. `--api-url` takes precedence over `IMIFY_API_URL`, which takes precedence over the config file. See [Configuration](../guide/configuration.md). |
 
 `IMIFY_OUTPUT` accepts `json` and `human`. Any other value fails with `invalid_argument` and exit code 2. Global flags are valid before or after the command.
 
@@ -66,7 +67,7 @@ Schema: [`schemas/error.json`](schemas/error.json).
 | Code | Exit | Meaning |
 |---|---|---|
 | `internal` | 1 | Unexpected failure in the CLI. |
-| `invalid_argument` | 2 | Invalid command line, unsupported `IMIFY_OUTPUT`, or input required without a terminal. |
+| `invalid_argument` | 2 | Invalid command line, unsupported `IMIFY_OUTPUT`, invalid API URL or config file, or input required without a terminal. |
 | `auth_required` | 3 | The command needs a login or a token. |
 | `auth_rejected` | 3 | The server rejected the access token. |
 | `auth_expired` | 3 | The stored login has expired or was revoked. Run `imify login`. |

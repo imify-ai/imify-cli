@@ -3,7 +3,8 @@
 use imify::LoginFailure;
 use serde::Serialize;
 
-use crate::credentials::{FileStoreError, KeychainError};
+use crate::credentials::KeychainError;
+use crate::private_file::PrivateFileError;
 
 /// A stable, documented error code. The `snake_case` name is part of the JSON contract.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -179,7 +180,7 @@ impl From<imify::Error> for CliError {
             imify::Error::Network { .. } => Self::new(ErrorCode::Network, message),
             imify::Error::Config { .. } => Self::new(ErrorCode::InvalidArgument, message),
             imify::Error::Login { reason, .. } => login_error(reason, message),
-            imify::Error::CredentialStore { source } if source.is::<FileStoreError>() => {
+            imify::Error::CredentialStore { source } if source.is::<PrivateFileError>() => {
                 Self::new(ErrorCode::Internal, message)
             }
             imify::Error::CredentialStore { source }

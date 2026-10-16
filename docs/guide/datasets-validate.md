@@ -9,7 +9,7 @@ error: The dataset has 1 error.
 hint: Fix the errors listed in the report and run `imify datasets validate ./pick-cube` again.
 ```
 
-`imify datasets validate <path>` checks a local LeRobot dataset in format v2.1 or v3.x before an upload. It reads the files only: it needs no network access, no token and no `IMIFY_API_URL`. `<path>` is the dataset root, the directory that contains `meta/info.json`.
+`imify datasets validate <path>` checks a local LeRobot dataset in format v2.1 or v3.x before an upload. It reads the files only: it needs no network access, no token and no API URL. `<path>` is the dataset root, the directory that contains `meta/info.json`.
 
 The report goes to stdout for valid and invalid datasets. Each line is one finding: severity, code, path relative to the dataset root, and message. The last line counts errors and warnings.
 

@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "imify config unset result",
+  "description": "Written to stdout by `imify config unset <key> --json`.",
+  "type": "object",
+  "required": ["key", "removed", "path"],
+  "properties": {
+    "key": {
+      "description": "The setting, as named on the command line.",
+      "enum": ["api-url"]
+    },
+    "removed": {
+      "description": "Whether the config file set the key.",
+      "type": "boolean"
+    },
+    "path": {
+      "description": "The config file.",
+      "type": "string",
+      "minLength": 1
+    }
+  }
+}
