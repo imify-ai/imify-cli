@@ -1,0 +1,7 @@
+---
+source: crates/imify-cli/src/tui/upload/tests.rs
+expression: text
+---
+Creating session  pick-cube
+[░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░]  0 B / 1.4 GiB  0%
+0/8 files

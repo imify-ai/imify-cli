@@ -1,0 +1,7 @@
+---
+source: crates/imify-cli/src/tui/upload/tests.rs
+expression: text
+---
+Completing  pick-cube  session 3f2c9a
+[██████████████████████████████]  1.4 GiB / 1.4 GiB  100%  176.0 MiB/s
+8/8 files  1 retry

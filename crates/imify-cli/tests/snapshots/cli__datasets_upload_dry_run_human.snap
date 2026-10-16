@@ -1,0 +1,7 @@
+---
+source: crates/imify-cli/tests/cli.rs
+expression: text(&output.stdout)
+---
+name      pick-cube
+task      Pick up the red cube
+files     6 (8.1 KiB)

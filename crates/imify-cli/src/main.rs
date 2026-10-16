@@ -27,7 +27,7 @@ fn main() -> ExitCode {
     init_tracing(&settings);
 
     let mut renderer = settings.renderer();
-    match run(cli.command.as_ref(), &env, renderer.as_mut()) {
+    match run(cli.command.as_ref(), &env, &settings, renderer.as_mut()) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => report(renderer.as_mut(), &error),
     }
@@ -36,6 +36,7 @@ fn main() -> ExitCode {
 fn run(
     command: Option<&Command>,
     env: &Environment,
+    settings: &Settings,
     renderer: &mut dyn Renderer,
 ) -> Result<(), CliError> {
     match command {
@@ -47,6 +48,11 @@ fn run(
         Some(Command::Datasets {
             command: DatasetsCommand::Validate(args),
         }) => commands::datasets::validate(args, renderer),
+        Some(Command::Datasets {
+            command: DatasetsCommand::Upload(args),
+        }) => runtime()?.block_on(commands::datasets::upload::upload(
+            env, settings, args, renderer,
+        )),
     }
 }
 

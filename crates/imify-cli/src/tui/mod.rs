@@ -3,13 +3,11 @@
 //! [`run`] drives an operation and its progress events. With [`Progress::Live`], a [`View`]
 //! draws the events into an inline viewport at most 10 times per second and leaves its summary
 //! in the scrollback. With [`Progress::Lines`], each event goes through the [`Renderer`].
-#![expect(
-    dead_code,
-    reason = "commands with a live view use it; no command exists yet"
-)]
 
+pub mod format;
 pub mod live;
 pub mod theme;
+pub mod upload;
 pub mod view;
 
 #[cfg(test)]

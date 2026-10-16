@@ -1,0 +1,21 @@
+---
+source: crates/imify-cli/tests/cli.rs
+expression: "with_sorted_transfers(&text(&output.stdout), \"\\\"file_\", \"\\\"completing\\\"\")"
+---
+{"errors":0,"findings":[],"type":"validated","warnings":0}
+{"bytes":8338,"files":6,"skipped":[],"type":"planned"}
+{"session_id":"3f2c9a","type":"session_created"}
+{"path":"data/chunk-000/file-000.parquet","size":1417,"type":"file_started"}
+{"path":"data/chunk-000/file-000.parquet","size":1417,"type":"file_finished"}
+{"path":"meta/episodes/chunk-000/file-000.parquet","size":2976,"type":"file_started"}
+{"path":"meta/episodes/chunk-000/file-000.parquet","size":2976,"type":"file_finished"}
+{"path":"meta/info.json","size":1451,"type":"file_started"}
+{"path":"meta/info.json","size":1451,"type":"file_finished"}
+{"path":"meta/stats.json","size":947,"type":"file_started"}
+{"path":"meta/stats.json","size":947,"type":"file_finished"}
+{"path":"meta/tasks.parquet","size":523,"type":"file_started"}
+{"path":"meta/tasks.parquet","size":523,"type":"file_finished"}
+{"path":"videos/observation.images.front/chunk-000/file-000.mp4","size":1024,"type":"file_started"}
+{"path":"videos/observation.images.front/chunk-000/file-000.mp4","size":1024,"type":"file_finished"}
+{"type":"completing"}
+{"bytes":8338,"dry_run":false,"episodes":2,"files":6,"format":"lerobot_v3","fps":30.0,"name":"pick-cube","robot_type":"so100","session_id":"3f2c9a","status":"ready","task":"Pick up the red cube","type":"result"}

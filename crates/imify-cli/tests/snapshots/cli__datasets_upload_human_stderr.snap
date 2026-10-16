@@ -1,0 +1,19 @@
+---
+source: crates/imify-cli/tests/cli.rs
+expression: "with_sorted_transfers(&text(&output.stderr), \"Uploading \", \"Completing\")"
+---
+Planned 6 files (8.1 KiB).
+Created ingest session 3f2c9a.
+Uploading data/chunk-000/file-000.parquet (1.4 KiB).
+Uploaded data/chunk-000/file-000.parquet.
+Uploading meta/episodes/chunk-000/file-000.parquet (2.9 KiB).
+Uploaded meta/episodes/chunk-000/file-000.parquet.
+Uploading meta/info.json (1.4 KiB).
+Uploaded meta/info.json.
+Uploading meta/stats.json (947 B).
+Uploaded meta/stats.json.
+Uploading meta/tasks.parquet (523 B).
+Uploaded meta/tasks.parquet.
+Uploading videos/observation.images.front/chunk-000/file-000.mp4 (1.0 KiB).
+Uploaded videos/observation.images.front/chunk-000/file-000.mp4.
+Completing the ingest session.

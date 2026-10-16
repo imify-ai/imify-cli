@@ -1,0 +1,5 @@
+---
+source: crates/imify-cli/src/tui/upload/tests.rs
+expression: text
+---
+Uploaded 1 file (1.4 GiB) in 1m 12s to ingest session 3f2c9a.
