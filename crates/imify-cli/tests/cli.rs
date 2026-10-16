@@ -1564,3 +1564,112 @@ fn doctor_help_shows_the_example() {
         "Example:\n  IMIFY_TOKEN=<token> IMIFY_API_URL=https://api.example.com imify doctor\n"
     ));
 }
+
+/// External text that clears the screen, sets the window title, reverses the text after it
+/// and starts a line that looks like a finding.
+const HOSTILE: &str = "x\u{1b}[2J\u{1b}]0;pwned\u{7}\u{202e}\nerror  forged";
+
+/// Asserts that `output` shows [`HOSTILE`] escaped: no raw control character other than a line
+/// feed, no right-to-left override and no line that the external text started.
+fn assert_escaped(output: &str) {
+    let raw: Vec<char> = output
+        .chars()
+        .filter(|&c| (c.is_control() && c != '\n') || c == '\u{202e}')
+        .collect();
+    assert!(raw.is_empty(), "raw characters {raw:?} in {output:?}");
+    assert!(output.contains("\\u{1b}[2J"), "{output}");
+    assert!(
+        !output.lines().any(|line| line.starts_with("error  forged")),
+        "{output}"
+    );
+}
+
+#[test]
+fn datasets_validate_escapes_a_file_name_and_an_info_json_string() {
+    let dataset = dataset(
+        Format::V2_1,
+        &[
+            Defect::StrayFile(HOSTILE.to_owned()),
+            Defect::CodebaseVersion(HOSTILE.to_owned()),
+        ],
+    )
+    .unwrap();
+
+    let output = validate(&dataset, &[]);
+
+    assert_eq!(output.status.code(), Some(5));
+    assert_escaped(&text(&output.stdout));
+}
+
+#[test]
+fn datasets_validate_escapes_a_parquet_value() {
+    let dataset = dataset(Format::V3_0, &[Defect::TextTimestamps(HOSTILE.to_owned())]).unwrap();
+
+    let output = validate(&dataset, &[]);
+
+    assert_eq!(output.status.code(), Some(5));
+    assert_escaped(&text(&output.stdout));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn datasets_ls_escapes_a_server_dataset_name() {
+    let body = json!([dataset_body(PICK_ID, HOSTILE, "lerobot_v3", "so100", 1, 1)]);
+    let server = api_with_datasets(200, body).await;
+
+    let output = datasets_ls(&server, &[]);
+
+    assert_eq!(output.status.code(), Some(0), "{}", text(&output.stderr));
+    assert_escaped(&text(&output.stdout));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn datasets_upload_escapes_session_fields_and_file_names() {
+    let server = ingest_api().await;
+    let dataset = pick_cube(&[Defect::StrayFile(HOSTILE.to_owned())]).unwrap();
+    let mut session = completed_session_body();
+    session["robot_type"] = json!(HOSTILE);
+    Mock::given(method("POST"))
+        .and(path(COMPLETE))
+        .respond_with(ResponseTemplate::new(200).set_body_json(session))
+        .with_priority(1)
+        .mount(&server)
+        .await;
+
+    let output = upload(&dataset, Some(&server), &[]);
+
+    assert_eq!(output.status.code(), Some(0), "{}", text(&output.stderr));
+    assert_escaped(&text(&output.stdout));
+    assert_escaped(&text(&output.stderr));
+}
+
+#[test]
+fn datasets_upload_dry_run_escapes_the_session_name_taken_from_the_directory_name() {
+    let parent = tempfile::tempdir().unwrap();
+    let root = parent.path().join(HOSTILE);
+    DatasetBuilder::new(Format::V3_0).write_to(&root).unwrap();
+
+    let output = imify_command()
+        .env("HOME", parent.path().join("home"))
+        .current_dir(&root)
+        .args(["datasets", "upload", ".", "--task", TASK, "--dry-run"])
+        .assert()
+        .get_output()
+        .clone();
+
+    assert_eq!(output.status.code(), Some(0), "{}", text(&output.stderr));
+    assert_escaped(&text(&output.stdout));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn doctor_escapes_readiness_and_account_fields() {
+    let readiness = ResponseTemplate::new(200)
+        .set_body_json(json!({"status": "ok", "db": HOSTILE, "storage": "ok"}));
+    let me = ResponseTemplate::new(200)
+        .set_body_json(json!({"subject": "user-1234", "name": HOSTILE, "role": "admin"}));
+    let server = doctor_api(health_ok(), readiness, me).await;
+
+    let output = doctor(Some(&server.uri()), Some(VALID_JWT), &[]);
+
+    assert_eq!(output.status.code(), Some(0), "{}", text(&output.stderr));
+    assert_escaped(&text(&output.stdout));
+}

@@ -98,6 +98,9 @@ pub enum Defect {
     /// Every frame of episode 0 after frame 0 is one frame period late, as if a frame was
     /// dropped. The timestamps still increase.
     TimestampGap,
+    /// The `timestamp` column of every data file is a string column that holds this text in
+    /// every row.
+    TextTimestamps(String),
     /// The episodes index is not written: `meta/episodes.jsonl` for v2.1, every file under
     /// `meta/episodes/` for v3.0.
     MissingEpisodesIndex,
@@ -171,6 +174,7 @@ impl DatasetBuilder {
                 data_compression: Compression::Uncompressed,
                 clock: Clock::Regular,
                 declared_surplus: 0,
+                text_timestamp: None,
             },
             defects: Vec::new(),
         }
@@ -356,6 +360,10 @@ impl DatasetBuilder {
         if self.defects.contains(&Defect::EpisodeLength) {
             shape.declared_surplus = 1;
         }
+        shape.text_timestamp = self.defects.iter().find_map(|defect| match defect {
+            Defect::TextTimestamps(text) => Some(text.clone()),
+            _ => None,
+        });
         shape
     }
 

@@ -20,6 +20,7 @@ use super::{
 use crate::cli::UploadArgs;
 use crate::commands::client;
 use crate::output::renderer::{RESULT_EVENT, Render, Renderer};
+use crate::output::sanitize::printable;
 use crate::output::{CliError, Environment, ErrorCode, Settings};
 use crate::tui::live::LiveView;
 use crate::tui::theme::Theme;
@@ -423,7 +424,7 @@ impl Render for UploadResult<'_> {
             format!("{} ({})", self.files, format::bytes(self.bytes)),
         ));
         for (key, value) in rows {
-            writeln!(w, "{key:KEY_WIDTH$}{value}")?;
+            writeln!(w, "{key:KEY_WIDTH$}{}", printable(&value))?;
         }
         Ok(())
     }
@@ -575,7 +576,7 @@ impl Render for UploadProgress {
     fn human(&self, w: &mut dyn Write) -> io::Result<()> {
         match &self.step {
             UploadStep::SessionCreated { session } => {
-                writeln!(w, "Created ingest session {session}.")
+                writeln!(w, "Created ingest session {}.", printable(session))
             }
             UploadStep::SessionResumed {
                 session,
@@ -583,21 +584,37 @@ impl Render for UploadProgress {
                 bytes_done,
             } => writeln!(
                 w,
-                "Resumed ingest session {session}: {files_done} files ({}) already uploaded.",
+                "Resumed ingest session {}: {files_done} files ({}) already uploaded.",
+                printable(session),
                 format::bytes(*bytes_done)
             ),
             UploadStep::FileStarted { path, size } => {
-                writeln!(w, "Uploading {path} ({}).", format::bytes(*size))
+                writeln!(
+                    w,
+                    "Uploading {} ({}).",
+                    printable(path),
+                    format::bytes(*size)
+                )
             }
             UploadStep::FileProgress { path, bytes_sent } => {
-                writeln!(w, "Sent {} of {path}.", format::bytes(*bytes_sent))
+                writeln!(
+                    w,
+                    "Sent {} of {}.",
+                    format::bytes(*bytes_sent),
+                    printable(path)
+                )
             }
             UploadStep::FileRetrying {
                 path,
                 attempt,
                 reason,
-            } => writeln!(w, "Retrying {path}, attempt {attempt}: {reason}."),
-            UploadStep::FileFinished { path, .. } => writeln!(w, "Uploaded {path}."),
+            } => writeln!(
+                w,
+                "Retrying {}, attempt {attempt}: {}.",
+                printable(path),
+                printable(reason)
+            ),
+            UploadStep::FileFinished { path, .. } => writeln!(w, "Uploaded {}.", printable(path)),
             UploadStep::RateLimited { pause } => writeln!(
                 w,
                 "Rate limited: no request starts for {}.",
