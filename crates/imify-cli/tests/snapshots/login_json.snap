@@ -2,4 +2,4 @@
 source: crates/imify-cli/src/commands/auth/tests.rs
 expression: text
 ---
-{"host":"http://127.0.0.1:<port>","name":"Ada Lovelace","role":"admin","storage":"file","subject":"user-1234"}
+{"host":"http://127.0.0.1:<port>","name":"Ada Lovelace","role":"admin","storage":"file","storage_fallback":false,"subject":"user-1234"}

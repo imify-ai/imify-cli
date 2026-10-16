@@ -2,6 +2,8 @@
 
 use std::io::{self, Write};
 
+use super::sanitize::printable;
+
 const COLUMN_GAP: &str = "  ";
 
 /// How a column aligns its cells.
@@ -53,8 +55,14 @@ impl Table {
     }
 
     /// Adds a row. Missing cells are empty; cells beyond the column count are ignored.
+    /// Control characters in cells are escaped.
     pub fn row(&mut self, cells: Vec<String>) {
-        self.rows.push(cells);
+        self.rows.push(
+            cells
+                .into_iter()
+                .map(|cell| printable(&cell).into_owned())
+                .collect(),
+        );
     }
 
     /// Writes the header line and one line per row.

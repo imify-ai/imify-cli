@@ -34,6 +34,28 @@ impl Keychain {
         Self::opened_by(|| Ok(keyring_core::mock::Store::new()?))
     }
 
+    /// An in-memory keychain whose next operation on the login of `account` fails as on a
+    /// locked keyring.
+    #[cfg(test)]
+    pub fn locked(account: &str) -> Self {
+        let account = account.to_owned();
+        Self::opened_by(move || {
+            let store = keyring_core::mock::Store::new()?;
+            let entry = keyring_core::api::CredentialStoreApi::build(
+                store.as_ref(),
+                SERVICE,
+                &account,
+                None,
+            )?;
+            if let Some(credential) = entry.as_any().downcast_ref::<keyring_core::mock::Cred>() {
+                credential.set_error(keyring_core::Error::NoStorageAccess(
+                    "the keyring is locked".into(),
+                ));
+            }
+            Ok(store)
+        })
+    }
+
     /// A keychain that cannot be opened, as on a machine without a keychain service.
     #[cfg(test)]
     pub fn unavailable() -> Self {
@@ -86,20 +108,22 @@ fn open_system() -> keyring_core::Result<Backend> {
 /// A keychain operation failed.
 #[derive(Debug, thiserror::Error)]
 pub enum KeychainError {
-    /// No keychain can be used on this machine, or it refuses access.
+    /// The keychain backend cannot be opened: there is no keychain service on this machine.
     #[error("no keychain is available: {0}")]
     Unavailable(String),
+    /// The keychain exists but refuses access, such as a locked keyring.
+    #[error("the keychain refuses access: {0}")]
+    Locked(String),
     /// The keychain failed, or holds an entry that is not an imify login.
     #[error("the keychain failed: {0}")]
     Failed(String),
 }
 
+/// Errors of an opened backend. Only failing to open the backend makes it unavailable.
 impl From<keyring_core::Error> for KeychainError {
     fn from(error: keyring_core::Error) -> Self {
         match error {
-            keyring_core::Error::NoStorageAccess(_) | keyring_core::Error::NoDefaultStore => {
-                Self::Unavailable(error.to_string())
-            }
+            keyring_core::Error::NoStorageAccess(_) => Self::Locked(error.to_string()),
             other => Self::Failed(other.to_string()),
         }
     }

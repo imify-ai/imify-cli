@@ -97,11 +97,20 @@ pub enum Saved {
     Keychain,
     /// The file `IMIFY_CREDENTIAL_STORE=file` selects.
     File(PathBuf),
-    /// The file, because no keychain is available; `reason` says why.
+    /// The file, because no keychain service can be opened; `reason` says why.
     FileFallback {
         path: PathBuf,
         reason: String,
     },
+}
+
+/// The outcome of [`HostStore::save_reporting`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SaveReport {
+    pub saved: Saved,
+    /// Why an older login of the host could not be removed from the file after the login
+    /// was saved in the keychain.
+    pub cleanup_failure: Option<String>,
 }
 
 impl Saved {
@@ -116,8 +125,10 @@ impl Saved {
 
 /// The credential store of one host, as `IMIFY_CREDENTIAL_STORE` selects it.
 ///
-/// With `auto`, `load` reads the keychain, then the file; `save` writes to the keychain, or
-/// to the file when no keychain is available; `delete` removes the login from both.
+/// With `auto`, `load` reads the keychain, then the file; `save` writes to the keychain and
+/// removes the host's entry from the file, or writes to the file when no keychain service can
+/// be opened; `delete` removes the login from both. A keychain that exists but refuses access,
+/// such as a locked keyring, is an error, never a reason to use the file.
 #[derive(Debug)]
 pub enum HostStore {
     Auto {
@@ -152,26 +163,33 @@ impl HostStore {
     /// # Errors
     ///
     /// Returns [`Error::CredentialStore`] when the selected store fails.
-    pub fn save_reporting(&self, credentials: &Credentials) -> Result<Saved, Error> {
+    pub fn save_reporting(&self, credentials: &Credentials) -> Result<SaveReport, Error> {
+        let saved = |saved| SaveReport {
+            saved,
+            cleanup_failure: None,
+        };
         match self {
             Self::Auto { keychain, file } => match keychain.try_save(credentials) {
-                Ok(()) => Ok(Saved::Keychain),
+                Ok(()) => Ok(SaveReport {
+                    saved: Saved::Keychain,
+                    cleanup_failure: file.delete().err().map(|error| error.to_string()),
+                }),
                 Err(KeychainError::Unavailable(reason)) => {
                     file.save(credentials)?;
-                    Ok(Saved::FileFallback {
+                    Ok(saved(Saved::FileFallback {
                         path: file.path().to_path_buf(),
                         reason,
-                    })
+                    }))
                 }
                 Err(error) => Err(error.into()),
             },
             Self::Keychain(keychain) => {
                 keychain.try_save(credentials)?;
-                Ok(Saved::Keychain)
+                Ok(saved(Saved::Keychain))
             }
             Self::File(file) => {
                 file.save(credentials)?;
-                Ok(Saved::File(file.path().to_path_buf()))
+                Ok(saved(Saved::File(file.path().to_path_buf())))
             }
         }
     }
@@ -198,11 +216,12 @@ impl CredentialStore for HostStore {
         match self {
             Self::Auto { keychain, file } => {
                 let in_keychain = match keychain.try_delete() {
-                    Ok(existed) => existed,
-                    Err(KeychainError::Unavailable(_)) => false,
-                    Err(error) => return Err(error.into()),
+                    Ok(existed) => Ok(existed),
+                    Err(KeychainError::Unavailable(_)) => Ok(false),
+                    Err(error) => Err(Error::from(error)),
                 };
-                Ok(file.delete()? || in_keychain)
+                let in_file = file.delete();
+                Ok(in_keychain? | in_file?)
             }
             Self::Keychain(keychain) => Ok(keychain.try_delete()?),
             Self::File(file) => file.delete(),

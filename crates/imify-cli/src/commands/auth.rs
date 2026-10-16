@@ -16,8 +16,9 @@ use url::Url;
 
 use super::{api_url, client, write_result};
 use crate::browser::{Browser, SystemBrowser};
-use crate::credentials::{HostStore, Keychain, Saved, host_key};
+use crate::credentials::{HostStore, Keychain, SaveReport, Saved, host_key};
 use crate::output::renderer::{Render, Renderer};
+use crate::output::sanitize::printable;
 use crate::output::{CliError, Environment, ErrorCode, LOGIN_HINT, PASTE_HINT};
 
 /// How long `imify login` waits for the browser to return to the CLI.
@@ -118,9 +119,9 @@ impl Render for Whoami {
     }
 
     fn human(&self, w: &mut dyn Write) -> io::Result<()> {
-        writeln!(w, "Name     {}", self.0.name)?;
-        writeln!(w, "Subject  {}", self.0.subject)?;
-        writeln!(w, "Role     {}", self.0.role)
+        writeln!(w, "Name     {}", printable(&self.0.name))?;
+        writeln!(w, "Subject  {}", printable(&self.0.subject))?;
+        writeln!(w, "Role     {}", printable(&self.0.role))
     }
 }
 
@@ -170,8 +171,10 @@ pub async fn login(
 }
 
 /// Signs in to the host in `IMIFY_API_URL`, confirms the account with the API and stores the
-/// login. Writes the identity provider's host and the authorization URL to `prompt` before
-/// it opens the browser.
+/// login. Writes the API host, the identity provider's host and the authorization URL to
+/// `prompt` before it opens the browser or prompts for the pasted URL. Writes the warning
+/// about a login stored in the file because no keychain service exists to `prompt`, also
+/// with `--quiet`.
 ///
 /// # Errors
 ///
@@ -194,22 +197,46 @@ pub async fn login_with(
     }
     let client = unauthenticated_client(&api_url)?;
     let settings = oidc_settings(env, &client, &host).await?;
+    let sign_in = SignIn {
+        client: &client,
+        settings: &settings,
+        host: &host,
+    };
     let credentials = if no_browser {
-        paste_login(&client, &settings, context.prompt, context.read_pasted_url).await?
+        paste_login(&sign_in, context.prompt, context.read_pasted_url).await?
     } else {
-        browser_login(
-            &client,
-            &settings,
-            context.browser,
-            context.prompt,
-            renderer,
-        )
-        .await?
+        browser_login(&sign_in, context.browser, context.prompt, renderer).await?
     };
     let user = confirm_account(&api_url, &credentials).await?;
-    let saved = save(store, credentials).await?;
-    warn_about_the_stored_login(renderer, &saved, context.env_token_set)?;
-    write_result(renderer, &LoginResult { host, user, saved })
+    let report = save(store, credentials).await?;
+    warn_about_the_stored_login(context.prompt, renderer, &report, context.env_token_set)?;
+    write_result(
+        renderer,
+        &LoginResult {
+            host,
+            user,
+            saved: report.saved,
+        },
+    )
+}
+
+/// One sign-in: the client for the identity provider requests, its settings and the API host.
+struct SignIn<'a> {
+    client: &'a imify::Client,
+    settings: &'a OidcSettings,
+    host: &'a str,
+}
+
+impl SignIn<'_> {
+    /// The first line before the sign-in: which API the login is for and where the user signs
+    /// in. Both hosts come from the API's settings and the identity provider.
+    fn intro(&self, provider_host: &str) -> String {
+        format!(
+            "Signing in to {} through {}.",
+            printable(self.host),
+            printable(provider_host)
+        )
+    }
 }
 
 fn no_terminal_error() -> CliError {
@@ -220,20 +247,29 @@ fn no_terminal_error() -> CliError {
     .with_hint("Run `imify login --no-browser` in a terminal, or set `IMIFY_TOKEN` to a token.")
 }
 
-/// Warns when the login went to the file because no keychain is available, and when
-/// `IMIFY_TOKEN` takes precedence over it.
+/// Warns when the login went to the file because no keychain service exists (on `prompt`,
+/// also with `--quiet`), when an older login could not be removed from the file, and when
+/// `IMIFY_TOKEN` takes precedence over the login.
 fn warn_about_the_stored_login(
+    prompt: &mut dyn Write,
     renderer: &mut dyn Renderer,
-    saved: &Saved,
+    report: &SaveReport,
     env_token_set: bool,
 ) -> Result<(), CliError> {
-    if let Saved::FileFallback { path, reason } = saved {
+    if let Saved::FileFallback { path, reason } = &report.saved {
+        writeln!(
+            prompt,
+            "warning: The login is stored unencrypted in {}, because {}.",
+            path.display(),
+            printable(reason)
+        )
+        .and_then(|()| prompt.flush())
+        .map_err(|error| prompt_error(&error))?;
+    }
+    if let Some(failure) = &report.cleanup_failure {
         warn(
             renderer,
-            &format!(
-                "The login is stored in {}, because {reason}.",
-                path.display()
-            ),
+            &format!("Cannot remove the older login from the credentials file: {failure}"),
         )?;
     }
     if env_token_set {
@@ -285,19 +321,18 @@ async fn oidc_settings(
 }
 
 async fn browser_login(
-    client: &imify::Client,
-    settings: &OidcSettings,
+    sign_in: &SignIn<'_>,
     browser: &dyn Browser,
     prompt: &mut dyn Write,
     renderer: &mut dyn Renderer,
 ) -> Result<Credentials, CliError> {
-    let login = LoopbackLogin::start(client, settings).await?;
+    let login = LoopbackLogin::start(sign_in.client, sign_in.settings).await?;
     writeln!(
         prompt,
-        "Signing in at {}. Opening the browser.",
-        login.provider_host()
+        "{} Opening the browser.",
+        sign_in.intro(login.provider_host())
     )
-    .and_then(|()| writeln!(prompt, "{}", login.authorization_url()))
+    .and_then(|()| writeln!(prompt, "{}", printable(login.authorization_url())))
     .and_then(|()| prompt.flush())
     .map_err(|error| prompt_error(&error))?;
     if let Err(error) = browser.open(login.authorization_url()) {
@@ -310,18 +345,17 @@ async fn browser_login(
 }
 
 async fn paste_login(
-    client: &imify::Client,
-    settings: &OidcSettings,
+    sign_in: &SignIn<'_>,
     prompt: &mut dyn Write,
     read_pasted_url: &mut dyn FnMut() -> io::Result<String>,
 ) -> Result<Credentials, CliError> {
-    let login = PasteLogin::start(client, settings).await?;
+    let login = PasteLogin::start(sign_in.client, sign_in.settings).await?;
     writeln!(
         prompt,
-        "Signing in at {}. Open this URL in a browser:",
-        login.provider_host()
+        "{} Open this URL in a browser:",
+        sign_in.intro(login.provider_host())
     )
-    .and_then(|()| writeln!(prompt, "{}", login.authorization_url()))
+    .and_then(|()| writeln!(prompt, "{}", printable(login.authorization_url())))
     .and_then(|()| write!(prompt, "Paste the URL from the browser's address bar: "))
     .and_then(|()| prompt.flush())
     .map_err(|error| prompt_error(&error))?;
@@ -337,6 +371,9 @@ fn prompt_error(error: &io::Error) -> CliError {
 }
 
 fn pasted_url_error(error: &io::Error) -> CliError {
+    if error.kind() == io::ErrorKind::Interrupted {
+        return CliError::interrupted();
+    }
     let code = match error.kind() {
         io::ErrorKind::InvalidInput | io::ErrorKind::InvalidData | io::ErrorKind::UnexpectedEof => {
             ErrorCode::InvalidArgument
@@ -387,7 +424,7 @@ impl CredentialStore for PendingLogin {
 
 /// Saves `credentials` on a blocking thread: a keychain may block, and the Secret Service
 /// client runs its own event loop.
-async fn save(store: HostStore, credentials: Credentials) -> Result<Saved, CliError> {
+async fn save(store: HostStore, credentials: Credentials) -> Result<SaveReport, CliError> {
     on_blocking_thread(move || store.save_reporting(&credentials)).await
 }
 
@@ -433,6 +470,7 @@ impl Render for LoginResult {
             "name": self.user.name,
             "role": self.user.role,
             "storage": self.saved.storage(),
+            "storage_fallback": matches!(self.saved, Saved::FileFallback { .. }),
         })
     }
 
@@ -440,7 +478,9 @@ impl Render for LoginResult {
         writeln!(
             w,
             "Logged in to {} as {} ({}).",
-            self.host, self.user.name, self.user.role
+            self.host,
+            printable(&self.user.name),
+            printable(&self.user.role)
         )?;
         match &self.saved {
             Saved::Keychain => writeln!(w, "Credentials stored in the keychain."),
@@ -461,12 +501,13 @@ pub async fn logout(env: &Environment, renderer: &mut dyn Renderer) -> Result<()
 }
 
 /// Revokes the refresh token of the host's stored login and removes the login from every
-/// store. A failed revocation is a warning; the login is removed regardless.
+/// store. A login that cannot be read and a failed revocation are warnings; the login is
+/// removed regardless.
 ///
 /// # Errors
 ///
 /// Returns `invalid_argument` for an invalid `IMIFY_API_URL` or `IMIFY_CREDENTIAL_STORE`,
-/// and the store's error when it cannot be read or changed.
+/// and the store's error when the login cannot be removed.
 pub async fn logout_with(
     env: &Environment,
     keychain: Keychain,
@@ -476,10 +517,19 @@ pub async fn logout_with(
     let host = host_key(&api_url);
     let store = Arc::new(HostStore::open(env, &host, keychain)?);
     let loading = Arc::clone(&store);
-    let credentials = on_blocking_thread(move || loading.load()).await?;
-    let revoked = match &credentials {
-        Some(credentials) => revoke(&api_url, credentials, renderer).await?,
-        None => false,
+    let revoked = match on_blocking_thread(move || loading.load()).await {
+        Ok(Some(credentials)) => revoke(&api_url, &credentials, renderer).await?,
+        Ok(None) => false,
+        Err(error) => {
+            warn(
+                renderer,
+                &format!(
+                    "Cannot read the stored login, so its refresh token is not revoked: {}",
+                    error.message
+                ),
+            )?;
+            false
+        }
     };
     let removed = on_blocking_thread(move || store.delete()).await?;
     write_result(

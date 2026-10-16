@@ -3,7 +3,7 @@
 use imify::LoginFailure;
 use serde::Serialize;
 
-use crate::credentials::FileStoreError;
+use crate::credentials::{FileStoreError, KeychainError};
 
 /// A stable, documented error code. The `snake_case` name is part of the JSON contract.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -146,6 +146,9 @@ const NO_BROWSER_HINT: &str = "Run `imify login --no-browser`.";
 /// The hint for a pasted URL that is not the redirect URL.
 pub const PASTE_HINT: &str = "Paste the full URL from the browser's address bar.";
 
+/// The hint for a keychain that refuses access.
+const LOCKED_KEYCHAIN_HINT: &str = "Unlock your keyring, or set `IMIFY_CREDENTIAL_STORE=file`.";
+
 /// The hint for a failing keychain.
 const CREDENTIAL_STORE_HINT: &str =
     "Set `IMIFY_CREDENTIAL_STORE=file` to store the login in a file.";
@@ -178,6 +181,14 @@ impl From<imify::Error> for CliError {
             imify::Error::Login { reason, .. } => login_error(reason, message),
             imify::Error::CredentialStore { source } if source.is::<FileStoreError>() => {
                 Self::new(ErrorCode::Internal, message)
+            }
+            imify::Error::CredentialStore { source }
+                if matches!(
+                    source.downcast_ref::<KeychainError>(),
+                    Some(KeychainError::Locked(_))
+                ) =>
+            {
+                Self::new(ErrorCode::Internal, message).with_hint(LOCKED_KEYCHAIN_HINT)
             }
             imify::Error::CredentialStore { .. } => {
                 Self::new(ErrorCode::Internal, message).with_hint(CREDENTIAL_STORE_HINT)

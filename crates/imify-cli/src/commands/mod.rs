@@ -57,8 +57,9 @@ pub async fn client(env: &Environment) -> Result<Api, CliError> {
 ///
 /// # Errors
 ///
-/// Returns `invalid_argument` when `IMIFY_API_URL` is unset, not a URL, or not `https` on a
-/// host other than `localhost`, `127.0.0.1` and `::1`.
+/// Returns `invalid_argument` when `IMIFY_API_URL` is unset, not a URL, has a user name,
+/// password, query or fragment, or is not `https` on a host other than `localhost`,
+/// `127.0.0.1` and `::1`. The message never repeats a URL with a user name or password.
 pub fn api_url(env: &Environment) -> Result<Url, CliError> {
     let raw = env.api_url.as_deref().unwrap_or_default().trim();
     if raw.is_empty() {
@@ -69,6 +70,14 @@ pub fn api_url(env: &Environment) -> Result<Url, CliError> {
         .with_hint(api_url_hint()));
     }
     let url = Url::parse(raw).map_err(|error| invalid_api_url(&error))?;
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err(invalid_api_url(&"it contains a user name or password"));
+    }
+    if url.query().is_some() || url.fragment().is_some() {
+        return Err(invalid_api_url(&format!(
+            "{raw} has a query or fragment; use the API host and path only"
+        )));
+    }
     match url.scheme() {
         "https" => Ok(url),
         "http" if is_loopback(&url) => Ok(url),
@@ -147,6 +156,32 @@ mod tests {
 
         assert_eq!(error.code, ErrorCode::InvalidArgument);
         assert!(error.message.contains("http://api.example.com"));
+    }
+
+    #[test]
+    fn a_user_name_or_password_is_rejected_without_repeating_the_url() {
+        let errors = [
+            "https://ada:s3cret@api.example.com",
+            "https://ada@api.example.com",
+        ]
+        .map(|raw| url_of(raw).unwrap_err());
+
+        for error in errors {
+            assert_eq!(error.code, ErrorCode::InvalidArgument);
+            assert!(!error.message.contains("ada"), "{}", error.message);
+            assert!(!error.message.contains("s3cret"), "{}", error.message);
+        }
+    }
+
+    #[test]
+    fn a_query_or_fragment_is_an_invalid_argument() {
+        let codes = [
+            "https://api.example.com/?debug=1",
+            "https://api.example.com/#top",
+        ]
+        .map(|raw| url_of(raw).unwrap_err().code);
+
+        assert_eq!(codes, [ErrorCode::InvalidArgument; 2]);
     }
 
     #[test]

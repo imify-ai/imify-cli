@@ -518,3 +518,52 @@ fn login_and_logout_help_show_examples() {
         assert!(text(&output.stdout).contains(&format!("imify {command}")));
     }
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_escape_sequence_in_an_api_error_is_not_written_raw() {
+    let login = Login::stored(3600).await.unwrap();
+    Mock::given(method("GET"))
+        .and(path("/api/v1/me"))
+        .respond_with(
+            ResponseTemplate::new(401)
+                .set_body_json(json!({"detail": "Invalid token\u{1b}]0;pwned\u{7}\u{1b}[2J"})),
+        )
+        .mount(&login.api)
+        .await;
+
+    let output = login.run(&["whoami"], &[]);
+
+    let stderr = text(&output.stderr);
+    assert_eq!(output.status.code(), Some(3));
+    assert!(!stderr.contains('\u{1b}'), "{stderr:?}");
+    assert!(
+        stderr.contains("Invalid token\\u{1b}]0;pwned"),
+        "{stderr:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn logout_removes_a_login_it_cannot_read_and_does_not_revoke() {
+    let login = Login::stored(3600).await.unwrap();
+    login.answer_revoke(200).await;
+    std::fs::set_permissions(
+        login.credentials_file(),
+        std::fs::Permissions::from_mode(0o644),
+    )
+    .unwrap();
+
+    let output = login.run(&["logout", "--json"], &[]);
+
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        (&result["removed"], &result["revoked"]),
+        (&json!(true), &json!(false))
+    );
+    assert!(text(&output.stderr).starts_with("warning: Cannot read the stored login"));
+    assert_eq!(
+        login.requests_to(&login.provider, "/oauth2/revoke").await,
+        0
+    );
+    assert!(!login.credentials_file().exists());
+}

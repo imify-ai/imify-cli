@@ -92,10 +92,15 @@ fn report(renderer: &mut dyn Renderer, error: &CliError) -> ExitCode {
 }
 
 fn init_tracing(settings: &Settings) {
+    use tracing_subscriber::layer::SubscriberExt as _;
+    use tracing_subscriber::util::SubscriberInitExt as _;
+
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
         .with_max_level(settings.log_level())
         .with_target(false)
         .without_time()
+        .finish()
+        .with(output::log_filter(settings.log_level()))
         .init();
 }

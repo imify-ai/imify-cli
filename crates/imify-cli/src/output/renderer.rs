@@ -3,6 +3,7 @@
 use std::io::{self, Write};
 
 use super::error::CliError;
+use super::sanitize::printable;
 
 /// The `type` of the event that ends an NDJSON stream and carries the result.
 pub const RESULT_EVENT: &str = "result";
@@ -57,7 +58,7 @@ fn write_warning(stderr: &mut dyn Write, quiet: bool, message: &str) -> io::Resu
     if quiet {
         return Ok(());
     }
-    writeln!(stderr, "warning: {message}")?;
+    writeln!(stderr, "warning: {}", printable(message))?;
     stderr.flush()
 }
 
@@ -104,9 +105,9 @@ impl Renderer for HumanRenderer {
     }
 
     fn error(&mut self, error: &CliError) -> io::Result<()> {
-        writeln!(self.stderr, "error: {}", error.message)?;
+        writeln!(self.stderr, "error: {}", printable(&error.message))?;
         if let Some(hint) = &error.hint {
-            writeln!(self.stderr, "hint: {hint}")?;
+            writeln!(self.stderr, "hint: {}", printable(hint))?;
         }
         self.stderr.flush()
     }

@@ -31,7 +31,7 @@ Every command accepts `--json` for machine-readable output on stdout and returns
 ```console
 $ export IMIFY_API_URL=https://api.example.com
 $ imify login
-Signing in at login.example.com. Opening the browser.
+Signing in to https://api.example.com through login.example.com. Opening the browser.
 https://login.example.com/oauth2/authorize?...
 Logged in to https://api.example.com as Ada Lovelace (admin).
 Credentials stored in the keychain.
@@ -41,7 +41,7 @@ Subject  user-1234
 Role     admin
 ```
 
-`imify login` signs in through the browser and stores the login for the host in `IMIFY_API_URL`: in the OS keychain, or in a file readable only by the user when no keychain is available. On a machine without a browser, `imify login --no-browser` prints the URL and reads the address the browser ends up on. `imify logout` revokes the login and removes it. ID tokens issued before the logout stay valid until they expire.
+`imify login` signs in through the browser and stores the login for the host in `IMIFY_API_URL`: in the OS keychain, or in a file readable only by the user when no keychain is available. On a machine without a browser, `imify login --no-browser` prints the URL and reads the address the browser ends up on. `imify logout` revokes the login and removes it. ID tokens issued before the logout stay valid until they expire. Log in only to an API URL you trust: every command sends the token to that host.
 
 `IMIFY_TOKEN` takes precedence over the stored login, for example in CI. The CLI sends the token as `Authorization: Bearer` and never writes it to logs or error messages. `IMIFY_API_URL` must use `https`, except for `localhost`, `127.0.0.1` and `::1`.
 

@@ -3,7 +3,7 @@
   "title": "imify login result",
   "description": "Written to stdout by `imify login --json`: the host, the user the login belongs to, and where the login is stored.",
   "type": "object",
-  "required": ["host", "subject", "name", "role", "storage"],
+  "required": ["host", "subject", "name", "role", "storage", "storage_fallback"],
   "properties": {
     "host": {
       "description": "The API URL the login belongs to: scheme, host, port unless it is the default, path without a trailing slash.",
@@ -26,6 +26,10 @@
     "storage": {
       "description": "Where the login is stored: the OS keychain, or a file readable only by the user.",
       "enum": ["keychain", "file"]
+    },
+    "storage_fallback": {
+      "description": "`true` when the login is stored in the file because the machine has no keychain service.",
+      "type": "boolean"
     }
   }
 }

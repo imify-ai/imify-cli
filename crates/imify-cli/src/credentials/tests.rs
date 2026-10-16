@@ -208,7 +208,7 @@ fn auto_saves_in_the_keychain_when_one_is_available() {
     let dir = tempfile::tempdir().unwrap();
     let store = host_store(None, Keychain::in_memory(), dir.path());
 
-    let saved = store.save_reporting(&credentials("id-1")).unwrap();
+    let saved = store.save_reporting(&credentials("id-1")).unwrap().saved;
 
     assert_eq!(saved, Saved::Keychain);
     assert!(!dir.path().join("credentials.json").exists());
@@ -219,7 +219,7 @@ fn auto_falls_back_to_the_file_when_no_keychain_is_available() {
     let dir = tempfile::tempdir().unwrap();
     let store = host_store(None, Keychain::unavailable(), dir.path());
 
-    let saved = store.save_reporting(&credentials("id-1")).unwrap();
+    let saved = store.save_reporting(&credentials("id-1")).unwrap().saved;
 
     assert!(matches!(
         saved,
@@ -284,7 +284,7 @@ fn file_choice_does_not_touch_the_keychain() {
     let dir = tempfile::tempdir().unwrap();
     let store = host_store(Some("file"), Keychain::unavailable(), dir.path());
 
-    let saved = store.save_reporting(&credentials("id-1")).unwrap();
+    let saved = store.save_reporting(&credentials("id-1")).unwrap().saved;
 
     assert_eq!(saved, Saved::File(dir.path().join("credentials.json")));
 }
@@ -309,4 +309,167 @@ fn stores_do_not_print_tokens_in_debug_output() {
     store.save(&credentials("id-secret")).unwrap();
 
     assert!(!format!("{store:?}").contains("secret"));
+}
+
+fn credentials_file(dir: &Path) -> std::path::PathBuf {
+    dir.join("credentials.json")
+}
+
+#[test]
+fn auto_with_a_locked_keyring_fails_instead_of_writing_the_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = host_store(None, Keychain::locked(HOST), dir.path());
+
+    let error = CliError::from(store.save_reporting(&credentials("id-1")).unwrap_err());
+
+    assert!(!credentials_file(dir.path()).exists());
+    assert_eq!(
+        (error.code, error.hint.as_deref()),
+        (
+            ErrorCode::Internal,
+            Some("Unlock your keyring, or set `IMIFY_CREDENTIAL_STORE=file`.")
+        )
+    );
+}
+
+#[test]
+fn auto_with_a_locked_keyring_does_not_read_an_older_login_from_the_file() {
+    let dir = tempfile::tempdir().unwrap();
+    FileStore::new(dir.path(), HOST)
+        .save(&credentials("id-stale"))
+        .unwrap();
+    let store = host_store(None, Keychain::locked(HOST), dir.path());
+
+    let error = CliError::from(store.load().unwrap_err());
+
+    assert_eq!(error.code, ErrorCode::Internal);
+}
+
+#[test]
+fn auto_removes_the_file_entry_after_saving_in_the_keychain() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = FileStore::new(dir.path(), HOST);
+    file.save(&credentials("id-file")).unwrap();
+    let store = host_store(None, Keychain::in_memory(), dir.path());
+
+    let report = store.save_reporting(&credentials("id-keychain")).unwrap();
+
+    assert_eq!(report.cleanup_failure, None);
+    assert!(file.load().unwrap().is_none());
+}
+
+#[test]
+fn auto_delete_removes_the_file_entry_and_then_reports_the_keychain_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = FileStore::new(dir.path(), HOST);
+    file.save(&credentials("id-file")).unwrap();
+    let store = host_store(None, Keychain::locked(HOST), dir.path());
+
+    let error = store.delete().unwrap_err();
+
+    assert!(file.load().unwrap().is_none());
+    assert!(error.to_string().contains("refuses access"), "{error}");
+}
+
+#[test]
+fn file_store_does_not_follow_a_symbolic_link() {
+    let dir = tempfile::tempdir().unwrap();
+    let elsewhere = tempfile::tempdir().unwrap();
+    FileStore::new(elsewhere.path(), HOST)
+        .save(&credentials("id-1"))
+        .unwrap();
+    std::os::unix::fs::symlink(
+        credentials_file(elsewhere.path()),
+        credentials_file(dir.path()),
+    )
+    .unwrap();
+
+    let error = FileStore::new(dir.path(), HOST).load().unwrap_err();
+
+    assert!(error.to_string().contains("symbolic link"), "{error}");
+}
+
+#[test]
+fn file_store_rejects_a_directory_other_users_can_write_to() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o777)).unwrap();
+
+    let error = FileStore::new(dir.path(), HOST)
+        .save(&credentials("id-1"))
+        .unwrap_err();
+
+    assert!(error.to_string().contains("chmod 700"), "{error}");
+    assert!(!credentials_file(dir.path()).exists());
+}
+
+#[test]
+fn file_store_rejects_a_file_larger_than_1_mib() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = credentials_file(dir.path());
+    std::fs::write(&path, vec![b' '; 1024 * 1024 + 1]).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+
+    let error = FileStore::new(dir.path(), HOST).load().unwrap_err();
+
+    assert!(error.to_string().contains("1 MiB"), "{error}");
+}
+
+#[test]
+fn file_store_delete_removes_the_entry_from_a_file_readable_by_others() {
+    let dir = tempfile::tempdir().unwrap();
+    let first = FileStore::new(dir.path(), HOST);
+    let second = FileStore::new(dir.path(), "https://other.example.com");
+    first.save(&credentials("id-1")).unwrap();
+    second.save(&credentials("id-2")).unwrap();
+    let path = credentials_file(dir.path());
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+    assert!(first.delete().unwrap());
+    assert_eq!(mode_of(&path), 0o600);
+    assert!(second.load().unwrap().is_some());
+}
+
+#[test]
+fn file_store_delete_removes_a_file_that_is_not_json() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = credentials_file(dir.path());
+    std::fs::write(&path, "not json").unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+
+    assert!(FileStore::new(dir.path(), HOST).delete().unwrap());
+    assert!(!path.exists());
+}
+
+#[test]
+fn file_store_delete_of_the_only_entry_removes_the_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = FileStore::new(dir.path(), HOST);
+    store.save(&credentials("id-1")).unwrap();
+
+    assert!(store.delete().unwrap());
+    assert!(!credentials_file(dir.path()).exists());
+}
+
+#[test]
+fn concurrent_saves_of_two_hosts_keep_both_entries() {
+    let dir = tempfile::tempdir().unwrap();
+    let hosts = [HOST, "https://other.example.com"];
+
+    std::thread::scope(|scope| {
+        for host in hosts {
+            let store = FileStore::new(dir.path(), host);
+            scope.spawn(move || {
+                for round in 0..20 {
+                    store.save(&credentials(&format!("id-{round}"))).unwrap();
+                }
+            });
+        }
+    });
+
+    for host in hosts {
+        assert_eq!(
+            id_token_of(&FileStore::new(dir.path(), host).load().unwrap().unwrap()),
+            "id-19"
+        );
+    }
 }

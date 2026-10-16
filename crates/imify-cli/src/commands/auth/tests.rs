@@ -251,6 +251,8 @@ struct Output {
 enum Mode {
     Human,
     Json,
+    /// `--json --quiet`.
+    JsonQuiet,
 }
 
 fn renderer(mode: Mode, stdout: &Buffer, stderr: &Buffer) -> Box<dyn Renderer> {
@@ -259,6 +261,7 @@ fn renderer(mode: Mode, stdout: &Buffer, stderr: &Buffer) -> Box<dyn Renderer> {
     match mode {
         Mode::Human => Box::new(HumanRenderer::new(stdout, stderr, false)),
         Mode::Json => Box::new(JsonRenderer::new(stdout, stderr, false)),
+        Mode::JsonQuiet => Box::new(JsonRenderer::new(stdout, stderr, true)),
     }
 }
 
@@ -317,7 +320,7 @@ fn redact_api(text: &str, hosts: &Hosts) -> String {
 }
 
 #[tokio::test]
-async fn login_names_the_identity_provider_host_before_it_opens_the_browser() {
+async fn login_names_the_api_and_the_identity_provider_before_it_opens_the_browser() {
     let hosts = Hosts::start().await;
 
     let (output, browser) = browser_login(
@@ -332,7 +335,10 @@ async fn login_names_the_identity_provider_host_before_it_opens_the_browser() {
     output.result.unwrap();
     let stderr_when_opened = browser.stderr_when_opened.borrow().clone().unwrap();
     assert!(
-        stderr_when_opened.starts_with("Signing in at 127.0.0.1. Opening the browser.\n"),
+        stderr_when_opened.starts_with(&format!(
+            "Signing in to {} through 127.0.0.1. Opening the browser.\n",
+            hosts.api.uri()
+        )),
         "{stderr_when_opened}"
     );
     assert!(stderr_when_opened.contains(&format!("{}/oauth2/authorize?", hosts.provider.uri())));
@@ -417,14 +423,21 @@ async fn login_with_only_the_client_id_override_reads_the_issuer_from_config_jso
 }
 
 #[tokio::test]
-async fn login_without_a_keychain_stores_the_file_and_warns_with_its_path() {
+async fn login_without_a_keychain_service_stores_the_file_and_warns_even_when_quiet() {
     let hosts = Hosts::start().await;
     let env = Environment {
         credential_store: None,
         ..hosts.env()
     };
 
-    let (output, _) = browser_login(&hosts, &env, Mode::Json, Keychain::unavailable(), false).await;
+    let (output, _) = browser_login(
+        &hosts,
+        &env,
+        Mode::JsonQuiet,
+        Keychain::unavailable(),
+        false,
+    )
+    .await;
 
     output.result.unwrap();
     let path = hosts.config_dir.path().join("credentials.json");
@@ -432,7 +445,7 @@ async fn login_without_a_keychain_stores_the_file_and_warns_with_its_path() {
         output
             .stderr
             .matches(&format!(
-                "warning: The login is stored in {}",
+                "warning: The login is stored unencrypted in {}",
                 path.display()
             ))
             .count(),
@@ -441,7 +454,10 @@ async fn login_without_a_keychain_stores_the_file_and_warns_with_its_path() {
         output.stderr
     );
     let result: Value = serde_json::from_str(&output.stdout).unwrap();
-    assert_eq!(result["storage"], "file");
+    assert_eq!(
+        (&result["storage"], &result["storage_fallback"]),
+        (&json!("file"), &json!(true))
+    );
 }
 
 #[tokio::test]
@@ -567,11 +583,10 @@ async fn login_without_browser_reads_the_pasted_redirect_url() {
 
     output.result.unwrap();
     assert!(hosts.stored().is_some());
-    assert!(
-        output
-            .stderr
-            .starts_with("Signing in at 127.0.0.1. Open this URL in a browser:\n")
-    );
+    assert!(output.stderr.starts_with(&format!(
+        "Signing in to {} through 127.0.0.1. Open this URL in a browser:\n",
+        hosts.api.uri()
+    )));
     assert!(
         output
             .stderr
@@ -630,4 +645,145 @@ async fn logout_after_login_revokes_and_removes_the_login() {
     );
     assert!(hosts.stored().is_none());
     assert_eq!(stderr.text(), "");
+}
+
+/// Trace output of the imify crates, captured as `-vv` writes it.
+#[derive(Clone, Default)]
+struct TraceLog(Arc<Mutex<Vec<u8>>>);
+
+impl TraceLog {
+    /// Captures the trace output on this thread until the guard is dropped.
+    fn capture(&self) -> tracing::subscriber::DefaultGuard {
+        use tracing_subscriber::layer::SubscriberExt as _;
+
+        let level = tracing::level_filters::LevelFilter::TRACE;
+        tracing::subscriber::set_default(
+            tracing_subscriber::fmt()
+                .with_writer(self.clone())
+                .with_max_level(level)
+                .finish()
+                .with(crate::output::log_filter(level)),
+        )
+    }
+
+    fn text(&self) -> String {
+        String::from_utf8(self.0.lock().unwrap().clone()).unwrap()
+    }
+}
+
+impl io::Write for TraceLog {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for TraceLog {
+    type Writer = Self;
+
+    fn make_writer(&'a self) -> Self::Writer {
+        self.clone()
+    }
+}
+
+/// Asserts that `trace` contains none of the login's secrets. `stderr` holds the
+/// authorization URL with `state` and `nonce`.
+fn assert_no_secrets(trace: &str, stderr: &str, hosts: &Hosts) {
+    let stored = serde_json::to_value(hosts.stored().unwrap()).unwrap();
+    let authorization_url = stderr
+        .lines()
+        .find(|line| line.contains("/oauth2/authorize?"))
+        .unwrap();
+    let query = query(authorization_url);
+    for secret in [
+        stored["id_token"].as_str().unwrap(),
+        REFRESH_TOKEN,
+        CODE,
+        query["nonce"].as_str(),
+        query["state"].as_str(),
+        query["code_challenge"].as_str(),
+    ] {
+        assert!(
+            !trace.contains(secret),
+            "{secret} appears in the trace output"
+        );
+    }
+}
+
+#[tokio::test]
+async fn login_trace_output_contains_no_token_code_or_secret() {
+    let hosts = Hosts::start().await;
+    let trace = TraceLog::default();
+    let guard = trace.capture();
+
+    let output = login_to(&hosts, Mode::Human).await;
+
+    drop(guard);
+    output.result.unwrap();
+    assert_no_secrets(&trace.text(), &output.stderr, &hosts);
+}
+
+#[tokio::test]
+async fn login_without_browser_trace_output_contains_no_token_code_or_secret() {
+    let hosts = Hosts::start().await;
+    let trace = TraceLog::default();
+    let guard = trace.capture();
+
+    let output = paste_login(&hosts, &hosts.env(), |url| Ok(redirect_for(url))).await;
+
+    drop(guard);
+    output.result.unwrap();
+    assert_no_secrets(&trace.text(), &output.stderr, &hosts);
+}
+
+#[tokio::test]
+async fn an_escape_sequence_from_the_identity_provider_is_not_written_raw() {
+    let hosts = Hosts::start().await;
+    let (stdout, stderr) = (Buffer::default(), Buffer::default());
+    let mut prompt = stderr.clone();
+    let mut paste = || {
+        Ok("http://localhost:28753/callback?error=access_denied&error_description=%1B%5D0%3Bpwned%07%1B%5B2J".to_owned())
+    };
+    let context = LoginContext {
+        browser: &NoBrowser,
+        keychain: Keychain::unavailable(),
+        prompt: &mut prompt,
+        read_pasted_url: &mut paste,
+        env_token_set: false,
+    };
+    let mut renderer = renderer(Mode::Human, &stdout, &stderr);
+
+    let error = login_with(&hosts.env(), true, context, renderer.as_mut())
+        .await
+        .unwrap_err();
+    renderer.error(&error).unwrap();
+
+    assert_eq!(error.code, ErrorCode::LoginFailed);
+    assert!(!stderr.text().contains('\u{1b}'), "{:?}", stderr.text());
+    assert!(
+        stderr.text().contains("\\u{1b}]0;pwned"),
+        "{:?}",
+        stderr.text()
+    );
+}
+
+#[tokio::test]
+async fn ctrl_c_at_the_paste_prompt_stops_the_login_as_interrupted() {
+    let hosts = Hosts::start().await;
+
+    let output = paste_login(&hosts, &hosts.env(), |_| {
+        Err(io::Error::new(io::ErrorKind::Interrupted, "cancelled"))
+    })
+    .await;
+
+    let error = output.result.unwrap_err();
+    assert_eq!(
+        (error.code, error.code.exit_code()),
+        (ErrorCode::Interrupted, 130)
+    );
+    assert!(hosts.stored().is_none());
 }

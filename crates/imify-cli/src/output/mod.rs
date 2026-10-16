@@ -11,6 +11,7 @@ mod error;
 pub mod interaction;
 pub mod paste;
 pub mod renderer;
+pub mod sanitize;
 pub mod table;
 pub mod time;
 
@@ -19,6 +20,7 @@ use std::io::{self, IsTerminal};
 use std::path::PathBuf;
 
 use tracing::level_filters::LevelFilter;
+use tracing_subscriber::filter::Targets;
 
 pub use self::error::{
     AUTH_REJECTED_HINT, AUTH_REQUIRED_HINT, CliError, ErrorCode, LOGIN_HINT, PASTE_HINT,
@@ -200,6 +202,15 @@ impl Settings {
     }
 }
 
+/// The log filter for stderr: the imify crates at `level`, every other crate at most at
+/// `warn`. HTTP and TLS libraries log request details at debug and trace level.
+pub fn log_filter(level: LevelFilter) -> Targets {
+    Targets::new()
+        .with_default(level.min(LevelFilter::WARN))
+        .with_target("imify", level)
+        .with_target("imify_cli", level)
+}
+
 /// Whether `flag` appears in `args` before the first `--`.
 fn flag_before_separator(args: &[OsString], flag: &str) -> bool {
     args.iter()
@@ -295,6 +306,29 @@ mod tests {
         let settings = Settings::resolve(&args(false, false), &env).unwrap();
 
         assert!(settings.color);
+    }
+
+    #[test]
+    fn trace_level_logs_the_imify_crates_and_keeps_dependencies_at_warn() {
+        let filter = log_filter(LevelFilter::TRACE);
+
+        assert_eq!(
+            [
+                filter.would_enable("imify::auth", &tracing::Level::TRACE),
+                filter.would_enable("imify_cli", &tracing::Level::TRACE),
+                filter.would_enable("hyper_util::client", &tracing::Level::TRACE),
+                filter.would_enable("reqwest::connect", &tracing::Level::DEBUG),
+                filter.would_enable("rustls::client", &tracing::Level::WARN),
+            ],
+            [true, true, false, false, true]
+        );
+    }
+
+    #[test]
+    fn quiet_turns_off_the_logs_of_dependencies_too() {
+        let filter = log_filter(LevelFilter::OFF);
+
+        assert!(!filter.would_enable("hyper_util::client", &tracing::Level::ERROR));
     }
 
     #[test]
