@@ -170,19 +170,20 @@ pub async fn login(
     login_with(env, no_browser, context, renderer).await
 }
 
-/// Signs in to the host in `IMIFY_API_URL`, confirms the account with the API and stores the
-/// login. Writes the API host, the identity provider's host and the authorization URL to
-/// `prompt` before it opens the browser or prompts for the pasted URL. Writes the warning
-/// about a login stored in the file because no keychain service exists to `prompt`, also
-/// with `--quiet`.
+/// Signs in to the host of the API URL, confirms the account with the API and stores the
+/// login. The API URL is `--api-url`, else `IMIFY_API_URL`, else `api_url` in the config
+/// file, else `https://platform.imify.ai`. Writes the API host, the identity provider's host
+/// and the authorization URL to `prompt` before it opens the browser or prompts for the
+/// pasted URL. Writes the warning about a login stored in the file because no keychain
+/// service exists to `prompt`, also with `--quiet`.
 ///
 /// # Errors
 ///
-/// Returns `invalid_argument` for an invalid `IMIFY_API_URL` or `IMIFY_CREDENTIAL_STORE`,
-/// for `--no-browser` without a terminal on stdin, when the host publishes no identity
-/// provider settings and the overrides are unset, and for an invalid pasted URL. Returns
-/// `login_failed` when the login does not complete, and the mapped SDK and store errors
-/// otherwise.
+/// Returns `invalid_argument` for an invalid API URL or `IMIFY_CREDENTIAL_STORE`, for
+/// `--no-browser` without a terminal on stdin, when the host publishes no identity provider
+/// settings and the overrides are unset, and for an invalid pasted URL. Returns the config
+/// file's error when it cannot be read, `login_failed` when the login does not complete, and
+/// the mapped SDK and store errors otherwise.
 pub async fn login_with(
     env: &Environment,
     no_browser: bool,
@@ -500,14 +501,15 @@ pub async fn logout(env: &Environment, renderer: &mut dyn Renderer) -> Result<()
     logout_with(env, Keychain::system(), renderer).await
 }
 
-/// Revokes the refresh token of the host's stored login and removes the login from every
-/// store. A login that cannot be read and a failed revocation are warnings; the login is
-/// removed regardless.
+/// Revokes the refresh token of the stored login for the host of the API URL and removes the
+/// login from every store. The API URL resolves as in [`login_with`]. A login that cannot be
+/// read and a failed revocation are warnings; the login is removed regardless.
 ///
 /// # Errors
 ///
-/// Returns `invalid_argument` for an invalid `IMIFY_API_URL` or `IMIFY_CREDENTIAL_STORE`,
-/// and the store's error when the login cannot be removed.
+/// Returns `invalid_argument` for an invalid API URL or `IMIFY_CREDENTIAL_STORE`, the config
+/// file's error when it cannot be read, and the store's error when the login cannot be
+/// removed.
 pub async fn logout_with(
     env: &Environment,
     keychain: Keychain,
