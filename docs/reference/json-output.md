@@ -66,6 +66,8 @@ Schema: [`schemas/error.json`](schemas/error.json).
 | `internal` | 1 | Unexpected failure in the CLI. |
 | `invalid_argument` | 2 | Invalid command line, unsupported `IMIFY_OUTPUT`, or input required without a terminal. |
 | `auth_required` | 3 | The command needs a login or a token. |
+| `auth_rejected` | 3 | The server rejected the access token. |
+| `permission_denied` | 3 | The access token lacks the permission for the request. |
 | `not_found` | 4 | The resource does not exist. |
 | `conflict` | 6 | The request conflicts with the current state of the resource. |
 | `network` | 7 | The server could not be reached. |

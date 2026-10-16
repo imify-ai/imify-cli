@@ -31,6 +31,19 @@ imify datasets ls
 
 Every command accepts `--json` for machine-readable output on stdout and returns a [documented exit code](docs/dev/adr/0003-output-contract.md). Set `IMIFY_OUTPUT=json` to make it the default, for example in an agent's environment.
 
+## Authentication
+
+```console
+$ export IMIFY_TOKEN=<access token>
+$ export IMIFY_API_URL=https://api.example.com
+$ imify whoami
+Name     Ada Lovelace
+Subject  user-1234
+Role     admin
+```
+
+`IMIFY_TOKEN` is the access token. The CLI sends it as `Authorization: Bearer` and never writes it to logs or error messages. `IMIFY_API_URL` is the API host; every command that calls the API requires it. `imify whoami` prints the user the token belongs to. With `--json`, it prints `subject`, `name` and `role` as one object. A missing token fails with the error code `auth_required`, a rejected token with `auth_rejected`; both exit with code 3.
+
 ## Rust SDK
 
 The CLI is built on the [`imify`](crates/imify) crate, which can be used directly.
