@@ -11,7 +11,7 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
 use super::Revocation;
-use crate::client::network_error;
+use crate::client::{network_error, require_secure};
 use crate::error::from_response;
 use crate::retry::RetryMode;
 use crate::{Client, Error, LoginFailure, OidcSettings};
@@ -94,22 +94,7 @@ pub(crate) fn parse_secure_url(raw: &str, name: &str) -> Result<Url, Error> {
     let url = Url::parse(raw).map_err(|error| Error::Config {
         message: format!("invalid {name} URL {raw:?}: {error}"),
     })?;
-    match url.scheme() {
-        "https" => Ok(url),
-        "http" if is_loopback(&url) => Ok(url),
-        _ => Err(Error::Config {
-            message: format!(
-                "the {name} URL {raw} must use https unless its host is localhost, 127.0.0.1 or ::1"
-            ),
-        }),
-    }
-}
-
-/// Returns `true` for the hosts `localhost`, `127.0.0.1` and `::1`.
-pub(crate) fn is_loopback(url: &Url) -> bool {
-    url.host_str().is_some_and(|host| {
-        host.eq_ignore_ascii_case("localhost") || host == "127.0.0.1" || host == "[::1]"
-    })
+    require_secure(url, name)
 }
 
 /// A random value with 256 bits of entropy, base64url-encoded: a PKCE verifier, `state`

@@ -334,6 +334,41 @@ fn non_http_base_url_is_a_config_error() {
 }
 
 #[test]
+fn an_http_base_url_on_a_non_loopback_host_with_a_token_source_is_a_config_error() {
+    let error = Client::builder("http://api.example.com")
+        .token_source(StaticToken::new(TOKEN))
+        .build()
+        .unwrap_err();
+
+    assert!(
+        matches!(error, Error::Config { ref message } if message.contains("https")),
+        "{error:?}"
+    );
+}
+
+#[test]
+fn an_http_base_url_on_a_loopback_host_with_a_token_source_is_accepted() {
+    for base_url in [
+        "http://localhost:8000",
+        "http://127.0.0.1:8000",
+        "http://[::1]:8000",
+    ] {
+        let client = Client::builder(base_url)
+            .token_source(StaticToken::new(TOKEN))
+            .build();
+
+        assert!(client.is_ok(), "{base_url}: {client:?}");
+    }
+}
+
+#[test]
+fn an_http_base_url_without_a_token_source_is_accepted() {
+    let client = Client::builder("http://api.example.com").build();
+
+    assert!(client.is_ok(), "{client:?}");
+}
+
+#[test]
 fn invalid_user_agent_is_a_config_error() {
     let error = Client::builder("https://api.example.com")
         .user_agent("line\nbreak")

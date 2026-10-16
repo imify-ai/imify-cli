@@ -83,6 +83,21 @@ async fn oidc_settings_reads_config_json_below_a_base_url_prefix() {
 }
 
 #[tokio::test]
+async fn oidc_settings_fails_with_config_for_an_http_base_url_on_a_non_loopback_host() {
+    let client = Client::builder("http://api.example.com")
+        .retry_policy(RetryPolicy::none())
+        .build()
+        .unwrap();
+
+    let error = client.oidc_settings().await.unwrap_err();
+
+    assert!(
+        matches!(error, Error::Config { ref message } if message.contains("http://api.example.com")),
+        "{error:?}"
+    );
+}
+
+#[tokio::test]
 async fn oidc_settings_fails_with_not_found_when_the_host_serves_no_config_json() {
     let server = MockServer::start().await;
     mount_config(&server, "/config.json", ResponseTemplate::new(404)).await;

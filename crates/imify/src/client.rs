@@ -435,9 +435,10 @@ impl ClientBuilder {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::Config`] when the base URL is not an `http` or `https` URL, when
-    /// the user agent is not a valid header value, or when the TLS backend fails to
-    /// initialize.
+    /// Returns [`Error::Config`] when the base URL is not an `http` or `https` URL, when a
+    /// token source is set and the base URL uses `http` on a host other than `localhost`,
+    /// `127.0.0.1` or `::1`, when the user agent is not a valid header value, or when the
+    /// TLS backend fails to initialize.
     ///
     /// # Examples
     ///
@@ -446,7 +447,10 @@ impl ClientBuilder {
     /// assert!(matches!(error, imify::Error::Config { .. }));
     /// ```
     pub fn build(self) -> Result<Client, Error> {
-        let base_url = parse_base_url(&self.base_url)?;
+        let mut base_url = parse_base_url(&self.base_url)?;
+        if self.token_source.is_some() {
+            base_url = require_secure(base_url, "API")?;
+        }
         let user_agent = HeaderValue::try_from(self.user_agent).map_err(|_| Error::Config {
             message: "user agent contains characters not allowed in an HTTP header".to_owned(),
         })?;
@@ -472,6 +476,27 @@ impl ClientBuilder {
 fn build_http(builder: reqwest::ClientBuilder) -> Result<reqwest::Client, Error> {
     builder.build().map_err(|error| Error::Config {
         message: format!("cannot initialize the HTTP client: {error}"),
+    })
+}
+
+/// Returns `url` when it uses `https`, or `http` on the host `localhost`, `127.0.0.1` or
+/// `::1`. `name` names the URL in the error.
+pub(crate) fn require_secure(url: Url, name: &str) -> Result<Url, Error> {
+    match url.scheme() {
+        "https" => Ok(url),
+        "http" if is_loopback(&url) => Ok(url),
+        _ => Err(Error::Config {
+            message: format!(
+                "the {name} URL {url} must use https unless its host is localhost, 127.0.0.1 or ::1"
+            ),
+        }),
+    }
+}
+
+/// Returns `true` for the hosts `localhost`, `127.0.0.1` and `::1`.
+fn is_loopback(url: &Url) -> bool {
+    url.host_str().is_some_and(|host| {
+        host.eq_ignore_ascii_case("localhost") || host == "127.0.0.1" || host == "[::1]"
     })
 }
 
