@@ -17,6 +17,8 @@
             "internal",
             "invalid_argument",
             "auth_required",
+            "auth_rejected",
+            "permission_denied",
             "not_found",
             "conflict",
             "network",

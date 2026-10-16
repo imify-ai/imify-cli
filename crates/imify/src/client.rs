@@ -63,10 +63,6 @@ impl Client {
 
     /// Sends a request with an optional JSON body and decodes the JSON response as `T`,
     /// retrying per the client's retry policy.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "endpoint methods build on this in later changes")
-    )]
     pub(crate) async fn execute<T: DeserializeOwned>(
         &self,
         method: Method,

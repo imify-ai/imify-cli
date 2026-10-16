@@ -1,0 +1,7 @@
+---
+source: crates/imify-cli/tests/cli.rs
+expression: text(&output.stdout)
+---
+Name     Ada Lovelace
+Subject  user-1234
+Role     admin

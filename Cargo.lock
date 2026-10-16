@@ -845,8 +845,10 @@ dependencies = [
  "jsonschema",
  "serde",
  "serde_json",
+ "tokio",
  "tracing",
  "tracing-subscriber",
+ "wiremock",
 ]
 
 [[package]]

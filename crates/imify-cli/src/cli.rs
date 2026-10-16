@@ -46,7 +46,13 @@ pub struct GlobalArgs {
 }
 
 #[derive(Debug, Subcommand)]
-pub enum Command {}
+pub enum Command {
+    /// Show the user the access token belongs to
+    #[command(
+        after_help = "Example:\n  IMIFY_TOKEN=<token> IMIFY_API_URL=https://api.example.com imify whoami"
+    )]
+    Whoami,
+}
 
 /// Parses `args`, including the program name. `color` enables color in help and errors.
 ///

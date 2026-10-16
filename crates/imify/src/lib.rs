@@ -14,11 +14,13 @@
 //! ```
 #![deny(missing_docs)]
 
+mod account;
 pub mod auth;
 mod client;
 mod error;
 mod retry;
 
+pub use account::User;
 pub use client::{Client, ClientBuilder};
 pub use error::{Error, FieldError};
 pub use retry::RetryPolicy;

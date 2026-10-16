@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "imify whoami result",
+  "description": "Written to stdout by `imify whoami --json`: the user the access token belongs to.",
+  "type": "object",
+  "required": ["subject", "name", "role"],
+  "properties": {
+    "subject": {
+      "description": "Stable user id: the `sub` claim of the access token.",
+      "type": "string",
+      "minLength": 1
+    },
+    "name": {
+      "description": "Display name or email address.",
+      "type": "string"
+    },
+    "role": {
+      "description": "Platform role, such as `admin`.",
+      "type": "string"
+    }
+  }
+}

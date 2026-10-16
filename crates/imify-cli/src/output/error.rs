@@ -19,6 +19,10 @@ pub enum ErrorCode {
     InvalidArgument,
     /// The command needs a login or a token.
     AuthRequired,
+    /// The server rejected the access token.
+    AuthRejected,
+    /// The access token is valid but lacks the permission for the request.
+    PermissionDenied,
     /// The requested resource does not exist.
     NotFound,
     /// The request conflicts with the current state of the resource.
@@ -38,10 +42,12 @@ pub enum ErrorCode {
 impl ErrorCode {
     /// Every error code, in documentation order.
     #[cfg(test)]
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 12] = [
         Self::Internal,
         Self::InvalidArgument,
         Self::AuthRequired,
+        Self::AuthRejected,
+        Self::PermissionDenied,
         Self::NotFound,
         Self::Conflict,
         Self::Network,
@@ -56,7 +62,7 @@ impl ErrorCode {
         match self {
             Self::Internal => 1,
             Self::InvalidArgument => 2,
-            Self::AuthRequired => 3,
+            Self::AuthRequired | Self::AuthRejected | Self::PermissionDenied => 3,
             Self::NotFound => 4,
             Self::Conflict => 6,
             Self::Network | Self::Server | Self::RateLimited => 7,
@@ -110,6 +116,42 @@ impl From<clap::Error> for CliError {
     }
 }
 
+/// The hint for an `auth_required` error.
+pub const AUTH_REQUIRED_HINT: &str = "Set `IMIFY_TOKEN` to an access token.";
+
+/// The hint for an `auth_rejected` error.
+const AUTH_REJECTED_HINT: &str = "Set `IMIFY_TOKEN` to a valid, unexpired token.";
+
+impl From<imify::Error> for CliError {
+    fn from(error: imify::Error) -> Self {
+        let message = error.to_string();
+        match error {
+            imify::Error::Auth { status: None, .. } => {
+                Self::new(ErrorCode::AuthRequired, message).with_hint(AUTH_REQUIRED_HINT)
+            }
+            imify::Error::Auth {
+                status: Some(403), ..
+            } => Self::new(ErrorCode::PermissionDenied, message),
+            imify::Error::Auth {
+                status: Some(_), ..
+            } => Self::new(ErrorCode::AuthRejected, message).with_hint(AUTH_REJECTED_HINT),
+            imify::Error::NotFound { .. } => Self::new(ErrorCode::NotFound, message),
+            imify::Error::Conflict { .. } => Self::new(ErrorCode::Conflict, message),
+            imify::Error::RateLimited { retry_after } => {
+                let error = Self::new(ErrorCode::RateLimited, message);
+                match retry_after {
+                    Some(delay) => error.with_hint(format!("Retry in {} s.", delay.as_secs())),
+                    None => error,
+                }
+            }
+            imify::Error::Server { .. } => Self::new(ErrorCode::Server, message),
+            imify::Error::Network { .. } => Self::new(ErrorCode::Network, message),
+            imify::Error::Config { .. } => Self::new(ErrorCode::InvalidArgument, message),
+            _ => Self::new(ErrorCode::Internal, message),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use clap::{CommandFactory, Parser};
@@ -129,6 +171,8 @@ mod tests {
                 (ErrorCode::Internal, 1),
                 (ErrorCode::InvalidArgument, 2),
                 (ErrorCode::AuthRequired, 3),
+                (ErrorCode::AuthRejected, 3),
+                (ErrorCode::PermissionDenied, 3),
                 (ErrorCode::NotFound, 4),
                 (ErrorCode::Conflict, 6),
                 (ErrorCode::Network, 7),
@@ -153,6 +197,8 @@ mod tests {
                 "internal",
                 "invalid_argument",
                 "auth_required",
+                "auth_rejected",
+                "permission_denied",
                 "not_found",
                 "conflict",
                 "network",
@@ -241,5 +287,127 @@ mod tests {
             schema["properties"]["error"]["properties"]["code"]["enum"],
             serde_json::Value::Array(codes)
         );
+    }
+
+    fn code_of(error: imify::Error) -> ErrorCode {
+        CliError::from(error).code
+    }
+
+    #[test]
+    fn auth_error_without_status_maps_to_auth_required() {
+        let error = imify::Error::Auth {
+            status: None,
+            message: "not signed in".into(),
+        };
+
+        assert_eq!(code_of(error), ErrorCode::AuthRequired);
+    }
+
+    #[test]
+    fn auth_error_with_status_401_maps_to_auth_rejected() {
+        let error = imify::Error::Auth {
+            status: Some(401),
+            message: "Invalid token".into(),
+        };
+
+        assert_eq!(code_of(error), ErrorCode::AuthRejected);
+    }
+
+    #[test]
+    fn auth_error_with_status_403_maps_to_permission_denied() {
+        let error = imify::Error::Auth {
+            status: Some(403),
+            message: "Not allowed".into(),
+        };
+
+        assert_eq!(code_of(error), ErrorCode::PermissionDenied);
+    }
+
+    #[test]
+    fn auth_rejected_hints_at_replacing_the_token() {
+        let error = CliError::from(imify::Error::Auth {
+            status: Some(401),
+            message: "Invalid token".into(),
+        });
+
+        assert_eq!(
+            error.hint.as_deref(),
+            Some("Set `IMIFY_TOKEN` to a valid, unexpired token.")
+        );
+    }
+
+    #[test]
+    fn permission_denied_has_no_hint() {
+        let error = CliError::from(imify::Error::Auth {
+            status: Some(403),
+            message: "Not allowed".into(),
+        });
+
+        assert_eq!(error.hint, None);
+    }
+
+    #[test]
+    fn resource_and_server_errors_map_to_their_codes() {
+        let codes = [
+            code_of(imify::Error::NotFound {
+                message: "Dataset not found".into(),
+            }),
+            code_of(imify::Error::Conflict {
+                message: "Dataset exists".into(),
+            }),
+            code_of(imify::Error::RateLimited { retry_after: None }),
+            code_of(imify::Error::Server {
+                status: 503,
+                message: "Service Unavailable".into(),
+            }),
+            code_of(imify::Error::Network {
+                source: Box::new(std::io::Error::other("connection refused")),
+            }),
+        ];
+
+        assert_eq!(
+            codes,
+            [
+                ErrorCode::NotFound,
+                ErrorCode::Conflict,
+                ErrorCode::RateLimited,
+                ErrorCode::Server,
+                ErrorCode::Network,
+            ]
+        );
+    }
+
+    #[test]
+    fn config_error_maps_to_invalid_argument() {
+        let error = imify::Error::Config {
+            message: "IMIFY_TOKEN is not valid Unicode".into(),
+        };
+
+        assert_eq!(code_of(error), ErrorCode::InvalidArgument);
+    }
+
+    #[test]
+    fn validation_and_unexpected_response_map_to_internal() {
+        let codes = [
+            code_of(imify::Error::Validation {
+                message: "invalid request".into(),
+                fields: Vec::new(),
+            }),
+            code_of(imify::Error::UnexpectedResponse {
+                status: 418,
+                message: "I'm a teapot".into(),
+            }),
+        ];
+
+        assert_eq!(codes, [ErrorCode::Internal, ErrorCode::Internal]);
+    }
+
+    #[test]
+    fn rate_limited_with_retry_after_hints_at_the_delay() {
+        let error = CliError::from(imify::Error::RateLimited {
+            retry_after: Some(std::time::Duration::from_secs(30)),
+        });
+
+        assert_eq!(error.hint.as_deref(), Some("Retry in 30 s."));
     }
 }
