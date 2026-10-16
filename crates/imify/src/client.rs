@@ -201,6 +201,11 @@ impl Client {
         Ok(Some(value))
     }
 
+    /// Returns the base URL of the API.
+    pub(crate) fn base_url(&self) -> &Url {
+        &self.base_url
+    }
+
     /// Joins `path` to the base URL.
     pub(crate) fn url(&self, path: &str) -> Result<Url, Error> {
         self.base_url

@@ -5,8 +5,8 @@ use std::future::Future;
 use std::io;
 use std::path::PathBuf;
 use std::pin::{Pin, pin};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use futures_util::future::{self, Either};
@@ -14,6 +14,7 @@ use futures_util::stream::{self, Stream, StreamExt};
 use reqwest::header::{AUTHORIZATION, CONTENT_LENGTH, CONTENT_TYPE, LOCATION};
 use reqwest::{Body, Response, Url};
 use serde::Deserialize;
+use sha2::{Digest as _, Sha256};
 use tokio::io::AsyncReadExt;
 use tokio::time::{Instant, sleep_until};
 use tokio_util::bytes::Bytes;
@@ -29,6 +30,9 @@ const CHUNK_SIZE: usize = 256 * 1024;
 
 pub(crate) type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
+/// The SHA-256 of the bytes of a file.
+pub(crate) type Digest = [u8; 32];
+
 /// Receives the bytes of the current request taken by the HTTP stack so far.
 pub(crate) type ProgressFn = Arc<dyn Fn(u64) + Send + Sync>;
 
@@ -42,8 +46,9 @@ pub(crate) struct FileUpload<'a> {
 
 /// Sends one file to an ingest session.
 pub(crate) trait Transport: Send + Sync + fmt::Debug {
-    /// Sends the file once, without retries.
-    fn put<'a>(&'a self, upload: &'a FileUpload<'a>) -> BoxFuture<'a, Result<(), Error>>;
+    /// Sends the file once, without retries, and returns the SHA-256 of the bytes the
+    /// API stored.
+    fn put<'a>(&'a self, upload: &'a FileUpload<'a>) -> BoxFuture<'a, Result<Digest, Error>>;
 }
 
 /// Sends each file as one streamed `PUT` request to the API.
@@ -63,12 +68,12 @@ impl StreamingPut {
         Self { client }
     }
 
-    async fn put_following_redirects(&self, upload: &FileUpload<'_>) -> Result<(), Error> {
+    async fn put_following_redirects(&self, upload: &FileUpload<'_>) -> Result<Digest, Error> {
         let segments = std::iter::once("files").chain(upload.file.path().split('/'));
         let mut url = session_url(&self.client, upload.session, segments)?;
         let mut redirects = 0;
         loop {
-            let response = self.put_once(upload, &url).await?;
+            let (response, tracker) = self.put_once(upload, &url).await?;
             if redirects < MAX_REDIRECTS
                 && let Some(next) = redirect_target(&url, &response)
             {
@@ -77,13 +82,18 @@ impl StreamingPut {
                 continue;
             }
             let limit = self.client.read_timeout();
-            return tokio::time::timeout(limit, check_stored(upload.file, response))
+            tokio::time::timeout(limit, check_stored(upload.file, response))
                 .await
-                .map_err(|_| stalled(limit))?;
+                .map_err(|_| stalled(limit))??;
+            return Ok(tracker.digest());
         }
     }
 
-    async fn put_once(&self, upload: &FileUpload<'_>, url: &Url) -> Result<Response, Error> {
+    async fn put_once(
+        &self,
+        upload: &FileUpload<'_>,
+        url: &Url,
+    ) -> Result<(Response, Arc<Tracker>), Error> {
         let size = upload.file.size();
         let tracker = Arc::new(Tracker::new());
         let body = file_body(upload, Arc::clone(&tracker)).await?;
@@ -107,12 +117,12 @@ impl StreamingPut {
         if tracker.truncated.load(Ordering::Relaxed) {
             return Err(changed_size(upload));
         }
-        sent
+        Ok((sent?, tracker))
     }
 }
 
 impl Transport for StreamingPut {
-    fn put<'a>(&'a self, upload: &'a FileUpload<'a>) -> BoxFuture<'a, Result<(), Error>> {
+    fn put<'a>(&'a self, upload: &'a FileUpload<'a>) -> BoxFuture<'a, Result<Digest, Error>> {
         Box::pin(self.put_following_redirects(upload))
     }
 }
@@ -146,7 +156,7 @@ fn tracked(
     let end_tracker = Arc::clone(&tracker);
     let chunks = chunks.inspect(move |chunk| {
         if let Ok(bytes) = chunk {
-            let sent = tracker.add(bytes.len() as u64);
+            let sent = tracker.add(bytes);
             progress(sent);
         }
     });
@@ -200,6 +210,7 @@ struct Tracker {
     sent: AtomicU64,
     truncated: AtomicBool,
     activity: Activity,
+    hasher: Mutex<Sha256>,
 }
 
 impl Tracker {
@@ -208,13 +219,29 @@ impl Tracker {
             sent: AtomicU64::new(0),
             truncated: AtomicBool::new(false),
             activity: Activity::new(),
+            hasher: Mutex::new(Sha256::new()),
         }
     }
 
-    /// Records `bytes` more sent and returns the total.
-    fn add(&self, bytes: u64) -> u64 {
+    /// Records `bytes` as sent and returns the number of bytes sent in total.
+    fn add(&self, bytes: &[u8]) -> u64 {
         self.activity.touch();
-        self.sent.fetch_add(bytes, Ordering::Relaxed) + bytes
+        self.hasher
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .update(bytes);
+        let count = bytes.len() as u64;
+        self.sent.fetch_add(count, Ordering::Relaxed) + count
+    }
+
+    /// Returns the SHA-256 of the bytes sent so far.
+    fn digest(&self) -> Digest {
+        self.hasher
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+            .finalize()
+            .into()
     }
 }
 
