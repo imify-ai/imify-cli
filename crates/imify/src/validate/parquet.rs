@@ -2,6 +2,7 @@
 
 use std::collections::BTreeSet;
 use std::fs::{self, File};
+use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -12,9 +13,13 @@ use parquet::record::Field;
 use parquet::schema::types::Type;
 
 use super::{Finding, FindingCode};
+use crate::local_file;
 
 /// Directories whose parquet files get a footer check.
 const PARQUET_DIRS: [&str; 2] = ["data", "meta"];
+
+/// Most rows read from one parquet file.
+pub(super) const MAX_ROWS: u64 = 10_000_000;
 
 /// An open parquet file whose footer has been read.
 pub(super) type Reader = SerializedFileReader<File>;
@@ -47,10 +52,42 @@ impl Number {
     }
 }
 
-/// Opens `path` and reads its footer. Returns the reason when that fails.
+/// Opens `path` when it is a regular file and reads its footer. Returns the reason when
+/// that fails.
 pub(super) fn open(path: &Path) -> Result<Reader, String> {
-    let file = File::open(path).map_err(|error| format!("cannot be opened: {error}"))?;
-    SerializedFileReader::new(file).map_err(|error| format!("has no readable footer: {error}"))
+    let (file, _) =
+        local_file::open_regular(path).map_err(|error| format!("cannot be opened: {error}"))?;
+    guarded(|| {
+        SerializedFileReader::new(file).map_err(|error| format!("has no readable footer: {error}"))
+    })
+}
+
+/// Runs `read`, turning a panic of the parquet reader into a reason.
+pub(super) fn guarded<T>(read: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+    panic::catch_unwind(AssertUnwindSafe(read)).unwrap_or_else(|payload| {
+        let detail = payload
+            .downcast_ref::<&str>()
+            .copied()
+            .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
+            .unwrap_or("no detail");
+        Err(format!(
+            "cannot be decoded: the parquet reader failed: {detail}"
+        ))
+    })
+}
+
+/// The number of rows the footer declares. Returns the reason when a row group declares
+/// a negative count.
+pub(super) fn row_count(reader: &Reader) -> Result<u64, String> {
+    reader
+        .metadata()
+        .row_groups()
+        .iter()
+        .try_fold(0_u64, |total, group| {
+            u64::try_from(group.num_rows())
+                .map(|rows| total.saturating_add(rows))
+                .map_err(|_| format!("declares {} rows in a row group", group.num_rows()))
+        })
 }
 
 /// Reports every parquet file under `data/` and `meta/` whose footer cannot be read, and
@@ -138,13 +175,27 @@ pub(super) fn unsupported_codec(reader: &Reader, names: &[&str]) -> Option<(Stri
 }
 
 /// Reads the named top-level numeric columns, in row order. Returns the reason when a
-/// column is missing, uses a codec that is not decoded, or holds a non-numeric value.
+/// column is missing, uses a codec that is not decoded, holds a non-numeric value, or the
+/// file has more than [`MAX_ROWS`] rows.
 pub(super) fn read_columns(reader: &Reader, names: &[&str]) -> Result<Vec<Vec<Number>>, String> {
     if let Some((column, codec)) = unsupported_codec(reader, names) {
         return Err(format!(
             "column {column} uses the codec {codec}, which is not decoded"
         ));
     }
+    let declared = row_count(reader)?;
+    if declared > MAX_ROWS {
+        return Err(too_many_rows(declared));
+    }
+    guarded(|| read_rows(reader, names))
+}
+
+/// The reason for a file with `rows` rows, more than [`MAX_ROWS`].
+pub(super) fn too_many_rows(rows: u64) -> String {
+    format!("declares {rows} rows; files with more than {MAX_ROWS} rows are not read")
+}
+
+fn read_rows(reader: &Reader, names: &[&str]) -> Result<Vec<Vec<Number>>, String> {
     let schema = reader.metadata().file_metadata().schema();
     let mut fields = Vec::with_capacity(names.len());
     for name in names {
@@ -164,7 +215,12 @@ pub(super) fn read_columns(reader: &Reader, names: &[&str]) -> Result<Vec<Vec<Nu
     let rows = reader
         .get_row_iter(Some(projection))
         .map_err(|error| error.to_string())?;
-    for row in rows {
+    for (read, row) in (0_u64..).zip(rows) {
+        if read == MAX_ROWS {
+            return Err(format!(
+                "has more than {MAX_ROWS} rows; such files are not read"
+            ));
+        }
         let row = row.map_err(|error| error.to_string())?;
         for (name, field) in row.get_column_iter() {
             let index = names

@@ -952,26 +952,24 @@ async fn datasets_upload_of_a_dataset_with_warnings_only_uploads_and_lists_the_w
 
 /// Adds `videos/extra.mp4` as a symbolic link to a file outside the dataset, kept alive by
 /// the returned directory.
-fn link_outside(dataset: &PickCube) -> tempfile::TempDir {
-    let outside = tempfile::tempdir().unwrap();
+fn link_outside(dataset: &PickCube) -> std::io::Result<tempfile::TempDir> {
+    let outside = tempfile::tempdir()?;
     std::fs::write(
         outside.path().join("private.bin"),
         b"not part of the dataset",
-    )
-    .unwrap();
+    )?;
     std::os::unix::fs::symlink(
         outside.path().join("private.bin"),
         dataset.root.join("videos/extra.mp4"),
-    )
-    .unwrap();
-    outside
+    )?;
+    Ok(outside)
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn datasets_upload_skips_a_symbolic_link_and_names_it_in_the_planned_event() {
     let server = ingest_api().await;
     let dataset = pick_cube(&[]).unwrap();
-    let _outside = link_outside(&dataset);
+    let _outside = link_outside(&dataset).unwrap();
 
     let output = upload(&dataset, Some(&server), &["--json"]);
 
@@ -992,7 +990,7 @@ async fn datasets_upload_skips_a_symbolic_link_and_names_it_in_the_planned_event
 #[test]
 fn datasets_upload_dry_run_names_a_skipped_symbolic_link() {
     let dataset = pick_cube(&[]).unwrap();
-    let _outside = link_outside(&dataset);
+    let _outside = link_outside(&dataset).unwrap();
 
     let output = upload(&dataset, None, &["--dry-run"]);
 

@@ -14,6 +14,9 @@
 //! A finding is an [`Severity::Error`] when the platform rejects the dataset for the same
 //! reason, and a [`Severity::Warning`] otherwise. Video files are checked for existence
 //! only. Parquet columns compressed with a codec other than Snappy are not decoded.
+//!
+//! Only regular files are opened; symbolic links are not followed. JSON files are read up
+//! to 64 MiB. A parquet file whose footer declares more than 10,000,000 rows is not read.
 
 mod data;
 mod episodes;
@@ -34,6 +37,9 @@ use template::Arg;
 
 /// Top-level entries of a dataset that the upload includes.
 const UPLOADED_ENTRIES: [&str; 3] = ["meta", "data", "videos"];
+
+/// Largest JSON file read: `meta/info.json` and `meta/episodes.jsonl`.
+const MAX_JSON_BYTES: u64 = 64 * 1024 * 1024;
 
 /// Checks the dataset in `root` and returns every finding.
 ///
@@ -260,12 +266,13 @@ pub enum FindingCode {
     EpisodeCountMismatch,
     /// The episodes index is missing or does not parse.
     EpisodesIndexUnreadable,
-    /// A video file that `video_path` expands to does not exist.
+    /// A video file that `video_path` expands to does not exist or is not a regular file.
     VideoMissing,
     /// Consecutive timestamps differ from 1/fps by more than 1e-4 s.
     TimestampSpacing,
-    /// A parquet column uses a compression codec that is not decoded, so the row counts and
-    /// timestamps of that file are not checked.
+    /// A parquet column uses a compression codec that is not decoded, or a data file has
+    /// more than 10,000,000 rows, so the row counts and timestamps of that file are not
+    /// checked.
     ContentNotChecked,
 }
 
@@ -413,12 +420,15 @@ fn check_videos(root: &Path, info: &Info, episodes: &[Episode], findings: &mut V
         }
     }
     for (path, (episode, key)) in videos {
-        if !root.join(&path).is_file() {
-            findings.push(Finding::new(
-                FindingCode::VideoMissing,
-                path,
-                format!("The {key} video of episode {episode} does not exist."),
-            ));
-        }
+        let problem = match fs::symlink_metadata(root.join(&path)) {
+            Ok(metadata) if metadata.is_file() => continue,
+            Ok(_) => "is not a regular file and is not uploaded",
+            Err(_) => "does not exist",
+        };
+        findings.push(Finding::new(
+            FindingCode::VideoMissing,
+            path,
+            format!("The {key} video of episode {episode} {problem}."),
+        ));
     }
 }

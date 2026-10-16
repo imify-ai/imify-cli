@@ -490,6 +490,24 @@ fn text_timestamps_write_the_text_into_every_timestamp_of_every_data_file() {
 }
 
 #[test]
+fn declared_row_count_rewrites_only_the_footer_of_the_first_parquet_file_in_the_directory() {
+    let (before, after) = with_and_without(Defect::DeclaredRowCount {
+        dir: "data".to_owned(),
+        rows: 1 << 40,
+    })
+    .unwrap();
+    let rewritten = after.root().join("data/chunk-000/episode_000000.parquet");
+
+    let reader = SerializedFileReader::new(File::open(&rewritten).unwrap()).unwrap();
+
+    assert_eq!(
+        changed_paths(&before, &after).unwrap(),
+        paths(&["data/chunk-000/episode_000000.parquet"])
+    );
+    assert_eq!(reader.metadata().row_group(0).num_rows(), 1 << 40);
+}
+
+#[test]
 fn missing_video_omits_the_first_video_file() {
     let (before, after) = with_and_without(Defect::MissingVideo).unwrap();
     let missing = "videos/chunk-000/observation.images.front/episode_000000.mp4";

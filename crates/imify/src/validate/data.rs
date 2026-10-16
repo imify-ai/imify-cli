@@ -1,6 +1,8 @@
 //! The data of each episode: file existence, row count and timestamps.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::fs;
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
 use super::episodes::{self, Episode};
@@ -54,6 +56,25 @@ fn by_data_file<'a>(info: &Info, episodes: &'a [Episode]) -> BTreeMap<PathBuf, V
     files
 }
 
+/// The timestamps of a data file.
+enum Timestamps {
+    /// A v2.1 file: the timestamps of the one episode the file holds. Every episode that
+    /// `data_path` maps to the file is checked against them.
+    Episode(Vec<f64>),
+    /// A v3.x file: the timestamps of each episode, by episode index.
+    ByEpisode(BTreeMap<u64, Vec<f64>>),
+}
+
+impl Timestamps {
+    /// The timestamps of the episode `index`, empty when the file has none.
+    fn of(&self, index: u64) -> &[f64] {
+        match self {
+            Self::Episode(timestamps) => timestamps,
+            Self::ByEpisode(by_episode) => by_episode.get(&index).map_or(&[], Vec::as_slice),
+        }
+    }
+}
+
 /// Checks one data file and the episodes it holds.
 struct FileChecker<'a> {
     info: &'a Info,
@@ -66,20 +87,18 @@ impl FileChecker<'_> {
         match self.read_timestamps(root) {
             Ok(timestamps) => {
                 for episode in self.episodes {
-                    let episode_timestamps = timestamps
-                        .get(&episode.index)
-                        .map_or(&[][..], Vec::as_slice);
-                    self.check_episode(episode, episode_timestamps, findings);
+                    self.check_episode(episode, timestamps.of(episode.index), findings);
                 }
             }
             Err(finding) => findings.push(finding),
         }
     }
 
-    /// The timestamps of each episode in the file, or the finding that stops the check.
-    fn read_timestamps(&self, root: &Path) -> Result<BTreeMap<u64, Vec<f64>>, Finding> {
+    /// The timestamps in the file, or the finding that stops the check.
+    fn read_timestamps(&self, root: &Path) -> Result<Timestamps, Finding> {
         let full_path = root.join(self.path);
-        if !full_path.is_file() {
+        if fs::symlink_metadata(&full_path).is_err_and(|error| error.kind() == ErrorKind::NotFound)
+        {
             return Err(self.finding(FindingCode::DataFileMissing, self.missing_message()));
         }
         let unreadable = |reason| {
@@ -98,8 +117,18 @@ impl FileChecker<'_> {
                 ),
             ));
         }
+        let rows = parquet::row_count(&reader).map_err(unreadable)?;
+        if rows > parquet::MAX_ROWS {
+            return Err(self.finding(
+                FindingCode::ContentNotChecked,
+                format!(
+                    "The file declares {rows} rows; the row counts and timestamps of files with more than {} rows are not checked.",
+                    parquet::MAX_ROWS
+                ),
+            ));
+        }
         parquet::read_columns(&reader, &columns)
-            .and_then(|values| self.timestamps_by_episode(values))
+            .and_then(|values| self.timestamps(values))
             .map_err(unreadable)
     }
 
@@ -111,26 +140,21 @@ impl FileChecker<'_> {
         }
     }
 
-    /// The timestamps of each episode in row order. A v2.1 file holds one episode.
-    fn timestamps_by_episode(
-        &self,
-        columns: Vec<Vec<Number>>,
-    ) -> Result<BTreeMap<u64, Vec<f64>>, String> {
+    /// The timestamps of the file in row order: of the one episode of a v2.1 file, or
+    /// grouped by `episode_index` for v3.x.
+    fn timestamps(&self, columns: Vec<Vec<Number>>) -> Result<Timestamps, String> {
         let mut columns = columns.into_iter();
-        let mut by_episode: BTreeMap<u64, Vec<f64>> = BTreeMap::new();
         match self.info.version {
             Version::V2_1 => {
                 let timestamps = columns.next().unwrap_or_default();
-                for episode in self.episodes {
-                    by_episode.insert(
-                        episode.index,
-                        timestamps.iter().copied().map(Number::as_f64).collect(),
-                    );
-                }
+                Ok(Timestamps::Episode(
+                    timestamps.into_iter().map(Number::as_f64).collect(),
+                ))
             }
             Version::V3 => {
                 let indices = columns.next().unwrap_or_default();
                 let timestamps = columns.next().unwrap_or_default();
+                let mut by_episode: BTreeMap<u64, Vec<f64>> = BTreeMap::new();
                 for (index, timestamp) in indices.into_iter().zip(timestamps) {
                     let index = index.as_u64().ok_or_else(|| {
                         "column episode_index holds a value that is not a non-negative integer"
@@ -141,9 +165,9 @@ impl FileChecker<'_> {
                         .or_default()
                         .push(timestamp.as_f64());
                 }
+                Ok(Timestamps::ByEpisode(by_episode))
             }
         }
-        Ok(by_episode)
     }
 
     fn check_episode(&self, episode: &Episode, timestamps: &[f64], findings: &mut Vec<Finding>) {

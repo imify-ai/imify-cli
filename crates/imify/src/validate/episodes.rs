@@ -1,14 +1,15 @@
 //! The episodes index: `meta/episodes.jsonl` for v2.1, `meta/episodes/**/*.parquet` for v3.x.
 
 use std::collections::BTreeMap;
-use std::fs;
+
 use std::path::Path;
 
 use serde_json::Value;
 
 use super::info::{Info, Version};
 use super::parquet;
-use super::{Finding, FindingCode};
+use super::{Finding, FindingCode, MAX_JSON_BYTES};
+use crate::local_file;
 
 /// Path of the v2.1 episodes index relative to the dataset root.
 pub(super) const V2_1_INDEX: &str = "meta/episodes.jsonl";
@@ -62,13 +63,16 @@ pub(super) fn index_name(version: Version) -> &'static str {
 }
 
 fn read_jsonl(root: &Path) -> Result<Vec<Episode>, String> {
-    let text = fs::read_to_string(root.join(V2_1_INDEX)).map_err(|error| {
-        if error.kind() == std::io::ErrorKind::NotFound {
-            format!("{V2_1_INDEX} does not exist")
-        } else {
-            format!("{V2_1_INDEX} cannot be read: {error}")
-        }
-    })?;
+    let bytes =
+        local_file::read_capped(&root.join(V2_1_INDEX), MAX_JSON_BYTES).map_err(|error| {
+            if error.kind() == std::io::ErrorKind::NotFound {
+                format!("{V2_1_INDEX} does not exist")
+            } else {
+                format!("{V2_1_INDEX} cannot be read: {error}")
+            }
+        })?;
+    let text =
+        String::from_utf8(bytes).map_err(|error| format!("{V2_1_INDEX} is not UTF-8: {error}"))?;
     text.lines()
         .enumerate()
         .filter(|(_, line)| !line.trim().is_empty())
