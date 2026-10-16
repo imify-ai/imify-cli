@@ -42,9 +42,12 @@ jobs:
       - name: PR body follows the house style
         env:
           VALE_VERSION: 3.24.0
+          VALE_SHA256: 867534ddb678abca7f214bc4706ead0922bd5252ffe8035fc227013f66c8b214
         run: |
-          curl -fsSL "https://github.com/errata-ai/vale/releases/download/v${VALE_VERSION}/vale_${VALE_VERSION}_Linux_64-bit.tar.gz" \
-            | tar -xz -C "$RUNNER_TEMP" vale
+          archive="$RUNNER_TEMP/vale.tar.gz"
+          curl -fsSL -o "$archive" "https://github.com/errata-ai/vale/releases/download/v${VALE_VERSION}/vale_${VALE_VERSION}_Linux_64-bit.tar.gz"
+          echo "$VALE_SHA256  $archive" | sha256sum -c -
+          tar -xzf "$archive" -C "$RUNNER_TEMP" vale
           cp "$RUNNER_TEMP/body" "$RUNNER_TEMP/pr-body.md"
           "$RUNNER_TEMP/vale" --config .vale.ini "$RUNNER_TEMP/pr-body.md"
 

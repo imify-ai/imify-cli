@@ -5,6 +5,27 @@ git_release_enable = false
 publish = false
 semver_check = true
 pr_labels = ["release"]
+# The release PR body passes scripts/policy/check-message.sh: no emoji, no attribution footer.
+pr_body = """
+## Release
+{% for release in releases %}
+- `{{ release.package }}`: {% if release.previous_version and release.previous_version != release.next_version %}{{ release.previous_version }} -> {% endif %}{{ release.next_version }}{% if release.semver_check == "incompatible" %} (breaking API changes){% elif release.semver_check == "compatible" %} (compatible API changes){% endif %}
+{%- endfor %}
+{%- for release in releases %}{% if release.breaking_changes %}
+
+### `{{ release.package }}` breaking changes
+
+```text
+{{ release.breaking_changes }}
+```{% endif %}{% endfor %}
+{%- for release in releases %}{% if release.changelog %}
+
+## `{{ release.package }}` changelog
+{% if release.title %}
+{{ release.title }}
+{% endif %}
+{{ release.changelog }}{% endif %}{% endfor %}
+"""
 
 [[package]]
 name = "imify"
