@@ -380,3 +380,34 @@ async fn errors_do_not_contain_the_token() {
         assert!(!format!("{error:?} {error}").contains(TOKEN), "{status}");
     }
 }
+
+#[test]
+fn redirect_from_https_to_http_is_not_followed() {
+    let previous = Url::parse("https://api.example.com/v1/a").unwrap();
+    let next = Url::parse("http://api.example.com/v1/b").unwrap();
+
+    assert!(!may_follow_redirect(
+        StatusCode::TEMPORARY_REDIRECT,
+        &previous,
+        &next
+    ));
+}
+
+#[tokio::test]
+async fn get_follows_at_most_five_redirects() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(308).insert_header("location", "/v1/datasets/ds_1"))
+        .mount(&server)
+        .await;
+
+    let error = get_dataset(&client(&server)).await.unwrap_err();
+
+    assert_eq!(
+        (
+            matches!(error, Error::UnexpectedResponse { status: 308, .. }),
+            received(&server).await.len()
+        ),
+        (true, 6)
+    );
+}

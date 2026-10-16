@@ -36,7 +36,7 @@ crates/imify/src/
   retry.rs          RetryPolicy, retry decisions and backoff
   auth/             TokenSource trait and its implementations
   datasets/         dataset endpoints and models
-  ingest/           upload engine: Transport trait, planner, resume journal, progress events
+  ingest/           upload engine: Transport trait, planner, pacing, resume journal, progress events
   validate/         offline structural checks of LeRobot v3 and v2.1 datasets
 
 crates/imify-cli/src/

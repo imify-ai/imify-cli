@@ -17,6 +17,7 @@
 pub mod auth;
 mod client;
 mod error;
+pub mod ingest;
 mod retry;
 
 pub use client::{Client, ClientBuilder};

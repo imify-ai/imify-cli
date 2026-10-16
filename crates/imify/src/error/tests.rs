@@ -157,3 +157,17 @@ fn unlisted_status_maps_to_unexpected_response() {
         Error::UnexpectedResponse { status: 405, .. }
     ));
 }
+
+#[test]
+fn io_error_message_names_the_path() {
+    let error = Error::Io {
+        path: "pick-place/meta/info.json".into(),
+        source: std::io::Error::from(std::io::ErrorKind::NotFound),
+    };
+
+    assert!(
+        error
+            .to_string()
+            .starts_with("cannot read pick-place/meta/info.json: ")
+    );
+}
