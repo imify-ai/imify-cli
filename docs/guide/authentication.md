@@ -93,7 +93,7 @@ The keychain entry has the service `imify-cli` and the host as account. After `a
 
 A keychain that exists but refuses access, such as a locked keyring on Linux, is an error with code `internal` and the hint ``Unlock your keyring, or set `IMIFY_CREDENTIAL_STORE=file`.``. The CLI then neither writes the login to the file nor reads an older login from it.
 
-The file is `credentials.json` in `IMIFY_CONFIG_DIR`, or in the platform's configuration directory: `~/Library/Application Support/ai.imify.imify` on macOS, `~/.config/imify` on Linux. It has mode `0600`, and a directory the CLI creates has mode `0700`. The CLI refuses:
+The file is `credentials.json` in `IMIFY_CONFIG_DIR`, otherwise in `$XDG_CONFIG_HOME/imify` when `XDG_CONFIG_HOME` is an absolute path, otherwise in `~/.config/imify`, on macOS and Linux alike. It has mode `0600`, and a directory the CLI creates has mode `0700`. The CLI refuses:
 
 - a file that other users can access, that belongs to another user, that is a symbolic link, or that is larger than 1 MiB;
 - a directory that belongs to another user or that other users can write to.
@@ -117,6 +117,7 @@ Writers take a lock on `credentials.json.lock` in the same directory.
 | `IMIFY_TOKEN` | A token that takes precedence over the stored login. |
 | `IMIFY_CREDENTIAL_STORE` | `auto`, `keychain` or `file`. |
 | `IMIFY_CONFIG_DIR` | The directory of `credentials.json` and `config.toml`. |
+| `XDG_CONFIG_HOME` | When `IMIFY_CONFIG_DIR` is unset and `XDG_CONFIG_HOME` is an absolute path, the files are in `$XDG_CONFIG_HOME/imify`. |
 | `IMIFY_OIDC_ISSUER` | The identity provider's issuer URL, replacing `authority` from `config.json`. Must use `https`, except on loopback hosts. |
 | `IMIFY_OIDC_CLIENT_ID` | The client id, replacing `clientId` from `config.json`. |
 
@@ -126,7 +127,7 @@ With both `IMIFY_OIDC_ISSUER` and `IMIFY_OIDC_CLIENT_ID` set, `imify login` does
 
 | Code | Exit | Cause |
 |---|---|---|
-| `invalid_argument` | 2 | The API URL or the issuer is not `https` on a remote host, or the API URL has a user name, password, query or fragment; the host publishes no `config.json` and the overrides are unset; `IMIFY_CREDENTIAL_STORE` is unsupported; `--no-browser` without a terminal; the pasted text is not the redirect URL. |
+| `invalid_argument` | 2 | The API URL or the issuer is not `https` on a remote host, or the API URL has a user name, password, query or fragment; the host publishes no `config.json` and the overrides are unset; `IMIFY_CREDENTIAL_STORE` is unsupported; the credentials file is needed and `HOME` is not an absolute path while `IMIFY_CONFIG_DIR` and `XDG_CONFIG_HOME` are unset; `--no-browser` without a terminal; the pasted text is not the redirect URL. |
 | `auth_required` | 3 | There is no login for the host, and `IMIFY_TOKEN` is not set. |
 | `auth_rejected` | 3 | The API rejected the token. |
 | `auth_expired` | 3 | The stored login has expired or was revoked. |

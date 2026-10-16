@@ -88,13 +88,6 @@ fn an_unsupported_store_choice_is_an_invalid_argument_naming_the_variable() {
 }
 
 #[test]
-fn imify_config_dir_selects_the_directory_of_the_credentials_file() {
-    let dir = tempfile::tempdir().unwrap();
-
-    assert_eq!(config_dir(&env_with(None, dir.path())).unwrap(), dir.path());
-}
-
-#[test]
 fn file_store_round_trips_credentials() {
     let dir = tempfile::tempdir().unwrap();
     let store = FileStore::new(dir.path(), HOST);

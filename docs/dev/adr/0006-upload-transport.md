@@ -16,9 +16,7 @@ The API has no endpoint that lists the files stored in a session. A client that 
 
 ### Resume journal
 - The SDK reads no environment variables. The caller passes the journal directory to `Uploader::journal`.
-- The CLI resolves the directory. Journals are state, not configuration, so `IMIFY_CONFIG_DIR` does not move them:
-  - Linux: `$XDG_STATE_HOME/imify/uploads/`, or `~/.local/state/imify/uploads/` when `XDG_STATE_HOME` is unset or empty.
-  - macOS: `~/Library/Application Support/imify/uploads/`.
+- The CLI resolves the directory. Journals are state, not configuration, so `IMIFY_CONFIG_DIR` does not move them. On macOS and Linux the directory is `$XDG_STATE_HOME/imify/uploads/`, or `~/.local/state/imify/uploads/` when `XDG_STATE_HOME` is unset, empty or not an absolute path. One layout on both platforms puts the journals next to the configuration directory `~/.config/imify`, below dotfile directories that users already back up and inspect.
 - The directory has mode `0700`. Each journal has mode `0600`. Its name is the hex SHA-256 of the API base URL, a newline and the canonical dataset directory, with the extension `.jsonl`.
 - The journal is append-only JSON Lines. The first line holds the format version, the session id, the session name and the task description. Each later line records one file the API stored: path, size, modification time in nanoseconds, and the SHA-256 of the bytes sent. An entry exists only for a stored file, so no `done` flag is needed. A partial last line, left by a crash, is ignored.
 - The header is written after the session exists, to a temporary file renamed into place. Each entry is flushed to disk before the file is reported as finished.

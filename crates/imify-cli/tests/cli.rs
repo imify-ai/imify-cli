@@ -702,11 +702,7 @@ fn pick_cube(defects: &[Defect]) -> std::io::Result<PickCube> {
 impl PickCube {
     /// The upload journal directory with `HOME` and `XDG_STATE_HOME` set by [`upload_task`].
     fn journal_dir(&self) -> PathBuf {
-        if cfg!(target_os = "macos") {
-            self.home.join("Library/Application Support/imify/uploads")
-        } else {
-            self.home.join(".local/state/imify/uploads")
-        }
+        self.home.join(".local/state/imify/uploads")
     }
 
     /// The files of the dataset as the API names them: relative, with `/` separators.
