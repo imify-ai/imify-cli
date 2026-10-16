@@ -1,0 +1,7 @@
+---
+source: crates/imify-cli/src/output/renderer.rs
+expression: streams.stdout.text()
+---
+{"files_done":1,"type":"progress"}
+{"files_done":2,"type":"progress"}
+{"dataset_id":42,"type":"result"}

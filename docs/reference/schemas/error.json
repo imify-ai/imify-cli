@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "imify error envelope",
+  "description": "Written to stderr when a command fails with --json.",
+  "type": "object",
+  "required": ["error"],
+  "additionalProperties": false,
+  "properties": {
+    "error": {
+      "type": "object",
+      "required": ["code", "message", "hint"],
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "description": "Stable error code. The exit code depends on it.",
+          "enum": [
+            "internal",
+            "invalid_argument",
+            "auth_required",
+            "not_found",
+            "conflict",
+            "network",
+            "server",
+            "rate_limited",
+            "cancelled",
+            "interrupted"
+          ]
+        },
+        "message": {
+          "description": "What happened.",
+          "type": "string",
+          "minLength": 1
+        },
+        "hint": {
+          "description": "What to do next, or null.",
+          "type": ["string", "null"]
+        }
+      }
+    }
+  }
+}

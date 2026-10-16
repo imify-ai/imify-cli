@@ -1,0 +1,6 @@
+---
+source: crates/imify-cli/tests/cli.rs
+expression: text(&output.stderr)
+---
+error: unexpected argument '--no-such-flag' found
+hint: Run `imify --help`.
