@@ -19,8 +19,9 @@ use crate::output::{CliError, ErrorCode};
 /// The largest file read, in bytes.
 const MAX_FILE_SIZE: u64 = 1024 * 1024;
 
-/// Permission bits that let users other than the owner change the directory.
+/// Permission bits that let users other than the owner change a directory or a file.
 const GROUP_AND_OTHER_WRITE: u32 = 0o022;
+const GROUP_AND_OTHER_WRITE_MODE: Mode = Mode::from_bits_truncate(0o022);
 
 /// A file or directory that cannot be used, and why.
 #[derive(Debug, thiserror::Error)]
@@ -161,7 +162,7 @@ pub fn read(path: &Path, permissions: Permissions) -> Result<Option<Vec<u8>>, Pr
     let mode = Mode::from_raw_mode(stat.st_mode) & (Mode::RWXU | Mode::RWXG | Mode::RWXO);
     let refused = match permissions {
         Permissions::OwnerOnly => Some((Mode::RWXG | Mode::RWXO, "access")),
-        Permissions::OwnerWritable => Some((Mode::WGRP | Mode::WOTH, "write to")),
+        Permissions::OwnerWritable => Some((GROUP_AND_OTHER_WRITE_MODE, "write to")),
         Permissions::Any => None,
     };
     if let Some((bits, access)) = refused

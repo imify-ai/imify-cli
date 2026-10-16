@@ -169,7 +169,7 @@ fn http_is_accepted_for_loopback_hosts() {
         "http://127.0.0.1:8080",
         "http://[::1]:8080",
     ]
-    .map(|raw| check_api_url(raw, "api-url", "").is_ok());
+    .map(|raw| check_api_url(raw, "api-url", "Pass a URL.").is_ok());
 
     assert_eq!(accepted, [true; 3]);
 }
@@ -177,7 +177,7 @@ fn http_is_accepted_for_loopback_hosts() {
 #[test]
 fn a_scheme_other_than_http_or_https_is_an_invalid_argument() {
     assert_eq!(
-        check_api_url("ftp://api.example.com", "api-url", "")
+        check_api_url("ftp://api.example.com", "api-url", "Pass a URL.")
             .unwrap_err()
             .code,
         ErrorCode::InvalidArgument

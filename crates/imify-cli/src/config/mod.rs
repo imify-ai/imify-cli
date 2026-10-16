@@ -197,15 +197,11 @@ fn is_loopback(url: &Url) -> bool {
 }
 
 fn invalid_api_url(origin: &str, hint: &str, reason: &dyn fmt::Display) -> CliError {
-    let error = CliError::new(
+    CliError::new(
         ErrorCode::InvalidArgument,
         format!("{origin} is invalid: {reason}"),
-    );
-    if hint.is_empty() {
-        error
-    } else {
-        error.with_hint(hint)
-    }
+    )
+    .with_hint(hint)
 }
 
 /// The values in the config file. A key the file does not set is `None`.
