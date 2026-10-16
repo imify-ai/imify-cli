@@ -133,16 +133,16 @@ impl From<clap::Error> for CliError {
 }
 
 /// The hint for an `auth_required` error.
-pub const AUTH_REQUIRED_HINT: &str = "Run `imify login`, or set `IMIFY_TOKEN` to a token.";
+pub const AUTH_REQUIRED_HINT: &str = "Run `imify auth login`, or set `IMIFY_TOKEN` to a token.";
 
 /// The hint for an `auth_rejected` error when the token comes from `IMIFY_TOKEN`.
 pub const AUTH_REJECTED_HINT: &str = "Set `IMIFY_TOKEN` to a valid, unexpired token.";
 
 /// The hint when the user has to sign in again.
-pub const LOGIN_HINT: &str = "Run `imify login`.";
+pub const LOGIN_HINT: &str = "Run `imify auth login`.";
 
 /// The hint for a login that the redirect listener cannot complete.
-const NO_BROWSER_HINT: &str = "Run `imify login --no-browser`.";
+const NO_BROWSER_HINT: &str = "Run `imify auth login --no-browser`.";
 
 /// The hint for a pasted URL that is not the redirect URL.
 pub const PASTE_HINT: &str = "Paste the full URL from the browser's address bar.";
@@ -291,11 +291,11 @@ mod tests {
     #[test]
     fn envelope_contains_the_hint_when_the_error_has_one() {
         let error = CliError::new(ErrorCode::AuthRequired, "Not logged in.")
-            .with_hint("Run `imify login`.");
+            .with_hint("Run `imify auth login`.");
 
         assert_eq!(
             serde_json::to_value(error.envelope()).unwrap()["error"]["hint"],
-            serde_json::json!("Run `imify login`.")
+            serde_json::json!("Run `imify auth login`.")
         );
     }
 
@@ -493,7 +493,7 @@ mod tests {
 
         assert_eq!(
             (error.code, error.hint.as_deref()),
-            (ErrorCode::AuthExpired, Some("Run `imify login`."))
+            (ErrorCode::AuthExpired, Some("Run `imify auth login`."))
         );
     }
 
@@ -520,8 +520,8 @@ mod tests {
         assert_eq!(
             hints,
             [
-                Some("Run `imify login --no-browser`.".to_owned()),
-                Some("Run `imify login --no-browser`.".to_owned())
+                Some("Run `imify auth login --no-browser`.".to_owned()),
+                Some("Run `imify auth login --no-browser`.".to_owned())
             ]
         );
     }

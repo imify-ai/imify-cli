@@ -189,7 +189,7 @@ async fn whoami_sends_the_stored_id_token() {
         .mount(&login.api)
         .await;
 
-    let output = login.run(&["whoami"], &[]);
+    let output = login.run(&["auth", "whoami"], &[]);
 
     assert!(output.status.success(), "{}", text(&output.stderr));
     assert_eq!(login.requests_to(&login.provider, "/oauth2/token").await, 0);
@@ -216,7 +216,7 @@ async fn whoami_refreshes_an_id_token_that_expires_within_60_s_and_stores_it() {
         .mount(&login.api)
         .await;
 
-    let output = login.run(&["whoami"], &[]);
+    let output = login.run(&["auth", "whoami"], &[]);
 
     assert!(output.status.success(), "{}", text(&output.stderr));
     let stored = login.stored_entry().unwrap();
@@ -240,7 +240,7 @@ async fn whoami_with_a_revoked_refresh_token_fails_with_auth_expired() {
         .await;
     login.answer_me().await;
 
-    let output = login.run(&["whoami", "--json"], &[]);
+    let output = login.run(&["auth", "whoami", "--json"], &[]);
 
     assert_eq!(output.status.code(), Some(3));
     assert_eq!(login.requests_to(&login.api, "/api/v1/me").await, 0);
@@ -263,7 +263,7 @@ async fn imify_token_takes_precedence_over_the_stored_login() {
         .mount(&login.api)
         .await;
 
-    let output = login.run(&["whoami"], &[("IMIFY_TOKEN", ENV_TOKEN)]);
+    let output = login.run(&["auth", "whoami"], &[("IMIFY_TOKEN", ENV_TOKEN)]);
 
     assert!(output.status.success(), "{}", text(&output.stderr));
 }
@@ -277,12 +277,12 @@ async fn a_rejected_stored_login_hints_at_imify_login() {
         .mount(&login.api)
         .await;
 
-    let output = login.run(&["whoami", "--json"], &[]);
+    let output = login.run(&["auth", "whoami", "--json"], &[]);
 
     let envelope = envelope(&output);
     assert_eq!(
         (&envelope["error"]["code"], &envelope["error"]["hint"]),
-        (&json!("auth_rejected"), &json!("Run `imify login`."))
+        (&json!("auth_rejected"), &json!("Run `imify auth login`."))
     );
 }
 
@@ -291,7 +291,12 @@ async fn whoami_without_a_login_names_the_host() {
     let api = MockServer::start().await;
     let config_dir = tempfile::tempdir().unwrap();
 
-    let output = run(&api.uri(), config_dir.path(), &["whoami", "--json"], &[]);
+    let output = run(
+        &api.uri(),
+        config_dir.path(),
+        &["auth", "whoami", "--json"],
+        &[],
+    );
 
     assert_eq!(output.status.code(), Some(3));
     let envelope = envelope(&output);
@@ -303,7 +308,7 @@ async fn whoami_without_a_login_names_the_host() {
     );
     assert_eq!(
         envelope["error"]["hint"],
-        "Run `imify login`, or set `IMIFY_TOKEN` to a token."
+        "Run `imify auth login`, or set `IMIFY_TOKEN` to a token."
     );
 }
 
@@ -314,7 +319,7 @@ fn an_unsupported_credential_store_is_a_usage_error() {
     let output = run(
         "https://api.example.com",
         config_dir.path(),
-        &["whoami", "--json"],
+        &["auth", "whoami", "--json"],
         &[("IMIFY_CREDENTIAL_STORE", "vault")],
     );
 
@@ -327,7 +332,7 @@ async fn logout_revokes_the_refresh_token_and_removes_the_login() {
     let login = Login::stored(3600).await.unwrap();
     login.answer_revoke(200).await;
 
-    let output = login.run(&["logout", "--json"], &[]);
+    let output = login.run(&["auth", "logout", "--json"], &[]);
 
     assert!(output.status.success(), "{}", text(&output.stderr));
     assert_eq!(
@@ -344,7 +349,7 @@ async fn logout_says_that_issued_tokens_stay_valid() {
     let login = Login::stored(3600).await.unwrap();
     login.answer_revoke(200).await;
 
-    let output = login.run(&["logout"], &[]);
+    let output = login.run(&["auth", "logout"], &[]);
 
     assert!(output.status.success(), "{}", text(&output.stderr));
     insta::assert_snapshot!("logout_human", login.redact(&text(&output.stdout)));
@@ -355,7 +360,12 @@ async fn logout_without_a_login_succeeds_and_removes_nothing() {
     let api = MockServer::start().await;
     let config_dir = tempfile::tempdir().unwrap();
 
-    let output = run(&api.uri(), config_dir.path(), &["logout", "--json"], &[]);
+    let output = run(
+        &api.uri(),
+        config_dir.path(),
+        &["auth", "logout", "--json"],
+        &[],
+    );
 
     assert!(output.status.success(), "{}", text(&output.stderr));
     let result: Value = serde_json::from_slice(&output.stdout).unwrap();
@@ -374,7 +384,7 @@ async fn logout_removes_the_login_and_warns_when_revocation_is_unsupported() {
     let login = Login::stored(3600).await.unwrap();
     login.answer_revoke(404).await;
 
-    let output = login.run(&["logout", "--json"], &[]);
+    let output = login.run(&["auth", "logout", "--json"], &[]);
 
     assert!(output.status.success(), "{}", text(&output.stderr));
     let result: Value = serde_json::from_slice(&output.stdout).unwrap();
@@ -394,7 +404,7 @@ async fn logout_removes_the_login_and_warns_when_revocation_fails() {
     let login = Login::stored(3600).await.unwrap();
     login.answer_revoke(400).await;
 
-    let output = login.run(&["logout", "--json"], &[]);
+    let output = login.run(&["auth", "logout", "--json"], &[]);
 
     assert!(output.status.success(), "{}", text(&output.stderr));
     let result: Value = serde_json::from_slice(&output.stdout).unwrap();
@@ -416,8 +426,8 @@ async fn trace_output_of_whoami_and_logout_contains_no_token() {
     login.answer_me().await;
     login.answer_revoke(200).await;
 
-    let whoami = login.run(&["whoami", "-vv"], &[]);
-    let logout = login.run(&["logout", "-vv"], &[]);
+    let whoami = login.run(&["auth", "whoami", "-vv"], &[]);
+    let logout = login.run(&["auth", "logout", "-vv"], &[]);
 
     assert!(whoami.status.success(), "{}", text(&whoami.stderr));
     assert!(logout.status.success(), "{}", text(&logout.stderr));
@@ -438,7 +448,7 @@ async fn trace_output_of_whoami_and_logout_contains_no_token() {
 fn http_api_url_on_a_remote_host_fails_before_any_request() {
     let config_dir = tempfile::tempdir().unwrap();
 
-    let outputs = [["whoami", "--json"], ["login", "--json"]].map(|args| {
+    let outputs = [["auth", "whoami", "--json"], ["auth", "login", "--json"]].map(|args| {
         run(
             "http://api.example.com",
             config_dir.path(),
@@ -462,7 +472,7 @@ async fn http_api_url_on_localhost_is_accepted() {
     let output = run(
         &api_url,
         login.config_dir.path(),
-        &["whoami"],
+        &["auth", "whoami"],
         &[("IMIFY_TOKEN", ENV_TOKEN)],
     );
 
@@ -474,7 +484,12 @@ async fn login_without_config_json_and_overrides_hints_at_the_overrides() {
     let api = MockServer::start().await;
     let config_dir = tempfile::tempdir().unwrap();
 
-    let output = run(&api.uri(), config_dir.path(), &["login", "--json"], &[]);
+    let output = run(
+        &api.uri(),
+        config_dir.path(),
+        &["auth", "login", "--json"],
+        &[],
+    );
 
     assert_eq!(output.status.code(), Some(2));
     let envelope = envelope(&output);
@@ -495,7 +510,7 @@ async fn login_without_browser_and_without_a_terminal_is_a_usage_error() {
     let output = run(
         &api.uri(),
         config_dir.path(),
-        &["login", "--no-browser", "--json"],
+        &["auth", "login", "--no-browser", "--json"],
         &[],
     );
 
@@ -505,17 +520,17 @@ async fn login_without_browser_and_without_a_terminal_is_a_usage_error() {
 }
 
 #[test]
-fn login_and_logout_help_show_examples() {
+fn login_logout_and_whoami_help_show_examples() {
     let config_dir = tempfile::tempdir().unwrap();
 
-    for command in ["login", "logout"] {
+    for command in ["login", "logout", "whoami"] {
         let output = run(
             "https://api.example.com",
             config_dir.path(),
-            &[command, "--help"],
+            &["auth", command, "--help"],
             &[],
         );
-        assert!(text(&output.stdout).contains(&format!("imify {command}")));
+        assert!(text(&output.stdout).contains(&format!("imify auth {command}")));
     }
 }
 
@@ -531,7 +546,7 @@ async fn an_escape_sequence_in_an_api_error_is_not_written_raw() {
         .mount(&login.api)
         .await;
 
-    let output = login.run(&["whoami"], &[]);
+    let output = login.run(&["auth", "whoami"], &[]);
 
     let stderr = text(&output.stderr);
     assert_eq!(output.status.code(), Some(3));
@@ -552,7 +567,7 @@ async fn logout_removes_a_login_it_cannot_read_and_does_not_revoke() {
     )
     .unwrap();
 
-    let output = login.run(&["logout", "--json"], &[]);
+    let output = login.run(&["auth", "logout", "--json"], &[]);
 
     assert!(output.status.success(), "{}", text(&output.stderr));
     let result: Value = serde_json::from_slice(&output.stdout).unwrap();

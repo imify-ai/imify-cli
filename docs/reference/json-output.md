@@ -70,8 +70,8 @@ Schema: [`schemas/error.json`](schemas/error.json).
 | `invalid_argument` | 2 | Invalid command line, unsupported `IMIFY_OUTPUT`, invalid API URL or config file, or input required without a terminal. |
 | `auth_required` | 3 | The command needs a login or a token. |
 | `auth_rejected` | 3 | The server rejected the access token. |
-| `auth_expired` | 3 | The stored login has expired or was revoked. Run `imify login`. |
-| `login_failed` | 3 | `imify login` did not complete: access denied, no redirect within 5 minutes, no free redirect port, or an identity provider error. |
+| `auth_expired` | 3 | The stored login has expired or was revoked. Run `imify auth login`. |
+| `login_failed` | 3 | `imify auth login` did not complete: access denied, no redirect within 5 minutes, no free redirect port, or an identity provider error. |
 | `permission_denied` | 3 | The access token lacks the permission for the request. |
 | `not_found` | 4 | The resource does not exist, or `--resume` found no interrupted upload. |
 | `dataset_invalid` | 5 | The local validation found at least one error in the dataset, or the API rejected the dataset. |

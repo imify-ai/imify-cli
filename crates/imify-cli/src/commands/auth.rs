@@ -21,7 +21,7 @@ use crate::output::renderer::{Render, Renderer};
 use crate::output::sanitize::printable;
 use crate::output::{CliError, Environment, ErrorCode, LOGIN_HINT, PASTE_HINT};
 
-/// How long `imify login` waits for the browser to return to the CLI.
+/// How long `imify auth login` waits for the browser to return to the CLI.
 const LOGIN_TIMEOUT: Duration = Duration::from_secs(300);
 
 const ISSUER_VARIABLE: &str = "IMIFY_OIDC_ISSUER";
@@ -91,7 +91,7 @@ pub fn env_token_source() -> Result<Option<(AuthSource, TokenOrigin)>, CliError>
     Ok(EnvToken::from_env()?.map(|token| (AuthSource::Env(token), TokenOrigin::Env)))
 }
 
-/// `imify whoami`: prints the user the token belongs to.
+/// `imify auth whoami`: prints the user the token belongs to.
 ///
 /// # Errors
 ///
@@ -102,7 +102,7 @@ pub async fn whoami(env: &Environment, renderer: &mut dyn Renderer) -> Result<()
     write_result(renderer, &Whoami(user))
 }
 
-/// The result of `imify whoami`.
+/// The result of `imify auth whoami`.
 struct Whoami(User);
 
 impl Render for Whoami {
@@ -125,7 +125,7 @@ impl Render for Whoami {
     }
 }
 
-/// What `imify login` uses besides the API and the identity provider.
+/// What `imify auth login` uses besides the API and the identity provider.
 pub struct LoginContext<'a> {
     pub browser: &'a dyn Browser,
     pub keychain: Keychain,
@@ -147,7 +147,7 @@ impl fmt::Debug for LoginContext<'_> {
     }
 }
 
-/// `imify login`: signs in through the system browser, or by reading the pasted redirect URL
+/// `imify auth login`: signs in through the system browser, or by reading the pasted redirect URL
 /// from stdin with `--no-browser`, and stores the login of the host.
 ///
 /// # Errors
@@ -243,9 +243,9 @@ impl SignIn<'_> {
 fn no_terminal_error() -> CliError {
     CliError::new(
         ErrorCode::InvalidArgument,
-        "`imify login --no-browser` reads the redirect URL from a terminal, and stdin is not one.",
+        "`imify auth login --no-browser` reads the redirect URL from a terminal, and stdin is not one.",
     )
-    .with_hint("Run `imify login --no-browser` in a terminal, or set `IMIFY_TOKEN` to a token.")
+    .with_hint("Run `imify auth login --no-browser` in a terminal, or set `IMIFY_TOKEN` to a token.")
 }
 
 /// Warns when the login went to the file because no keychain service exists (on `prompt`,
@@ -452,7 +452,7 @@ fn warn(renderer: &mut dyn Renderer, message: &str) -> Result<(), CliError> {
     })
 }
 
-/// The result of `imify login`.
+/// The result of `imify auth login`.
 struct LoginResult {
     host: String,
     user: User,
@@ -492,7 +492,7 @@ impl Render for LoginResult {
     }
 }
 
-/// `imify logout`: revokes the refresh token of the stored login and removes the login.
+/// `imify auth logout`: revokes the refresh token of the stored login and removes the login.
 ///
 /// # Errors
 ///
@@ -573,7 +573,7 @@ async fn revoke(
     }
 }
 
-/// The result of `imify logout`.
+/// The result of `imify auth logout`.
 struct LogoutResult {
     host: String,
     removed: bool,

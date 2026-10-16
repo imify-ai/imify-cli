@@ -441,14 +441,14 @@ mod tests {
         renderer
             .error(
                 &CliError::new(ErrorCode::AuthRequired, "Not logged in.")
-                    .with_hint("Run `imify login`."),
+                    .with_hint("Run `imify auth login`."),
             )
             .unwrap();
 
         assert_eq!(streams.stdout.text(), "");
         assert_eq!(
             streams.stderr.text(),
-            "error: Not logged in.\nhint: Run `imify login`.\n"
+            "error: Not logged in.\nhint: Run `imify auth login`.\n"
         );
     }
 

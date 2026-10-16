@@ -3,4 +3,4 @@ source: crates/imify-cli/tests/auth.rs
 assertion_line: 248
 expression: text(&output.stderr)
 ---
-{"error":{"code":"auth_expired","message":"login failed: the stored login has expired or was revoked","hint":"Run `imify login`."}}
+{"error":{"code":"auth_expired","message":"login failed: the stored login has expired or was revoked","hint":"Run `imify auth login`."}}
