@@ -435,17 +435,14 @@ async fn errors_do_not_contain_the_token() {
 }
 
 #[tokio::test]
-async fn a_success_body_over_32_mib_fails_with_unexpected_response() {
-    let server = MockServer::start().await;
-    Mock::given(method("GET"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_json(json!({"id": "x".repeat(32 * 1024 * 1024), "episodes": 1})),
-        )
-        .mount(&server)
-        .await;
+async fn a_success_body_announced_over_32_mib_fails_with_unexpected_response() {
+    let base = serve("content-length: 33554433", 0).await;
+    let client = Client::builder(&base)
+        .retry_policy(RetryPolicy::none())
+        .build()
+        .unwrap();
 
-    let error = get_dataset(&client(&server)).await.unwrap_err();
+    let error = get_dataset(&client).await.unwrap_err();
 
     assert!(
         matches!(error, Error::UnexpectedResponse { status: 200, ref message }
@@ -454,9 +451,9 @@ async fn a_success_body_over_32_mib_fails_with_unexpected_response() {
     );
 }
 
-/// Serves one response with a chunked body of `chunks` chunks of 1 MiB, without a
-/// `Content-Length`, and returns the base URL.
-async fn serve_chunked(chunks: usize) -> String {
+/// Serves one `200` response with the header line `header` and a chunked body of `chunks`
+/// chunks of 1 MiB, and returns the base URL.
+async fn serve(header: &'static str, chunks: usize) -> String {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -464,10 +461,11 @@ async fn serve_chunked(chunks: usize) -> String {
         let (mut stream, _) = listener.accept().await.unwrap();
         let mut request = [0; 4096];
         let _ = stream.read(&mut request).await.unwrap();
-        stream
-            .write_all(b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ntransfer-encoding: chunked\r\n\r\n")
-            .await
-            .unwrap();
+        let head = format!("HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n{header}\r\n\r\n");
+        // The client may close the connection once it rejects the response.
+        if stream.write_all(head.as_bytes()).await.is_err() || chunks == 0 {
+            return;
+        }
         let chunk = vec![b' '; 1024 * 1024];
         for _ in 0..chunks {
             let header = format!("{:x}\r\n", chunk.len());
@@ -486,7 +484,7 @@ async fn serve_chunked(chunks: usize) -> String {
 
 #[tokio::test]
 async fn a_streamed_success_body_over_32_mib_fails_with_unexpected_response() {
-    let base = serve_chunked(33).await;
+    let base = serve("transfer-encoding: chunked", 33).await;
     let client = Client::builder(&base)
         .retry_policy(RetryPolicy::none())
         .build()
