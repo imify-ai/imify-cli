@@ -1,10 +1,11 @@
+use std::path::PathBuf;
 use std::process::Output;
 
 use assert_cmd::Command;
 use imify_test_support::{DatasetBuilder, Defect, Format, SyntheticDataset};
 use serde_json::json;
-use wiremock::matchers::{header, method, path};
-use wiremock::{Mock, MockServer, ResponseTemplate};
+use wiremock::matchers::{header, method, path, path_regex};
+use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
 
 const TOKEN: &str = "tok_7f3a9c-secret";
 
@@ -550,4 +551,422 @@ fn datasets_validate_of_a_missing_directory_is_a_usage_error_naming_meta_info_js
             .unwrap()
             .contains("meta/info.json")
     );
+}
+const SESSION_ID: &str = "3f2c9a";
+const TASK: &str = "Pick up the red cube";
+const SESSIONS: &str = "/api/v1/ingest/sessions";
+const FILES: &str = "/api/v1/ingest/sessions/3f2c9a/files/";
+const COMPLETE: &str = "/api/v1/ingest/sessions/3f2c9a/complete";
+
+fn session_body(status: &str) -> serde_json::Value {
+    json!({
+        "id": SESSION_ID,
+        "name": "pick-cube",
+        "dataset_format": null,
+        "robot_type": null,
+        "fps": null,
+        "total_episodes": null,
+        "status": status,
+        "task_description": TASK,
+        "created_at": "2026-10-16T09:30:00Z"
+    })
+}
+
+fn completed_session_body() -> serde_json::Value {
+    let mut body = session_body("ready");
+    body["dataset_format"] = json!("lerobot_v3");
+    body["robot_type"] = json!("so100");
+    body["fps"] = json!(30.0);
+    body["total_episodes"] = json!(2);
+    body
+}
+
+/// Answers a file `PUT` the way the API does: with the stored path and size.
+struct Store;
+
+impl Respond for Store {
+    fn respond(&self, request: &Request) -> ResponseTemplate {
+        let stored = request.url.path().strip_prefix(FILES).unwrap_or_default();
+        ResponseTemplate::new(200).set_body_json(json!({
+            "path": stored,
+            "size": request.body.len(),
+        }))
+    }
+}
+
+/// An ingest API that creates session `3f2c9a`, stores every file and answers `complete` with
+/// `complete`.
+async fn ingest_api_completing_with(complete: ResponseTemplate) -> MockServer {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path(SESSIONS))
+        .respond_with(ResponseTemplate::new(201).set_body_json(session_body("uploading")))
+        .mount(&server)
+        .await;
+    Mock::given(method("PUT"))
+        .and(path_regex(format!("^{FILES}")))
+        .respond_with(Store)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path(COMPLETE))
+        .respond_with(complete)
+        .mount(&server)
+        .await;
+    server
+}
+
+async fn ingest_api() -> MockServer {
+    ingest_api_completing_with(ResponseTemplate::new(200).set_body_json(completed_session_body()))
+        .await
+}
+
+/// A synthetic dataset in a directory named `pick-cube`, removed on drop.
+struct PickCube {
+    _parent: tempfile::TempDir,
+    root: PathBuf,
+    files: Vec<PathBuf>,
+}
+
+fn pick_cube(defects: &[Defect]) -> std::io::Result<PickCube> {
+    let parent = tempfile::tempdir()?;
+    let root = parent.path().join("pick-cube");
+    let builder = defects.iter().fold(
+        DatasetBuilder::new(Format::V3_0).episodes(2),
+        |builder, defect| builder.defect(defect.clone()),
+    );
+    let files = builder.write_to(&root)?;
+    Ok(PickCube {
+        _parent: parent,
+        root,
+        files,
+    })
+}
+
+/// Runs `imify datasets upload . --task <TASK>` in the dataset root, with the token and the
+/// URL of `server` when one is given.
+fn upload(dataset: &PickCube, server: Option<&MockServer>, extra_args: &[&str]) -> Output {
+    let mut command = imify_command();
+    if let Some(server) = server {
+        command
+            .env("IMIFY_TOKEN", TOKEN)
+            .env("IMIFY_API_URL", server.uri());
+    }
+    command
+        .current_dir(&dataset.root)
+        .args(["datasets", "upload", ".", "--task", TASK])
+        .args(extra_args)
+        .assert()
+        .get_output()
+        .clone()
+}
+
+/// The file a transfer event line is about: the JSON `path`, or the second word of a text line.
+fn transfer_path(line: &str) -> &str {
+    match line.split_once("\"path\":\"") {
+        Some((_, rest)) => rest.split('"').next().unwrap_or_default(),
+        None => line.split(' ').nth(1).unwrap_or_default(),
+    }
+}
+
+/// `text` with the lines from the first line containing `first` up to, not including, the line
+/// containing `end` ordered by file, so that the output of concurrent transfers compares
+/// stably. The events of one file keep their order.
+fn with_sorted_transfers(text: &str, first: &str, end: &str) -> String {
+    let mut lines: Vec<&str> = text.lines().collect();
+    let position = |marker: &str| {
+        lines
+            .iter()
+            .position(|line| line.contains(marker))
+            .unwrap_or(lines.len())
+    };
+    let (start, stop) = (position(first), position(end));
+    lines[start..stop.max(start)].sort_by_key(|line| transfer_path(line));
+    let mut sorted = lines.join("\n");
+    sorted.push('\n');
+    sorted
+}
+
+fn json_lines(stdout: &[u8]) -> serde_json::Result<Vec<serde_json::Value>> {
+    text(stdout).lines().map(serde_json::from_str).collect()
+}
+
+fn types(events: &[serde_json::Value]) -> Vec<&str> {
+    events
+        .iter()
+        .map(|event| event["type"].as_str().unwrap_or_default())
+        .collect()
+}
+
+/// The `code` of the error envelope on stderr.
+fn error_code(output: &Output) -> Option<String> {
+    let envelope: serde_json::Value = serde_json::from_slice(&output.stderr).ok()?;
+    envelope["error"]["code"].as_str().map(str::to_owned)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn datasets_upload_json_writes_the_event_stream_and_the_session() {
+    let server = ingest_api().await;
+    let dataset = pick_cube(&[]).unwrap();
+
+    let output = upload(&dataset, Some(&server), &["--json"]);
+
+    assert_eq!(output.status.code(), Some(0), "{}", text(&output.stderr));
+    insta::assert_snapshot!(
+        "datasets_upload_json",
+        with_sorted_transfers(&text(&output.stdout), "\"file_", "\"completing\"")
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn datasets_upload_json_reports_each_file_as_started_then_finished() {
+    let server = ingest_api().await;
+    let dataset = pick_cube(&[]).unwrap();
+
+    let output = upload(&dataset, Some(&server), &["--json"]);
+
+    let events = json_lines(&output.stdout).unwrap();
+    for file in &dataset.files {
+        let path = file.to_str().unwrap();
+        let kinds: Vec<&str> = events
+            .iter()
+            .filter(|event| event["path"] == path)
+            .map(|event| event["type"].as_str().unwrap())
+            .collect();
+        assert_eq!(kinds, ["file_started", "file_finished"], "{path}");
+    }
+    assert_eq!(
+        types(&events)[..3],
+        ["validated", "planned", "session_created"]
+    );
+    assert_eq!(types(&events)[events.len() - 2..], ["completing", "result"]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn datasets_upload_creates_the_session_sends_meta_info_json_first_then_every_file_then_completes()
+ {
+    let server = ingest_api().await;
+    let dataset = pick_cube(&[]).unwrap();
+
+    let output = upload(&dataset, Some(&server), &["--json"]);
+
+    assert_eq!(output.status.code(), Some(0), "{}", text(&output.stderr));
+    let requests = server.received_requests().await.unwrap();
+    let (first, rest) = requests.split_first().unwrap();
+    let (last, puts) = rest.split_last().unwrap();
+    assert_eq!(
+        (first.method.as_str(), first.url.path()),
+        ("POST", SESSIONS)
+    );
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&first.body).unwrap(),
+        json!({"name": "pick-cube", "task_description": TASK})
+    );
+    assert_eq!((last.method.as_str(), last.url.path()), ("POST", COMPLETE));
+    let mut sent: Vec<&str> = puts
+        .iter()
+        .map(|request| request.url.path().strip_prefix(FILES).unwrap())
+        .collect();
+    assert_eq!(sent[0], "meta/info.json");
+    sent.sort_unstable();
+    let mut planned: Vec<&str> = dataset
+        .files
+        .iter()
+        .map(|file| file.to_str().unwrap())
+        .collect();
+    planned.sort_unstable();
+    assert_eq!(sent, planned);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn datasets_upload_writes_events_to_stderr_and_the_session_to_stdout() {
+    let server = ingest_api().await;
+    let dataset = pick_cube(&[]).unwrap();
+
+    let output = upload(&dataset, Some(&server), &[]);
+
+    assert_eq!(output.status.code(), Some(0), "{}", text(&output.stderr));
+    insta::assert_snapshot!("datasets_upload_human", text(&output.stdout));
+    insta::assert_snapshot!(
+        "datasets_upload_human_stderr",
+        with_sorted_transfers(&text(&output.stderr), "Uploading ", "Completing")
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn datasets_upload_quiet_json_writes_only_the_result_line() {
+    let server = ingest_api().await;
+    let dataset = pick_cube(&[]).unwrap();
+
+    let output = upload(&dataset, Some(&server), &["--quiet", "--json"]);
+
+    assert_eq!(output.status.code(), Some(0), "{}", text(&output.stderr));
+    assert_eq!(types(&json_lines(&output.stdout).unwrap()), ["result"]);
+}
+
+#[test]
+fn datasets_upload_dry_run_needs_no_token_and_no_api_url() {
+    let dataset = pick_cube(&[]).unwrap();
+
+    let output = upload(&dataset, None, &["--dry-run", "--json"]);
+
+    assert_eq!(output.status.code(), Some(0), "{}", text(&output.stderr));
+    insta::assert_snapshot!("datasets_upload_dry_run_json", text(&output.stdout));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn datasets_upload_dry_run_sends_no_request() {
+    let server = ingest_api().await;
+    let dataset = pick_cube(&[]).unwrap();
+
+    let output = upload(&dataset, Some(&server), &["--dry-run"]);
+
+    assert_eq!(output.status.code(), Some(0), "{}", text(&output.stderr));
+    assert!(server.received_requests().await.unwrap().is_empty());
+    insta::assert_snapshot!("datasets_upload_dry_run_human", text(&output.stdout));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn datasets_upload_of_a_dataset_with_an_error_fails_with_dataset_invalid_and_sends_no_request()
+ {
+    let server = ingest_api().await;
+    let dataset = pick_cube(&[Defect::MissingDataFile]).unwrap();
+
+    let output = upload(&dataset, Some(&server), &["--json"]);
+
+    assert_eq!(output.status.code(), Some(5));
+    assert_eq!(error_code(&output).as_deref(), Some("dataset_invalid"));
+    let events = json_lines(&output.stdout).unwrap();
+    assert_eq!(types(&events), ["validated"]);
+    assert_eq!(events[0]["errors"], 1);
+    assert!(server.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn datasets_upload_of_a_dataset_with_warnings_only_uploads_and_lists_the_warnings() {
+    let server = ingest_api().await;
+    let dataset = pick_cube(&[Defect::StrayFile("notes.txt".to_owned())]).unwrap();
+
+    let output = upload(&dataset, Some(&server), &["--json"]);
+
+    assert_eq!(output.status.code(), Some(0), "{}", text(&output.stderr));
+    let events = json_lines(&output.stdout).unwrap();
+    assert_eq!(events[0]["type"], "validated");
+    assert_eq!(events[0]["warnings"], 1);
+    assert_eq!(events[0]["findings"][0]["code"], "unexpected_entry");
+    assert_eq!(events[1]["skipped"], json!(["notes.txt"]));
+    assert_eq!(events.last().unwrap()["type"], "result");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn datasets_upload_rejected_by_complete_fails_with_dataset_invalid_and_the_api_message() {
+    let server = ingest_api_completing_with(
+        ResponseTemplate::new(400).set_body_json(json!({"detail": "No episodes found in data/"})),
+    )
+    .await;
+    let dataset = pick_cube(&[]).unwrap();
+
+    let output = upload(&dataset, Some(&server), &["--json"]);
+
+    assert_eq!(output.status.code(), Some(5));
+    insta::assert_snapshot!("datasets_upload_rejected_json", text(&output.stderr));
+}
+
+#[test]
+fn datasets_upload_without_task_is_a_usage_error() {
+    let output = imify(&["datasets", "upload", ".", "--json"], &[]);
+
+    assert_eq!(output.status.code(), Some(2));
+}
+
+#[test]
+fn datasets_upload_with_an_empty_or_blank_task_is_a_usage_error() {
+    for task in ["", "  "] {
+        let output = imify(&["datasets", "upload", ".", "--task", task, "--json"], &[]);
+
+        assert_eq!(output.status.code(), Some(2), "{task:?}");
+        assert_eq!(error_code(&output).as_deref(), Some("invalid_argument"));
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn datasets_upload_without_imify_token_fails_with_auth_required_before_reading_the_dataset() {
+    let server = ingest_api().await;
+
+    let output = imify(
+        &[
+            "datasets",
+            "upload",
+            "no-such-dataset",
+            "--task",
+            TASK,
+            "--json",
+        ],
+        &[("IMIFY_API_URL", &server.uri())],
+    );
+
+    assert_eq!(output.status.code(), Some(3));
+    assert_eq!(error_code(&output).as_deref(), Some("auth_required"));
+    assert!(server.received_requests().await.unwrap().is_empty());
+}
+
+#[test]
+fn datasets_upload_of_a_missing_directory_is_a_usage_error() {
+    let dataset = pick_cube(&[]).unwrap();
+
+    let output = imify_command()
+        .current_dir(&dataset.root)
+        .args(["datasets", "upload", "no-such-dataset", "--task", TASK])
+        .args(["--dry-run", "--json"])
+        .assert()
+        .get_output()
+        .clone();
+
+    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(error_code(&output).as_deref(), Some("invalid_argument"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn datasets_upload_retries_a_file_answered_with_503_and_reports_the_retry() {
+    let server = ingest_api().await;
+    let dataset = pick_cube(&[]).unwrap();
+    let retried = dataset
+        .files
+        .iter()
+        .find(|file| file.starts_with("data"))
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_owned();
+    Mock::given(method("PUT"))
+        .and(path(format!("{FILES}{retried}")))
+        .respond_with(
+            ResponseTemplate::new(503).set_body_json(json!({"detail": "Service Unavailable"})),
+        )
+        .up_to_n_times(1)
+        .with_priority(1)
+        .mount(&server)
+        .await;
+
+    let output = upload(&dataset, Some(&server), &["--json"]);
+
+    assert_eq!(output.status.code(), Some(0), "{}", text(&output.stderr));
+    let events = json_lines(&output.stdout).unwrap();
+    let retry_events: Vec<&serde_json::Value> = events
+        .iter()
+        .filter(|event| event["type"] == "file_retrying")
+        .collect();
+    assert_eq!(retry_events.len(), 1);
+    assert_eq!(retry_events[0]["path"], retried.as_str());
+    assert_eq!(retry_events[0]["attempt"], 1);
+}
+
+#[test]
+fn datasets_upload_help_shows_examples() {
+    let output = imify(&["datasets", "upload", "--help"], &[]);
+
+    assert!(output.status.success());
+    assert!(text(&output.stdout).contains(
+        "Examples:\n  imify datasets upload ./pick-cube --task \"Pick up the red cube\"\n"
+    ));
 }

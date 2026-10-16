@@ -1,0 +1,13 @@
+---
+source: crates/imify-cli/tests/cli.rs
+expression: text(&output.stdout)
+---
+session   3f2c9a
+name      pick-cube
+task      Pick up the red cube
+format    lerobot_v3
+robot     so100
+fps       30
+episodes  2
+status    ready
+files     6 (8.1 KiB)

@@ -33,6 +33,7 @@ assert_cmd = "2"
 imify-test-support = { path = "../imify-test-support" }
 insta = "1.49"
 jsonschema = { version = "0.58", default-features = false }
+tempfile = "3"
 tokio = { version = "1.47", features = ["macros", "rt-multi-thread", "test-util"] }
 wiremock = "0.6.5"
 

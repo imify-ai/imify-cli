@@ -87,13 +87,6 @@ impl CliError {
     }
 
     /// The error for a command stopped by an interrupt signal: `interrupted`, exit code 130.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "commands with a live view return it; no command exists yet"
-        )
-    )]
     pub fn interrupted() -> Self {
         Self::new(ErrorCode::Interrupted, "Interrupted.")
     }

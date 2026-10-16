@@ -74,6 +74,14 @@ pub enum DatasetsCommand {
         after_help = "Example:\n  imify datasets validate ./pick-cube"
     )]
     Validate(ValidateArgs),
+    #[command(
+        about = "Upload a local LeRobot dataset into a new ingest session",
+        long_about = "Upload a local LeRobot dataset into a new ingest session.\n\nValidates the dataset first and uploads nothing when the report has an error. Uploads meta/, data/ and videos/, with meta/info.json first. Writes the ingest session to stdout. Ctrl-C stops the upload and leaves the session open.",
+        after_help = "Examples:\n  \
+            imify datasets upload ./pick-cube --task \"Pick up the red cube\"\n  \
+            imify datasets upload ./pick-cube --task \"Pick up the red cube\" --dry-run"
+    )]
+    Upload(UploadArgs),
 }
 
 /// Filters and order of `imify datasets ls`.
@@ -112,6 +120,28 @@ pub enum SortField {
 pub struct ValidateArgs {
     /// The dataset root: the directory that contains meta/info.json
     pub path: PathBuf,
+}
+
+/// The arguments of `imify datasets upload`.
+#[derive(Debug, Args)]
+pub struct UploadArgs {
+    /// The dataset root: the directory that contains meta/info.json
+    pub path: PathBuf,
+    /// Task description of the recorded episodes
+    #[arg(long, value_name = "TEXT", value_parser = not_blank)]
+    pub task: String,
+    /// Validate and list the files to upload; needs no token and no network
+    #[arg(long)]
+    pub dry_run: bool,
+}
+
+/// Accepts `value` unless it is empty or whitespace only.
+fn not_blank(value: &str) -> Result<String, &'static str> {
+    if value.trim().is_empty() {
+        Err("the value is empty")
+    } else {
+        Ok(value.to_owned())
+    }
 }
 
 /// Parses `args`, including the program name. `color` enables color in help and errors.

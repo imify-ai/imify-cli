@@ -1,0 +1,7 @@
+---
+source: crates/imify-cli/tests/cli.rs
+expression: text(&output.stdout)
+---
+{"errors":0,"findings":[],"type":"validated","warnings":0}
+{"bytes":8338,"files":6,"skipped":[],"type":"planned"}
+{"bytes":8338,"dry_run":true,"files":6,"name":"pick-cube","task":"Pick up the red cube","type":"result"}

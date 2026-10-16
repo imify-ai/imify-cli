@@ -12,6 +12,7 @@ const CASES: &[(&str, &[&str])] = &[
             "cli__whoami_auth_required_json.snap",
             "cli__whoami_auth_rejected_json.snap",
             "cli__datasets_validate_invalid_envelope_json.snap",
+            "cli__datasets_upload_rejected_json.snap",
         ],
     ),
     (
@@ -30,6 +31,13 @@ const CASES: &[(&str, &[&str])] = &[
         &[
             "cli__datasets_ls_json.snap",
             "cli__datasets_ls_empty_json.snap",
+        ],
+    ),
+    (
+        "datasets-upload.json",
+        &[
+            "cli__datasets_upload_json.snap",
+            "cli__datasets_upload_dry_run_json.snap",
         ],
     ),
     ("whoami.json", &["cli__whoami_json.snap"]),

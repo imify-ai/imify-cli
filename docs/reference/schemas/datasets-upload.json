@@ -1,0 +1,379 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "imify datasets upload event",
+  "description": "One line of the NDJSON stream that `imify datasets upload <path> --task <text> --json` writes to stdout. The last line has type `result`.",
+  "type": "object",
+  "required": [
+    "type"
+  ],
+  "properties": {
+    "type": {
+      "enum": [
+        "validated",
+        "planned",
+        "session_created",
+        "file_started",
+        "file_retrying",
+        "file_finished",
+        "rate_limited",
+        "completing",
+        "result"
+      ]
+    }
+  },
+  "oneOf": [
+    {
+      "$ref": "#/$defs/validated"
+    },
+    {
+      "$ref": "#/$defs/planned"
+    },
+    {
+      "$ref": "#/$defs/session_created"
+    },
+    {
+      "$ref": "#/$defs/file_started"
+    },
+    {
+      "$ref": "#/$defs/file_retrying"
+    },
+    {
+      "$ref": "#/$defs/file_finished"
+    },
+    {
+      "$ref": "#/$defs/rate_limited"
+    },
+    {
+      "$ref": "#/$defs/completing"
+    },
+    {
+      "$ref": "#/$defs/result"
+    }
+  ],
+  "$defs": {
+    "count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "path": {
+      "description": "Path of the file relative to the dataset root, with `/` separators.",
+      "type": "string",
+      "minLength": 1
+    },
+    "validated": {
+      "description": "The local validation report. The upload stops with `dataset_invalid` when `errors` is greater than 0.",
+      "type": "object",
+      "required": [
+        "type",
+        "errors",
+        "warnings",
+        "findings"
+      ],
+      "properties": {
+        "type": {
+          "const": "validated"
+        },
+        "errors": {
+          "$ref": "#/$defs/count"
+        },
+        "warnings": {
+          "$ref": "#/$defs/count"
+        },
+        "findings": {
+          "description": "Every finding, in the form of `datasets validate --json`.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/finding"
+          }
+        }
+      }
+    },
+    "planned": {
+      "description": "The files to upload.",
+      "type": "object",
+      "required": [
+        "type",
+        "files",
+        "bytes",
+        "skipped"
+      ],
+      "properties": {
+        "type": {
+          "const": "planned"
+        },
+        "files": {
+          "$ref": "#/$defs/count"
+        },
+        "bytes": {
+          "description": "Total size in bytes.",
+          "$ref": "#/$defs/count"
+        },
+        "skipped": {
+          "description": "Entries below the dataset root that are not uploaded. A skipped directory ends with `/`.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "session_created": {
+      "type": "object",
+      "required": [
+        "type",
+        "session_id"
+      ],
+      "properties": {
+        "type": {
+          "const": "session_created"
+        },
+        "session_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "file_started": {
+      "type": "object",
+      "required": [
+        "type",
+        "path",
+        "size"
+      ],
+      "properties": {
+        "type": {
+          "const": "file_started"
+        },
+        "path": {
+          "$ref": "#/$defs/path"
+        },
+        "size": {
+          "description": "Size in bytes.",
+          "$ref": "#/$defs/count"
+        }
+      }
+    },
+    "file_retrying": {
+      "description": "The file is sent again from its first byte.",
+      "type": "object",
+      "required": [
+        "type",
+        "path",
+        "attempt",
+        "reason"
+      ],
+      "properties": {
+        "type": {
+          "const": "file_retrying"
+        },
+        "path": {
+          "$ref": "#/$defs/path"
+        },
+        "attempt": {
+          "description": "Number of the retry, starting at 1.",
+          "type": "integer",
+          "minimum": 1
+        },
+        "reason": {
+          "description": "The failure that caused the retry.",
+          "type": "string"
+        }
+      }
+    },
+    "file_finished": {
+      "description": "The API stored the file.",
+      "type": "object",
+      "required": [
+        "type",
+        "path",
+        "size"
+      ],
+      "properties": {
+        "type": {
+          "const": "file_finished"
+        },
+        "path": {
+          "$ref": "#/$defs/path"
+        },
+        "size": {
+          "description": "Size in bytes.",
+          "$ref": "#/$defs/count"
+        }
+      }
+    },
+    "rate_limited": {
+      "description": "The API rate-limited a request. No request starts during the pause.",
+      "type": "object",
+      "required": [
+        "type",
+        "pause_ms"
+      ],
+      "properties": {
+        "type": {
+          "const": "rate_limited"
+        },
+        "pause_ms": {
+          "$ref": "#/$defs/count"
+        }
+      }
+    },
+    "completing": {
+      "description": "Every file is stored; the session is being completed.",
+      "type": "object",
+      "required": [
+        "type"
+      ],
+      "properties": {
+        "type": {
+          "const": "completing"
+        }
+      }
+    },
+    "result": {
+      "type": "object",
+      "required": [
+        "type",
+        "dry_run",
+        "name",
+        "task",
+        "files",
+        "bytes"
+      ],
+      "properties": {
+        "type": {
+          "const": "result"
+        },
+        "dry_run": {
+          "type": "boolean"
+        },
+        "name": {
+          "description": "Name of the ingest session: the name of the dataset directory.",
+          "type": "string",
+          "minLength": 1
+        },
+        "task": {
+          "description": "The `--task` value.",
+          "type": "string",
+          "minLength": 1
+        },
+        "files": {
+          "$ref": "#/$defs/count"
+        },
+        "bytes": {
+          "description": "Total size in bytes.",
+          "$ref": "#/$defs/count"
+        }
+      },
+      "if": {
+        "properties": {
+          "dry_run": {
+            "const": false
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "session_id",
+          "format",
+          "robot_type",
+          "fps",
+          "episodes",
+          "status"
+        ],
+        "properties": {
+          "session_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "format": {
+            "description": "Dataset format the API detected, such as `lerobot_v3`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "robot_type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "fps": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "episodes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "status": {
+            "description": "`ready`, `uploading`, or another value of the API.",
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "else": {
+        "not": {
+          "required": [
+            "session_id"
+          ]
+        }
+      }
+    },
+    "finding": {
+      "type": "object",
+      "required": [
+        "code",
+        "severity",
+        "path",
+        "message"
+      ],
+      "properties": {
+        "code": {
+          "description": "Stable finding code. Each code has a fixed severity.",
+          "enum": [
+            "info_missing",
+            "info_malformed",
+            "codebase_version_unsupported",
+            "fps_invalid",
+            "parquet_unreadable",
+            "data_file_missing",
+            "episode_length_mismatch",
+            "timestamps_not_monotonic",
+            "unexpected_entry",
+            "episode_count_mismatch",
+            "episodes_index_unreadable",
+            "video_missing",
+            "timestamp_spacing",
+            "content_not_checked"
+          ]
+        },
+        "severity": {
+          "description": "`error` makes the dataset invalid; `warning` does not.",
+          "enum": [
+            "error",
+            "warning"
+          ]
+        },
+        "path": {
+          "description": "The file or directory concerned, relative to the dataset root, or null.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "message": {
+          "description": "What is wrong.",
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    }
+  }
+}

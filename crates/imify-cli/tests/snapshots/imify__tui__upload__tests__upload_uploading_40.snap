@@ -1,0 +1,10 @@
+---
+source: crates/imify-cli/src/tui/upload/tests.rs
+expression: text
+---
+Uploading  pick-cube  session 3f2c9a
+760.0 MiB / 1.4 GiB  53%  32.0 MiB/s
+5/8 files  1 retry
+  data/chunk-000/file-000.parquet    30%
+  data/chunk-000/file-001.parquet    10%
+  videos/observati…isode_000002.mp4  19%

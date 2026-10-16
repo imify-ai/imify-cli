@@ -1,5 +1,7 @@
 # Datasets
 
+[Validate a dataset](datasets-validate.md) before an upload and [upload it](datasets-upload.md) into an ingest session.
+
 ## List datasets
 
 ```console
