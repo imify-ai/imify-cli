@@ -19,3 +19,5 @@ install-updater = false
 github-attestations = true
 # Which actions to run on pull requests
 pr-run-mode = "plan"
+# Dependabot updates action versions in the generated release workflow.
+allow-dirty = ["ci"]
