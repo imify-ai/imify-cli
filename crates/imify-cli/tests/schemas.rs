@@ -9,12 +9,15 @@ const CASES: &[(&str, &[&str])] = &[
         &[
             "cli__usage_error_json.snap",
             "cli__invalid_imify_output_json.snap",
+            "cli__whoami_auth_required_json.snap",
+            "cli__whoami_auth_rejected_json.snap",
         ],
     ),
     (
         "event.json",
         &["imify__output__renderer__tests__event_stream_json.snap"],
     ),
+    ("whoami.json", &["cli__whoami_json.snap"]),
 ];
 
 fn schemas_dir() -> PathBuf {

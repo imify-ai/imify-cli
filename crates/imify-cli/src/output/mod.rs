@@ -23,7 +23,7 @@ use std::io::{self, IsTerminal};
 
 use tracing::level_filters::LevelFilter;
 
-pub use self::error::{CliError, ErrorCode};
+pub use self::error::{AUTH_REQUIRED_HINT, CliError, ErrorCode};
 use self::renderer::{HumanRenderer, JsonRenderer, Renderer};
 use crate::cli::GlobalArgs;
 
@@ -34,22 +34,25 @@ pub enum OutputMode {
     Json,
 }
 
-/// The environment values that affect output, captured once at startup.
+/// The environment values the CLI reads, captured once at startup.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Environment {
     /// `IMIFY_OUTPUT`; `None` when unset or not valid UTF-8.
     pub imify_output: Option<String>,
     /// `NO_COLOR`; `None` when unset.
     pub no_color: Option<OsString>,
+    /// `IMIFY_API_URL`; `None` when unset or not valid UTF-8.
+    pub api_url: Option<String>,
     pub stdin_is_tty: bool,
 }
 
 impl Environment {
-    /// Reads `IMIFY_OUTPUT`, `NO_COLOR` and whether stdin is a terminal.
+    /// Reads `IMIFY_OUTPUT`, `NO_COLOR`, `IMIFY_API_URL` and whether stdin is a terminal.
     pub fn capture() -> Self {
         Self {
             imify_output: std::env::var("IMIFY_OUTPUT").ok(),
             no_color: std::env::var_os("NO_COLOR"),
+            api_url: std::env::var("IMIFY_API_URL").ok(),
             stdin_is_tty: io::stdin().is_terminal(),
         }
     }

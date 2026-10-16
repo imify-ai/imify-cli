@@ -1,4 +1,5 @@
 mod cli;
+mod commands;
 mod output;
 
 use std::ffi::OsString;
@@ -6,7 +7,7 @@ use std::process::ExitCode;
 
 use cli::Command;
 use output::renderer::Renderer;
-use output::{CliError, Environment, Settings};
+use output::{CliError, Environment, ErrorCode, Settings};
 
 fn main() -> ExitCode {
     let args: Vec<OsString> = std::env::args_os().collect();
@@ -25,25 +26,34 @@ fn main() -> ExitCode {
     init_tracing(&settings);
 
     let mut renderer = settings.renderer();
-    match run(cli.command, &settings, renderer.as_mut()) {
+    match run(cli.command.as_ref(), &env, renderer.as_mut()) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => report(renderer.as_mut(), &error),
     }
 }
 
-#[expect(
-    clippy::unnecessary_wraps,
-    reason = "commands return errors; no command exists yet"
-)]
 fn run(
-    command: Option<Command>,
-    _settings: &Settings,
-    _renderer: &mut dyn Renderer,
+    command: Option<&Command>,
+    env: &Environment,
+    renderer: &mut dyn Renderer,
 ) -> Result<(), CliError> {
     match command {
         None => Ok(()),
-        Some(command) => match command {},
+        Some(Command::Whoami) => runtime()?.block_on(commands::auth::whoami(env, renderer)),
     }
+}
+
+/// The async runtime for SDK calls. Commands run one request at a time on the main thread.
+fn runtime() -> Result<tokio::runtime::Runtime, CliError> {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| {
+            CliError::new(
+                ErrorCode::Internal,
+                format!("Cannot start the async runtime: {error}"),
+            )
+        })
 }
 
 /// Prints clap's `--help` or `--version` output to stdout.

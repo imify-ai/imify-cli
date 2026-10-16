@@ -1,0 +1,5 @@
+---
+source: crates/imify-cli/tests/cli.rs
+expression: text(&output.stderr)
+---
+{"error":{"code":"auth_rejected","message":"authentication failed: Invalid token","hint":"Set `IMIFY_TOKEN` to a valid, unexpired token."}}
