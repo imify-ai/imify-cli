@@ -5,13 +5,6 @@ use serde::Serialize;
 /// A stable, documented error code. The `snake_case` name is part of the JSON contract.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "commands produce these codes; no command exists yet"
-    )
-)]
 pub enum ErrorCode {
     /// An unexpected failure inside the CLI.
     Internal,
@@ -91,6 +84,18 @@ impl CliError {
             message: message.into(),
             hint: None,
         }
+    }
+
+    /// The error for a command stopped by an interrupt signal: `interrupted`, exit code 130.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "commands with a live view return it; no command exists yet"
+        )
+    )]
+    pub fn interrupted() -> Self {
+        Self::new(ErrorCode::Interrupted, "Interrupted.")
     }
 
     #[must_use]
@@ -234,6 +239,16 @@ mod tests {
         assert_eq!(
             serde_json::to_value(error.envelope()).unwrap()["error"]["hint"],
             serde_json::json!("Run `imify login`.")
+        );
+    }
+
+    #[test]
+    fn interrupted_error_has_the_interrupted_code_exit_code_130_and_no_hint() {
+        let error = CliError::interrupted();
+
+        assert_eq!(
+            (error.code, error.code.exit_code(), error.hint),
+            (ErrorCode::Interrupted, 130, None)
         );
     }
 
