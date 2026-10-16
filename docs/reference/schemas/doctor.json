@@ -7,6 +7,7 @@
     "cli_version",
     "platform",
     "api_url",
+    "api_url_source",
     "latency_ms",
     "clock_skew_ms",
     "readiness",
@@ -30,8 +31,12 @@
       }
     },
     "api_url": {
-      "description": "The value of `IMIFY_API_URL`.",
+      "description": "The API URL the checks used.",
       "type": ["string", "null"]
+    },
+    "api_url_source": {
+      "description": "Where the API URL comes from: the `--api-url` flag, the `IMIFY_API_URL` variable, the config file, or the built-in default.",
+      "enum": ["flag", "env", "config", "default", null]
     },
     "latency_ms": {
       "description": "Duration of the `GET /api/health` request in milliseconds.",

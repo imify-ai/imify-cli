@@ -219,18 +219,51 @@ async fn whoami_forbidden_with_a_json_body_fails_with_permission_denied() {
     assert_eq!(envelope["error"]["code"], "permission_denied");
 }
 
+/// Without a token and a login, no request is sent, so the default host is never contacted.
 #[test]
-fn whoami_without_imify_api_url_is_a_usage_error_naming_the_variable() {
-    let output = imify(&["whoami", "--json"], &[("IMIFY_TOKEN", TOKEN)]);
+fn whoami_without_an_api_url_targets_the_default_host() {
+    let output = imify(&["whoami", "--json"], &[]);
+
+    assert_eq!(output.status.code(), Some(3));
+    let envelope: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
+    assert_eq!(envelope["error"]["code"], "auth_required");
+    assert!(
+        envelope["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("https://platform.imify.ai")
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_api_url_flag_takes_precedence_over_imify_api_url() {
+    let server = api_with_user().await;
+
+    let output = imify(
+        &["whoami", "--json", "--api-url", &server.uri()],
+        &[
+            ("IMIFY_TOKEN", TOKEN),
+            ("IMIFY_API_URL", "https://unused.invalid"),
+        ],
+    );
+
+    assert_eq!(output.status.code(), Some(0), "{}", text(&output.stderr));
+}
+
+#[test]
+fn an_invalid_api_url_flag_is_a_usage_error_naming_the_flag() {
+    let output = imify(
+        &["whoami", "--json", "--api-url", "http://api.example.com"],
+        &[("IMIFY_TOKEN", TOKEN)],
+    );
 
     assert_eq!(output.status.code(), Some(2));
     let envelope: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
-    assert_eq!(envelope["error"]["code"], "invalid_argument");
     assert!(
-        envelope["error"]["hint"]
+        envelope["error"]["message"]
             .as_str()
             .unwrap()
-            .contains("IMIFY_API_URL")
+            .starts_with("--api-url is invalid")
     );
 }
 
@@ -1363,8 +1396,8 @@ async fn doctor_json_with_every_check_passing_prints_one_document() {
 }
 
 #[test]
-fn doctor_without_imify_api_url_skips_the_api_checks_and_fails_with_invalid_argument() {
-    let output = doctor(None, Some(VALID_JWT), &["--json"]);
+fn doctor_with_an_invalid_api_url_skips_the_api_checks_and_fails_with_invalid_argument() {
+    let output = doctor(Some("ftp://api.example.com"), Some(VALID_JWT), &["--json"]);
 
     assert_eq!(output.status.code(), Some(2));
     assert_eq!(error_code(&output).as_deref(), Some("invalid_argument"));
@@ -1381,7 +1414,7 @@ fn doctor_without_imify_api_url_skips_the_api_checks_and_fails_with_invalid_argu
         ])
     );
     insta::assert_snapshot!(
-        "doctor_no_api_url_json",
+        "doctor_invalid_api_url_json",
         normalize_doctor_json(&output.stdout, "http://unused")
     );
 }
@@ -1560,7 +1593,34 @@ fn doctor_help_shows_the_example() {
     let output = imify(&["doctor", "--help"], &[]);
 
     assert!(output.status.success());
-    assert!(text(&output.stdout).contains(
-        "Example:\n  IMIFY_TOKEN=<token> IMIFY_API_URL=https://api.example.com imify doctor\n"
-    ));
+    assert!(
+        text(&output.stdout)
+            .contains("Example:\n  imify doctor --api-url https://api.example.com\n")
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn doctor_reports_an_api_url_from_the_config_file_with_its_source() {
+    let server = healthy_api().await;
+    let config_dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        config_dir.path().join("config.toml"),
+        format!("api_url = \"{}\"\n", server.uri()),
+    )
+    .unwrap();
+
+    let output = imify(
+        &["doctor", "--json"],
+        &[
+            ("IMIFY_TOKEN", VALID_JWT),
+            ("IMIFY_CONFIG_DIR", config_dir.path().to_str().unwrap()),
+        ],
+    );
+
+    assert_eq!(output.status.code(), Some(0), "{}", text(&output.stderr));
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        (&report["api_url"], &report["api_url_source"]),
+        (&json!(server.uri()), &json!("config"))
+    );
 }

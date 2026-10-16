@@ -138,6 +138,7 @@ fn upload_command(server: &MockServer, root: &Path, home: &Path) -> Command {
         .env("HOME", home)
         .env("IMIFY_TOKEN", "tok_interrupt")
         .env("IMIFY_API_URL", server.uri())
+        .env("IMIFY_CONFIG_DIR", home.join("config"))
         .current_dir(root)
         .args(["datasets", "upload", ".", "--task", "Pick up the red cube"])
         .arg("--json")

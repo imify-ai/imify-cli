@@ -48,10 +48,17 @@ const CASES: &[(&str, &[&str])] = &[
         "doctor.json",
         &[
             "cli__doctor_ok_json.snap",
-            "cli__doctor_no_api_url_json.snap",
+            "cli__doctor_invalid_api_url_json.snap",
         ],
     ),
     ("login.json", &["login_json.snap"]),
+    ("config-get.json", &["config__get_default_json.snap"]),
+    ("config-list.json", &["config__list_json.snap"]),
+    ("config-set.json", &["config__set_json.snap"]),
+    (
+        "config-unset.json",
+        &["config__unset_json.snap", "config__unset_not_set_json.snap"],
+    ),
     (
         "logout.json",
         &[

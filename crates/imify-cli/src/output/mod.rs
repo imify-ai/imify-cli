@@ -35,9 +35,12 @@ pub enum OutputMode {
     Json,
 }
 
-/// The environment values the CLI reads, captured once at startup.
+/// The environment values the CLI reads, captured once at startup, and the `--api-url` flag,
+/// which takes precedence over `IMIFY_API_URL`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Environment {
+    /// `--api-url`; `None` when the flag is absent. Set after parsing the command line.
+    pub api_url_flag: Option<String>,
     /// `IMIFY_OUTPUT`; `None` when unset or not valid UTF-8.
     pub imify_output: Option<String>,
     /// `NO_COLOR`; `None` when unset.
@@ -68,6 +71,7 @@ impl Environment {
     /// `IMIFY_CONFIG_DIR` and whether stdin and stderr are terminals.
     pub fn capture() -> Self {
         Self {
+            api_url_flag: None,
             imify_output: std::env::var("IMIFY_OUTPUT").ok(),
             no_color: std::env::var_os("NO_COLOR"),
             api_url: std::env::var("IMIFY_API_URL").ok(),

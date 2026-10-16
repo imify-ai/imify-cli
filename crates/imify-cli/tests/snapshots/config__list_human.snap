@@ -1,0 +1,6 @@
+---
+source: crates/imify-cli/tests/config.rs
+expression: text(&human.stdout)
+---
+KEY      VALUE                    SOURCE
+api-url  https://api.example.com  config

@@ -14,6 +14,8 @@ use std::path::{Path, PathBuf};
 use rustix::fs::{FileType, FlockOperation, Mode, OFlags};
 use rustix::io::Errno;
 
+use crate::output::{CliError, ErrorCode};
+
 /// The largest file read, in bytes.
 const MAX_FILE_SIZE: u64 = 1024 * 1024;
 
@@ -37,11 +39,20 @@ impl PrivateFileError {
     }
 }
 
+/// A file the CLI cannot use is an `internal` error whose message names the path.
+impl From<PrivateFileError> for CliError {
+    fn from(error: PrivateFileError) -> Self {
+        CliError::new(ErrorCode::Internal, error.to_string())
+    }
+}
+
 /// Which permissions [`read`] accepts on the file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Permissions {
     /// Other users must have no access.
     OwnerOnly,
+    /// Other users may read the file but not write to it.
+    OwnerWritable,
     /// Any mode.
     Any,
 }
@@ -148,9 +159,16 @@ pub fn read(path: &Path, permissions: Permissions) -> Result<Option<Vec<u8>>, Pr
     }
     // `st_mode` is 16 bits wide on macOS and 32 bits on Linux; `Mode` hides the width.
     let mode = Mode::from_raw_mode(stat.st_mode) & (Mode::RWXU | Mode::RWXG | Mode::RWXO);
-    if permissions == Permissions::OwnerOnly && mode.intersects(Mode::RWXG | Mode::RWXO) {
+    let refused = match permissions {
+        Permissions::OwnerOnly => Some((Mode::RWXG | Mode::RWXO, "access")),
+        Permissions::OwnerWritable => Some((Mode::WGRP | Mode::WOTH, "write to")),
+        Permissions::Any => None,
+    };
+    if let Some((bits, access)) = refused
+        && mode.intersects(bits)
+    {
         return Err(error(format!(
-            "other users can access the file (mode {:o}); run `chmod 600 {}`",
+            "other users can {access} the file (mode {:o}); run `chmod 600 {}`",
             mode.bits(),
             path.display()
         )));

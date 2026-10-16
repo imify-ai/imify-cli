@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "imify config list result",
+  "description": "Written to stdout by `imify config list --json`: every setting with the value commands use and where it comes from.",
+  "type": "array",
+  "items": {
+    "type": "object",
+    "required": ["key", "value", "source"],
+    "properties": {
+      "key": {
+        "description": "The setting, as named on the command line.",
+        "enum": ["api-url"]
+      },
+      "value": {
+        "description": "The value commands use.",
+        "type": "string",
+        "minLength": 1
+      },
+      "source": {
+        "description": "Where the value comes from: the `--api-url` flag, the `IMIFY_API_URL` variable, the config file, or the built-in default.",
+        "enum": ["flag", "env", "config", "default"]
+      }
+    }
+  }
+}

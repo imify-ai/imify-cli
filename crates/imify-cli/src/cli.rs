@@ -5,6 +5,8 @@ use std::path::PathBuf;
 
 use clap::{ArgAction, Args, CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
 
+use crate::config::Key;
+
 /// Command-line interface for the imify platform.
 #[derive(Debug, Parser)]
 #[command(name = "imify", version, about)]
@@ -44,31 +46,38 @@ pub struct GlobalArgs {
     pub yes: bool,
     #[arg(long, global = true, help = "Disable color [env: NO_COLOR]")]
     pub no_color: bool,
+    #[arg(
+        long,
+        global = true,
+        value_name = "URL",
+        value_parser = not_blank,
+        help = "API host [env: IMIFY_API_URL] [default: config file, then https://platform.imify.ai]"
+    )]
+    pub api_url: Option<String>,
 }
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
     /// Show the user the access token belongs to
-    #[command(
-        after_help = "Example:\n  IMIFY_TOKEN=<token> IMIFY_API_URL=https://api.example.com imify whoami"
-    )]
+    #[command(after_help = "Example:\n  imify whoami")]
     Whoami,
     #[command(
         about = "Check the configuration, the API and the access token",
         long_about = "Check the configuration, the API and the access token.
 
-Writes a report to stdout. Exits with the error code of the first failing check, or 0 when no check fails. Contacts only the host in IMIFY_API_URL.",
+Writes a report to stdout. Exits with the error code of the first failing check, or 0 when no check fails. Contacts only the API host.",
         after_help = "Example:
-  IMIFY_TOKEN=<token> IMIFY_API_URL=https://api.example.com imify doctor"
+  imify doctor --api-url https://api.example.com"
     )]
     Doctor,
     /// Sign in through the browser and store the login for the host
     #[command(
-        long_about = "Sign in through the browser and store the login for the host in IMIFY_API_URL.
+        long_about = "Sign in through the browser and store the login for the API host.
 
 Opens the browser and waits up to 5 minutes. The login is stored in the OS keychain, or in a file readable only by the user when no keychain is available.",
         after_help = "Examples:
-  IMIFY_API_URL=https://api.example.com imify login
+  imify login
+  imify login --api-url https://api.example.com
   imify login --no-browser"
     )]
     Login {
@@ -78,13 +87,45 @@ Opens the browser and waits up to 5 minutes. The login is stored in the OS keych
     },
     /// Revoke and remove the stored login for the host
     #[command(after_help = "Example:
-  IMIFY_API_URL=https://api.example.com imify logout")]
+  imify logout")]
     Logout,
+    /// Read and change the settings in the config file
+    Config {
+        #[command(subcommand)]
+        command: ConfigCommand,
+    },
     /// Work with datasets
     Datasets {
         #[command(subcommand)]
         command: DatasetsCommand,
     },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ConfigCommand {
+    /// Print a setting's value and where it comes from: flag, env, config or default
+    #[command(after_help = "Example:\n  imify config get api-url")]
+    Get {
+        /// The setting
+        key: Key,
+    },
+    /// Check a value and store it in the config file
+    #[command(after_help = "Example:\n  imify config set api-url https://api.example.com")]
+    Set {
+        /// The setting
+        key: Key,
+        /// The new value
+        value: String,
+    },
+    /// Remove a setting from the config file
+    #[command(after_help = "Example:\n  imify config unset api-url")]
+    Unset {
+        /// The setting
+        key: Key,
+    },
+    /// Print every setting with its value and where it comes from
+    #[command(after_help = "Example:\n  imify config list --json")]
+    List,
 }
 
 #[derive(Debug, Subcommand)]
