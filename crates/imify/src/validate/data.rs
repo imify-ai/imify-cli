@@ -56,6 +56,27 @@ fn by_data_file<'a>(info: &Info, episodes: &'a [Episode]) -> BTreeMap<PathBuf, V
     files
 }
 
+/// Why the content of a data file is not checked, `None` when it is: a column uses a
+/// codec that is not decoded, or the footer declares more than [`parquet::MAX_ROWS`] rows.
+/// Returns the reason the file is unreadable when the footer declares a negative count.
+fn not_checked_reason(
+    reader: &parquet::Reader,
+    columns: &[&str],
+) -> Result<Option<String>, String> {
+    if let Some((column, codec)) = parquet::unsupported_codec(reader, columns) {
+        return Ok(Some(format!(
+            "Column {column} uses the codec {codec}, which is not decoded"
+        )));
+    }
+    let rows = parquet::row_count(reader)?;
+    Ok((rows > parquet::MAX_ROWS).then(|| {
+        format!(
+            "The file declares {rows} rows, more than {}",
+            parquet::MAX_ROWS
+        )
+    }))
+}
+
 /// The timestamps of a data file.
 enum Timestamps {
     /// A v2.1 file: the timestamps of the one episode the file holds. Every episode that
@@ -109,22 +130,10 @@ impl FileChecker<'_> {
         };
         let reader = parquet::open(&full_path).map_err(unreadable)?;
         let columns = self.columns();
-        if let Some((column, codec)) = parquet::unsupported_codec(&reader, &columns) {
+        if let Some(reason) = not_checked_reason(&reader, &columns).map_err(unreadable)? {
             return Err(self.finding(
                 FindingCode::ContentNotChecked,
-                format!(
-                    "Column {column} uses the codec {codec}, which is not decoded; the row counts and timestamps of this file are not checked."
-                ),
-            ));
-        }
-        let rows = parquet::row_count(&reader).map_err(unreadable)?;
-        if rows > parquet::MAX_ROWS {
-            return Err(self.finding(
-                FindingCode::ContentNotChecked,
-                format!(
-                    "The file declares {rows} rows; the row counts and timestamps of files with more than {} rows are not checked.",
-                    parquet::MAX_ROWS
-                ),
+                format!("{reason}; the row counts and timestamps of this file are not checked."),
             ));
         }
         parquet::read_columns(&reader, &columns)

@@ -191,7 +191,7 @@ pub(super) fn read_columns(reader: &Reader, names: &[&str]) -> Result<Vec<Vec<Nu
 }
 
 /// The reason for a file with `rows` rows, more than [`MAX_ROWS`].
-pub(super) fn too_many_rows(rows: u64) -> String {
+fn too_many_rows(rows: u64) -> String {
     format!("declares {rows} rows; files with more than {MAX_ROWS} rows are not read")
 }
 
