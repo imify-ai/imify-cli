@@ -10,7 +10,7 @@ The CLI must install with a single command and no runtime, start fast enough to 
 Rust. One Cargo workspace with two crates: `imify` (library, the SDK) and `imify-cli` (binary `imify`). The CLI crate does no network I/O of its own; CI rejects a direct HTTP client dependency in it.
 
 ## Consequences
-- Static binaries for macOS, Linux and Windows; no interpreter to install.
+- Static binaries for macOS and Linux; no interpreter to install.
 - The SDK is usable on its own and is published to crates.io.
 - Local dataset validation is a Rust implementation of the format rules, separate from the server. It is kept shallow so it does not drift from the server, which stays authoritative.
 - SDKs in other languages, if needed, are generated from the API or bind to this crate.

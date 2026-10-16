@@ -12,12 +12,6 @@ After the first release:
 curl --proto '=https' --tlsv1.2 -LsSf https://github.com/imify-ai/imify-cli/releases/latest/download/imify-cli-installer.sh | sh
 ```
 
-Windows (PowerShell):
-
-```powershell
-powershell -ExecutionPolicy Bypass -c "irm https://github.com/imify-ai/imify-cli/releases/latest/download/imify-cli-installer.ps1 | iex"
-```
-
 From source: `cargo install --locked --git https://github.com/imify-ai/imify-cli imify-cli`.
 
 ## Usage
