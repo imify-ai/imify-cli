@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "imify NDJSON event",
+  "description": "One line of the stdout stream of a long-running command with --json. The last line has type \"result\". Each command's schema defines the fields of its events.",
+  "type": "object",
+  "required": ["type"],
+  "properties": {
+    "type": {
+      "description": "The event type, such as \"progress\" or \"result\".",
+      "type": "string",
+      "minLength": 1
+    }
+  }
+}

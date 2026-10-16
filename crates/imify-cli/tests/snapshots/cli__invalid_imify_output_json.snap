@@ -1,0 +1,5 @@
+---
+source: crates/imify-cli/tests/cli.rs
+expression: text(&output.stderr)
+---
+{"error":{"code":"invalid_argument","message":"IMIFY_OUTPUT has the unsupported value 'xml'.","hint":"Set IMIFY_OUTPUT to `json` or `human`, or unset it."}}

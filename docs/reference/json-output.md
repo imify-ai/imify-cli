@@ -1,0 +1,81 @@
+# JSON output and exit codes
+
+```console
+$ imify --json --no-such-flag
+$ echo $?
+2
+```
+
+stderr:
+
+```json
+{"error":{"code":"invalid_argument","message":"unexpected argument '--no-such-flag' found","hint":"Run `imify --help`."}}
+```
+
+`--json` or `IMIFY_OUTPUT=json` switches every command to JSON. Without either, output is text for people. Whether stdout is a terminal changes styling only, never the format.
+
+## Streams
+
+| Stream | Human mode | JSON mode |
+|---|---|---|
+| stdout | the result | the result: one JSON document, or NDJSON events |
+| stderr | progress, logs, warnings, errors | logs, the error envelope |
+
+## Global flags
+
+| Flag | Environment | Effect |
+|---|---|---|
+| `--json` | `IMIFY_OUTPUT=json` | JSON output. `--json` takes precedence over `IMIFY_OUTPUT=human`. |
+| `-q`, `--quiet` | | Writes the result only. Cannot be combined with `-v`. |
+| `-v`, `-vv` | | Logs at debug or trace level to stderr. |
+| `--yes` | | Confirms without prompting. |
+| `--no-color` | `NO_COLOR` (non-empty) | Disables color. |
+
+`IMIFY_OUTPUT` accepts `json` and `human`. Any other value fails with `invalid_argument` and exit code 2. Global flags are valid before or after the command.
+
+## Results
+
+A command that returns one value writes one JSON document to stdout. A command that returns a collection writes a JSON array. Field names are `snake_case`, timestamps are RFC 3339 UTC, sizes are bytes as integers and durations are milliseconds as integers.
+
+Each command's output has a schema in [`schemas/`](schemas/).
+
+## Events
+
+```json
+{"type":"progress","files_done":1}
+{"type":"progress","files_done":2}
+{"type":"result","dataset_id":42}
+```
+
+A long-running command with `--json` writes newline-delimited JSON events to stdout. Every line has a `type`. The last line has type `result` and carries the result. With `--quiet`, only the `result` line is written. In human mode, events go to stderr and the result goes to stdout.
+
+Schema: [`schemas/event.json`](schemas/event.json).
+
+## Errors
+
+```json
+{"error":{"code":"not_found","message":"Dataset 42 does not exist.","hint":null}}
+```
+
+A failed command writes the error envelope to stderr and exits with the code's exit code. `code` is a stable value from the table below. `message` states what happened. `hint` states what to do next, and is `null` when there is no hint. In human mode, stderr shows `error: <message>` and `hint: <hint>`.
+
+Schema: [`schemas/error.json`](schemas/error.json).
+
+| Code | Exit | Meaning |
+|---|---|---|
+| `internal` | 1 | Unexpected failure in the CLI. |
+| `invalid_argument` | 2 | Invalid command line, unsupported `IMIFY_OUTPUT`, or input required without a terminal. |
+| `auth_required` | 3 | The command needs a login or a token. |
+| `not_found` | 4 | The resource does not exist. |
+| `conflict` | 6 | The request conflicts with the current state of the resource. |
+| `network` | 7 | The server could not be reached. |
+| `server` | 7 | The server failed to handle the request. |
+| `rate_limited` | 7 | The server rejected the request because of its rate limit. |
+| `cancelled` | 8 | The user declined a confirmation prompt. |
+| `interrupted` | 130 | The user stopped the command with an interrupt signal. |
+
+Exit code 0 means success. Exit code 5 means validation failed; the codes that produce it belong to the commands that validate.
+
+## Prompts
+
+Without a terminal on stdin, the CLI never prompts. A command that needs confirmation fails with `invalid_argument` and a hint naming `--yes`.
