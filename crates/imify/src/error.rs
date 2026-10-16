@@ -151,6 +151,61 @@ pub enum Error {
         /// The error the store returned.
         source: Box<dyn std::error::Error + Send + Sync>,
     },
+
+    /// The resume journal of an upload cannot be used.
+    ///
+    /// ```
+    /// use imify::{Error, JournalError};
+    ///
+    /// fn needs_restart(error: &Error) -> bool {
+    ///     matches!(
+    ///         error,
+    ///         Error::Journal { reason: JournalError::Mismatch(_) | JournalError::Corrupt(_), .. }
+    ///     )
+    /// }
+    ///
+    /// let error = Error::Journal {
+    ///     path: "uploads/3f2c.jsonl".into(),
+    ///     reason: JournalError::Corrupt("line 2 is not valid JSON".into()),
+    /// };
+    /// assert!(needs_restart(&error));
+    /// ```
+    #[error("upload journal {}: {reason}", path.display())]
+    Journal {
+        /// The journal file, or the journal directory when it cannot be created.
+        path: PathBuf,
+        /// Why the journal cannot be used.
+        #[source]
+        reason: JournalError,
+    },
+}
+
+/// Why the resume journal of an upload cannot be used, reported in [`Error::Journal`].
+///
+/// # Examples
+///
+/// ```
+/// use imify::JournalError;
+///
+/// assert_eq!(JournalError::Missing.to_string(), "no journal exists for the dataset directory");
+/// ```
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum JournalError {
+    /// [`ResumePolicy::Required`](crate::ingest::ResumePolicy::Required) is set and no
+    /// journal exists for the dataset directory.
+    #[error("no journal exists for the dataset directory")]
+    Missing,
+    /// The journal or its directory cannot be read, written or removed.
+    #[error("{0}")]
+    Io(#[source] std::io::Error),
+    /// The journal is not valid JSON Lines or has an unknown `version`.
+    #[error("corrupt: {0}")]
+    Corrupt(String),
+    /// The journal belongs to another upload: the session name or task description
+    /// differs, or a journaled file is no longer in the plan.
+    #[error("belongs to another upload: {0}")]
+    Mismatch(String),
 }
 
 /// Why an [`Error::Login`] occurred.

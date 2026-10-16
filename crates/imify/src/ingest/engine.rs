@@ -1,18 +1,21 @@
 //! The upload flow: session, files, completion.
 
+use std::borrow::Cow;
 use std::fmt;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use futures_util::stream::{self, StreamExt};
 use reqwest::Method;
 
+use super::journal::{JournalFile, JournalWriter};
 use super::pace::Pacer;
 use super::plan::{INFO_FILE, PlannedFile, UploadPlan};
 use super::session::{NewSession, Session, SessionId, WireSession, session_url, sessions_url};
 use super::transport::{FileUpload, ProgressFn, StreamingPut, Transport};
-use super::{UploadEvent, UploadOptions};
+use super::{ResumePolicy, UploadEvent, UploadOptions};
 use crate::retry::RetryMode;
-use crate::{Client, Error};
+use crate::{Client, Error, JournalError};
 
 type EventHandler = Arc<dyn Fn(&UploadEvent) + Send + Sync>;
 
@@ -48,6 +51,20 @@ pub struct Uploader {
     transport: Arc<dyn Transport>,
     options: UploadOptions,
     handler: EventHandler,
+    journal: Option<JournalSettings>,
+}
+
+#[derive(Debug, Clone)]
+struct JournalSettings {
+    dir: PathBuf,
+    policy: ResumePolicy,
+}
+
+/// The session of an upload with a journal and the files still to send to it.
+struct Journaled<'a> {
+    session: SessionId,
+    remaining: Cow<'a, UploadPlan>,
+    writer: JournalWriter,
 }
 
 impl fmt::Debug for Uploader {
@@ -55,6 +72,7 @@ impl fmt::Debug for Uploader {
         formatter
             .debug_struct("Uploader")
             .field("options", &self.options)
+            .field("journal", &self.journal)
             .finish_non_exhaustive()
     }
 }
@@ -82,6 +100,7 @@ impl Uploader {
             transport,
             options: UploadOptions::default(),
             handler: Arc::new(|_| {}),
+            journal: None,
         }
     }
 
@@ -123,13 +142,61 @@ impl Uploader {
         self
     }
 
+    /// Makes [`Uploader::upload`] record stored files in a journal below `dir` and apply
+    /// `policy`. [`Uploader::create_session`], [`Uploader::send_files`] and
+    /// [`Uploader::complete`] never read or write a journal.
+    ///
+    /// The journal is a file in `dir`, one per API base URL and canonical dataset
+    /// directory, with mode `0600`. `upload` creates `dir` with mode `0700` when it does
+    /// not exist.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use imify::ingest::{ResumePolicy, Uploader};
+    ///
+    /// let client = imify::Client::builder("https://api.example.com").build()?;
+    /// let uploader = Uploader::new(client)
+    ///     .journal("/home/robot/.local/state/imify/uploads", ResumePolicy::Required);
+    /// # Ok::<(), imify::Error>(())
+    /// ```
+    #[must_use]
+    pub fn journal(mut self, dir: impl Into<PathBuf>, policy: ResumePolicy) -> Self {
+        self.journal = Some(JournalSettings {
+            dir: dir.into(),
+            policy,
+        });
+        self
+    }
+
     /// Creates an ingest session, sends every file of `plan` and completes the session.
+    ///
+    /// With [`Uploader::journal`], `upload` first applies the [`ResumePolicy`]. To
+    /// continue a journaled session, it skips the journaled files whose size and
+    /// modification time are unchanged, or whose SHA-256 is unchanged, reports
+    /// [`UploadEvent::SessionResumed`] and sends the other files to that session. Without
+    /// a journal, it creates a session and writes a journal for it. Each stored file is
+    /// recorded before [`UploadEvent::FileFinished`] is reported. The journal is deleted
+    /// when [`Uploader::complete`] succeeds and kept after any error.
     ///
     /// # Errors
     ///
     /// Returns the first error of [`Uploader::create_session`], [`Uploader::send_files`]
     /// or [`Uploader::complete`]. The session stays open when a file fails; its id is
     /// reported in [`UploadEvent::SessionCreated`].
+    ///
+    /// With a journal, also returns [`Error::Journal`], before any request unless the
+    /// journal cannot be written:
+    ///
+    /// - [`JournalError::Missing`] for [`ResumePolicy::Required`] when no journal exists.
+    /// - [`JournalError::Mismatch`] when the journaled session has another name or task
+    ///   description than `session`, or a journaled file is not in `plan`.
+    /// - [`JournalError::Corrupt`] when the journal cannot be parsed.
+    /// - [`JournalError::Io`] when the journal or its directory cannot be read, written
+    ///   or deleted.
+    ///
+    /// [`Error::Io`] is returned when the dataset directory or a journaled file cannot
+    /// be read.
     ///
     /// # Examples
     ///
@@ -143,9 +210,89 @@ impl Uploader {
     /// # Ok(()) }
     /// ```
     pub async fn upload(&self, plan: &UploadPlan, session: &NewSession) -> Result<Session, Error> {
+        if let Some(settings) = &self.journal {
+            return self.upload_journaled(settings, plan, session).await;
+        }
         let created = self.create_session(session).await?;
         self.send_files(&created.id, plan).await?;
         self.complete(&created.id).await
+    }
+
+    async fn upload_journaled(
+        &self,
+        settings: &JournalSettings,
+        plan: &UploadPlan,
+        session: &NewSession,
+    ) -> Result<Session, Error> {
+        let journal =
+            JournalFile::locate(&settings.dir, self.client.base_url(), plan.root()).await?;
+        let resumed = self
+            .resume(&journal, settings.policy, plan, session)
+            .await?;
+        let journaled = if let Some(resumed) = resumed {
+            resumed
+        } else {
+            self.start_journaled(&journal, plan, session).await?
+        };
+        self.send_recorded(
+            &journaled.session,
+            &journaled.remaining,
+            Some(&journaled.writer),
+        )
+        .await?;
+        let completed = self.complete(&journaled.session).await?;
+        journal.delete().await?;
+        Ok(completed)
+    }
+
+    /// Applies `policy` to `journal`. Returns the journaled session with the files of
+    /// `plan` that are still to send, or `None` when the upload needs a new session.
+    async fn resume<'a>(
+        &self,
+        journal: &JournalFile,
+        policy: ResumePolicy,
+        plan: &'a UploadPlan,
+        settings: &NewSession,
+    ) -> Result<Option<Journaled<'a>>, Error> {
+        if policy == ResumePolicy::Restart {
+            journal.delete().await?;
+            return Ok(None);
+        }
+        let Some(recorded) = journal.load().await? else {
+            return match policy {
+                ResumePolicy::Required => Err(journal.error(JournalError::Missing)),
+                ResumePolicy::IfJournaled | ResumePolicy::Restart => Ok(None),
+            };
+        };
+        let stored = recorded.stored_files(plan, settings).await?;
+        let mut remaining = plan.clone();
+        remaining.retain(|file| !stored.contains(file.path()));
+        let resumed = Journaled {
+            session: recorded.session(),
+            writer: journal.writer().await?,
+            remaining: Cow::Owned(remaining),
+        };
+        self.emit(&UploadEvent::SessionResumed {
+            session: resumed.session.clone(),
+            files_done: plan.files().len() - resumed.remaining.files().len(),
+            bytes_done: plan.total_bytes() - resumed.remaining.total_bytes(),
+        });
+        Ok(Some(resumed))
+    }
+
+    /// Creates a session and a journal for it, with every file of `plan` still to send.
+    async fn start_journaled<'a>(
+        &self,
+        journal: &JournalFile,
+        plan: &'a UploadPlan,
+        settings: &NewSession,
+    ) -> Result<Journaled<'a>, Error> {
+        let created = self.create_session(settings).await?;
+        Ok(Journaled {
+            writer: journal.create(&created.id, settings).await?,
+            session: created.id,
+            remaining: Cow::Borrowed(plan),
+        })
     }
 
     /// Creates an ingest session and reports it in [`UploadEvent::SessionCreated`].
@@ -209,16 +356,32 @@ impl Uploader {
     /// # Ok(()) }
     /// ```
     pub async fn send_files(&self, session: &SessionId, plan: &UploadPlan) -> Result<(), Error> {
-        let pacer = Pacer::new(self.options.request_interval);
+        self.send_recorded(session, plan, None).await
+    }
+
+    /// Sends every file of `plan` like [`Uploader::send_files`] and records each stored
+    /// file in `journal`.
+    async fn send_recorded(
+        &self,
+        session: &SessionId,
+        plan: &UploadPlan,
+        journal: Option<&JournalWriter>,
+    ) -> Result<(), Error> {
+        let batch = Batch {
+            session,
+            plan,
+            journal,
+            pacer: Pacer::new(self.options.request_interval),
+        };
         let rest = match plan.files().split_first() {
             Some((info, rest)) if info.path() == INFO_FILE => {
-                self.send_file(session, plan, info, &pacer).await?;
+                self.send_file(&batch, info).await?;
                 rest
             }
             _ => plan.files(),
         };
         let mut transfers = stream::iter(rest)
-            .map(|file| self.send_file(session, plan, file, &pacer))
+            .map(|file| self.send_file(&batch, file))
             .buffer_unordered(self.options.concurrency.get());
         while let Some(result) = transfers.next().await {
             result?;
@@ -261,21 +424,16 @@ impl Uploader {
         Ok(Session::from(completed))
     }
 
-    async fn send_file(
-        &self,
-        session: &SessionId,
-        plan: &UploadPlan,
-        file: &PlannedFile,
-        pacer: &Pacer,
-    ) -> Result<(), Error> {
+    async fn send_file(&self, batch: &Batch<'_>, file: &PlannedFile) -> Result<(), Error> {
         self.emit(&UploadEvent::FileStarted {
             path: file.path().to_owned(),
             size: file.size(),
         });
+        let pacer = &batch.pacer;
         let upload = FileUpload {
-            session,
+            session: batch.session,
             file,
-            local_path: plan.root().join(file.path()),
+            local_path: batch.plan.root().join(file.path()),
             progress: self.progress_handler(file),
         };
         let upload = &upload;
@@ -290,12 +448,16 @@ impl Uploader {
                 reason: error.to_string(),
             });
         };
-        self.client
+        let digest = self
+            .client
             .retry(RetryMode::Idempotent, on_retry, || async move {
                 pacer.ready().await;
                 self.transport.put(upload).await
             })
             .await?;
+        if let Some(journal) = batch.journal {
+            journal.append(file, &digest).await?;
+        }
         self.emit(&UploadEvent::FileFinished {
             path: file.path().to_owned(),
             size: file.size(),
@@ -317,6 +479,14 @@ impl Uploader {
     fn emit(&self, event: &UploadEvent) {
         (self.handler)(event);
     }
+}
+
+/// The files of one plan being sent to one session.
+struct Batch<'a> {
+    session: &'a SessionId,
+    plan: &'a UploadPlan,
+    journal: Option<&'a JournalWriter>,
+    pacer: Pacer,
 }
 
 #[cfg(test)]

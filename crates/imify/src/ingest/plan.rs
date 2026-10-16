@@ -3,6 +3,7 @@
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 use crate::Error;
 
@@ -171,6 +172,7 @@ impl UploadPlan {
 pub struct PlannedFile {
     path: String,
     size: u64,
+    modified: Option<SystemTime>,
 }
 
 impl PlannedFile {
@@ -200,6 +202,12 @@ impl PlannedFile {
     #[must_use]
     pub fn size(&self) -> u64 {
         self.size
+    }
+
+    /// Returns the modification time at planning time, `None` when the platform does
+    /// not report one.
+    pub(crate) fn modified(&self) -> Option<SystemTime> {
+        self.modified
     }
 }
 
@@ -246,6 +254,7 @@ impl Walk {
                 self.files.push(PlannedFile {
                     path,
                     size: metadata.len(),
+                    modified: metadata.modified().ok(),
                 });
             } else if metadata.is_dir() {
                 self.skipped.push(format!("{path}/"));

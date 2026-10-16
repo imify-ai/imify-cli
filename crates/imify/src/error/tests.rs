@@ -171,3 +171,16 @@ fn io_error_message_names_the_path() {
             .starts_with("cannot read pick-place/meta/info.json: ")
     );
 }
+
+#[test]
+fn journal_error_message_names_the_journal_and_the_reason() {
+    let error = Error::Journal {
+        path: "uploads/3f2c.jsonl".into(),
+        reason: JournalError::Mismatch("the task description differs".into()),
+    };
+
+    assert_eq!(
+        error.to_string(),
+        "upload journal uploads/3f2c.jsonl: belongs to another upload: the task description differs"
+    );
+}

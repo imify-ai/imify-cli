@@ -27,11 +27,32 @@
 //! memory use does not grow with file size. Request starts of all files are spaced by
 //! [`UploadOptions::request_interval`]; a rate-limited response holds all starts for the
 //! requested delay.
+//!
+//! # Resume
+//!
+//! ```no_run
+//! # async fn run(client: imify::Client) -> Result<(), imify::Error> {
+//! use imify::ingest::{NewSession, ResumePolicy, UploadPlan, Uploader};
+//!
+//! let plan = UploadPlan::from_dir("datasets/pick-place")?;
+//! let session = Uploader::new(client)
+//!     .journal("/home/robot/.local/state/imify/uploads", ResumePolicy::IfJournaled)
+//!     .upload(&plan, &NewSession::new("pick-place"))
+//!     .await?;
+//! # Ok(()) }
+//! ```
+//!
+//! With [`Uploader::journal`], [`Uploader::upload`] records each stored file in a journal
+//! file, one per API base URL and dataset directory. Running the same upload again
+//! continues the journaled session and sends only the files that are not journaled, or
+//! whose size or content changed since. The journal is deleted when the session is
+//! complete.
 
 use std::num::NonZeroUsize;
 use std::time::Duration;
 
 mod engine;
+mod journal;
 mod pace;
 mod plan;
 mod session;
@@ -78,6 +99,37 @@ impl Default for UploadOptions {
     }
 }
 
+/// What [`Uploader::upload`] does with the journal set by [`Uploader::journal`].
+///
+/// # Examples
+///
+/// ```
+/// use imify::ingest::ResumePolicy;
+///
+/// fn policy(resume: bool, restart: bool) -> ResumePolicy {
+///     match (resume, restart) {
+///         (true, _) => ResumePolicy::Required,
+///         (_, true) => ResumePolicy::Restart,
+///         _ => ResumePolicy::IfJournaled,
+///     }
+/// }
+///
+/// assert_eq!(policy(false, false), ResumePolicy::default());
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub enum ResumePolicy {
+    /// Continue the journaled session when a journal exists, otherwise start a new one.
+    #[default]
+    IfJournaled,
+    /// Continue the journaled session. Fail with
+    /// [`JournalError::Missing`](crate::JournalError::Missing) when no journal exists.
+    Required,
+    /// Delete an existing journal and start a new session. The journaled session stays
+    /// open on the server.
+    Restart,
+}
+
 /// Progress of an upload, passed to the handler set with [`Uploader::on_event`].
 ///
 /// Events of one file arrive in order: `FileStarted`, any number of `FileProgress` and
@@ -108,6 +160,16 @@ pub enum UploadEvent {
     SessionCreated {
         /// Id of the session.
         session: SessionId,
+    },
+    /// The upload continues a journaled session. Sent instead of `SessionCreated`.
+    SessionResumed {
+        /// Id of the session.
+        session: SessionId,
+        /// Files of the plan that the journal records as stored and that are not sent
+        /// again.
+        files_done: usize,
+        /// Total size of those files in bytes.
+        bytes_done: u64,
     },
     /// A file transfer starts.
     FileStarted {

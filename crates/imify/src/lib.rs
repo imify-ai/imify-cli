@@ -31,7 +31,7 @@ pub mod validate;
 pub use account::User;
 pub use client::{Client, ClientBuilder};
 pub use discovery::OidcSettings;
-pub use error::{Error, FieldError, LoginFailure};
+pub use error::{Error, FieldError, JournalError, LoginFailure};
 pub use retry::RetryPolicy;
 
 /// Version of this crate, as published.
