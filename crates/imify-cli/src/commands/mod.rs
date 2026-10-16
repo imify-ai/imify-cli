@@ -27,12 +27,14 @@ impl Api {
 }
 
 /// Builds an API client for the host in `IMIFY_API_URL`, authenticated by the token source
-/// [`auth::token_source`] resolves.
+/// [`auth::token_source`] resolves. The client sends the token only to that host, over
+/// `https` unless the host is `localhost`, `127.0.0.1` or `::1`.
 ///
 /// # Errors
 ///
 /// Returns the errors of [`api_url`] and [`auth::token_source`]. Returns `auth_required`
-/// when there is neither `IMIFY_TOKEN` nor a stored login for the host.
+/// when there is neither `IMIFY_TOKEN` nor a stored login for the host, and
+/// `invalid_argument` when the SDK rejects the URL for a client with a token source.
 pub async fn client(env: &Environment) -> Result<Api, CliError> {
     let api_url = api_url(env)?;
     let host = crate::credentials::host_key(&api_url);

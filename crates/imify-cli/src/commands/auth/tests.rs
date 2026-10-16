@@ -743,24 +743,20 @@ async fn login_without_browser_trace_output_contains_no_token_code_or_secret() {
 #[tokio::test]
 async fn an_escape_sequence_from_the_identity_provider_is_not_written_raw() {
     let hosts = Hosts::start().await;
-    let (stdout, stderr) = (Buffer::default(), Buffer::default());
-    let mut prompt = stderr.clone();
-    let mut paste = || {
-        Ok("http://localhost:28753/callback?error=access_denied&error_description=%1B%5D0%3Bpwned%07%1B%5B2J".to_owned())
-    };
-    let context = LoginContext {
-        browser: &NoBrowser,
-        keychain: Keychain::unavailable(),
-        prompt: &mut prompt,
-        read_pasted_url: &mut paste,
-        env_token_set: false,
-    };
-    let mut renderer = renderer(Mode::Human, &stdout, &stderr);
+    let output = paste_login(&hosts, &hosts.env(), |url| {
+        let query = query(url);
+        Ok(format!(
+            "{}?error=access_denied&error_description=%1B%5D0%3Bpwned%07%1B%5B2J&state={}",
+            query["redirect_uri"], query["state"]
+        ))
+    })
+    .await;
+    let error = output.result.unwrap_err();
+    let stderr = Buffer::default();
 
-    let error = login_with(&hosts.env(), true, context, renderer.as_mut())
-        .await
-        .unwrap_err();
-    renderer.error(&error).unwrap();
+    renderer(Mode::Human, &Buffer::default(), &stderr)
+        .error(&error)
+        .unwrap();
 
     assert_eq!(error.code, ErrorCode::LoginFailed);
     assert!(!stderr.text().contains('\u{1b}'), "{:?}", stderr.text());

@@ -29,11 +29,11 @@ Each line is one check: status, name and message. A `fail` or `warn` line with a
 
 | Name | Fails when (error code) | Warns when | Skipped when |
 |---|---|---|---|
-| `api_url` | `IMIFY_API_URL` is unset or not an `http` or `https` URL (`invalid_argument`). | The URL uses `http` for a host other than `localhost`, `127.0.0.1` or `::1`. | |
+| `api_url` | `IMIFY_API_URL` is unset, not a URL, has a user name, password, query or fragment, or uses `http` for a host other than `localhost`, `127.0.0.1` or `::1` (`invalid_argument`). | | |
 | `health` | `GET /api/health` fails (`network`, `server`, `not_found`, `rate_limited`, `internal`), or its `status` is not `ok` (`server`). | | `api_url` failed. |
 | `readiness` | The API reports a `status` other than `ok` (`server`). The message names the state of the database and the storage. Also fails when the request fails. | | `health` did not pass. |
 | `clock` | | The local clock differs from the response's `Date` header by more than 60 s. | `health` did not pass, or the response has no `Date` header. |
-| `token` | `IMIFY_TOKEN` is unset or empty (`auth_required`), or not valid Unicode (`invalid_argument`). | | |
+| `token` | Neither `IMIFY_TOKEN` nor a stored login for the host exists (`auth_required`), `IMIFY_TOKEN` is not valid Unicode (`invalid_argument`), or the stored login cannot be refreshed (`auth_expired`). | | |
 | `token_expiry` | The token's `exp` claim is in the past (`auth_rejected`). | The token expires within 5 min. | `token` failed, or the token is not a JWT with a numeric `exp`. |
 | `account` | `GET /api/v1/me` fails (`auth_rejected`, `permission_denied`, `network`, ...). | | `token` or `health` did not pass. |
 
