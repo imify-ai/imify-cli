@@ -94,7 +94,23 @@ impl Client {
         self.retry(
             mode,
             |_, _, _| {},
-            || self.send(method.clone(), url.clone(), body),
+            || self.send(Authorize::Yes, method.clone(), url.clone(), body),
+        )
+        .await
+    }
+
+    /// Sends a request without an `Authorization` header to `url` and decodes the JSON
+    /// response as `T`, retrying failures that `mode` allows.
+    pub(crate) async fn execute_unauthenticated<T: DeserializeOwned>(
+        &self,
+        mode: RetryMode,
+        method: Method,
+        url: Url,
+    ) -> Result<T, Error> {
+        self.retry(
+            mode,
+            |_, _, _| {},
+            || self.send(Authorize::No, method.clone(), url.clone(), None),
         )
         .await
     }
@@ -126,6 +142,12 @@ impl Client {
         }
     }
 
+    /// The HTTP client for requests the client methods do not cover, such as form posts.
+    /// It sends no `Authorization` header by itself.
+    pub(crate) fn http(&self) -> &reqwest::Client {
+        &self.http
+    }
+
     /// The HTTP client for streamed file uploads. It has no read timeout; the caller
     /// limits the time without progress to [`Client::read_timeout`].
     pub(crate) fn upload_http(&self) -> &reqwest::Client {
@@ -144,12 +166,15 @@ impl Client {
 
     async fn send<T: DeserializeOwned>(
         &self,
+        authorize: Authorize,
         method: Method,
         url: Url,
         body: Option<&serde_json::Value>,
     ) -> Result<T, Error> {
         let mut request = self.http.request(method, url);
-        if let Some(authorization) = self.authorization().await? {
+        if authorize == Authorize::Yes
+            && let Some(authorization) = self.authorization().await?
+        {
             request = request.header(AUTHORIZATION, authorization);
         }
         if let Some(body) = body {
@@ -184,6 +209,13 @@ impl Client {
                 message: format!("invalid request path {path:?}: {error}"),
             })
     }
+}
+
+/// Whether a request carries the token source's `Authorization` header.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Authorize {
+    Yes,
+    No,
 }
 
 /// Decodes a successful JSON response as `T` and maps any other response to an [`Error`].

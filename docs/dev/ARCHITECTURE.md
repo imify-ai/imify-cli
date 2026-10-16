@@ -35,7 +35,10 @@ crates/imify/src/
   client.rs         Client, ClientBuilder
   error.rs          Error, the single error type of the SDK
   retry.rs          RetryPolicy, retry decisions and backoff
-  auth/             TokenSource trait and its implementations
+  discovery.rs      OidcSettings: the host's identity provider issuer and client id
+  auth/             TokenSource trait and its implementations; browser login (PKCE,
+                    localhost redirect listener, ID token checks), CredentialStore trait,
+                    StoredLogin with refresh, token revocation
   datasets/         dataset endpoints and models
   ingest/           upload engine: Transport trait, planner, pacing, resume journal, progress events
   validate/         offline structural checks of LeRobot v3 and v2.1 datasets
@@ -56,6 +59,7 @@ Each seam is a trait with one production implementation and test doubles. They e
 | Seam | Crate | Production implementation | Planned addition |
 |---|---|---|---|
 | `TokenSource` | imify | `EnvToken` (`IMIFY_TOKEN`), `StoredLogin` | platform-issued API tokens |
+| `CredentialStore` | imify (trait), imify-cli (stores) | OS keychain | file readable only by the user |
 | `Transport` | imify | streaming `PUT` per file | direct-to-storage upload with server verification |
 | `Renderer` | imify-cli | human (tables, inline TUI) | none; `json` is the second implementation |
 

@@ -1,7 +1,26 @@
 //! Access tokens and the sources the client obtains them from.
 //!
-//! [`EnvToken`] reads `IMIFY_TOKEN`. [`StaticToken`] returns a fixed token. Other sources
-//! implement [`TokenSource`].
+//! [`EnvToken`] reads `IMIFY_TOKEN`. [`StaticToken`] returns a fixed token. [`StoredLogin`]
+//! returns the ID token of a browser login made with [`LoopbackLogin`] or [`PasteLogin`]
+//! and kept in a [`CredentialStore`]. Other sources implement [`TokenSource`].
+//!
+//! ```no_run
+//! # async fn run(store: std::sync::Arc<dyn imify::auth::CredentialStore>) -> Result<(), imify::Error> {
+//! use std::time::Duration;
+//! use imify::Client;
+//! use imify::auth::{LoopbackLogin, StoredLogin};
+//!
+//! let client = Client::builder("https://api.example.com").build()?;
+//! let settings = client.oidc_settings().await?;
+//! let login = LoopbackLogin::start(&client, &settings).await?;
+//! eprintln!("Open {}", login.authorization_url());
+//! let credentials = login.finish(Duration::from_secs(300)).await?;
+//! store.save(&credentials)?;
+//!
+//! let source = StoredLogin::load(store).await?.expect("credentials were saved");
+//! let client = Client::builder("https://api.example.com").token_source(source).build()?;
+//! # Ok(()) }
+//! ```
 
 use std::fmt;
 use std::future::Future;
@@ -10,8 +29,17 @@ use std::pin::Pin;
 use crate::Error;
 
 mod env;
+mod id_token;
+mod login;
+mod loopback;
+mod oidc;
+mod stored;
+#[cfg(test)]
+mod testing;
 
 pub use env::EnvToken;
+pub use login::{Credentials, LoopbackLogin, PasteLogin};
+pub use stored::{CredentialStore, Revocation, StoredLogin, revoke};
 
 /// Supplies the access token the client sends as `Authorization: Bearer <token>`.
 ///
@@ -20,8 +48,9 @@ pub use env::EnvToken;
 ///
 /// # Errors
 ///
-/// An implementation returns [`Error::Auth`] with `status: None` when it cannot produce a
-/// token. The client then fails the request without sending it.
+/// An implementation returns [`Error::Auth`] with `status: None` when it has no token, and
+/// [`Error::Login`] when a stored login cannot be refreshed. The client then fails the
+/// request without sending it.
 ///
 /// # Examples
 ///
@@ -50,7 +79,8 @@ pub trait TokenSource: Send + Sync + fmt::Debug {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::Auth`] when no token is available.
+    /// Returns [`Error::Auth`] when no token is available, or [`Error::Login`] when a
+    /// refresh fails.
     fn token(&self) -> Pin<Box<dyn Future<Output = Result<Token, Error>> + Send + '_>>;
 }
 
