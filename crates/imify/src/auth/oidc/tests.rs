@@ -31,6 +31,31 @@ fn token_endpoint(provider: &MockProvider) -> Url {
 }
 
 #[tokio::test]
+async fn a_token_response_over_1_mib_fails_with_unexpected_response() {
+    let provider = MockProvider::start().await;
+    provider
+        .mount_token_response(json!({"id_token": "x".repeat(1024 * 1024)}))
+        .await;
+
+    let error = refresh(
+        &client(&provider.issuer()),
+        &token_endpoint(&provider),
+        CLIENT_ID,
+        REFRESH_TOKEN,
+    )
+    .await
+    .unwrap_err();
+
+    assert!(
+        matches!(
+            error,
+            TokenError::Failed(Error::UnexpectedResponse { status: 200, .. })
+        ),
+        "{error:?}"
+    );
+}
+
+#[tokio::test]
 async fn a_307_from_the_token_endpoint_is_not_followed() {
     let provider = MockProvider::start().await;
     let target = redirect_target().await;

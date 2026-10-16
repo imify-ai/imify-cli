@@ -11,7 +11,7 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
 use super::Revocation;
-use crate::client::{network_error, redirect_not_followed, require_secure};
+use crate::client::{network_error, read_small_body, redirect_not_followed, require_secure};
 use crate::error::from_response;
 use crate::retry::RetryMode;
 use crate::{Client, Error, LoginFailure, OidcSettings};
@@ -319,8 +319,8 @@ fn redact(text: &str, secrets: &[&str]) -> String {
         })
 }
 
-/// Posts `form` without an `Authorization` header and without following redirects.
-/// Retries connection failures and rate limits.
+/// Posts `form` without an `Authorization` header and without following redirects, and
+/// reads at most 1 MiB of the response. Retries connection failures and rate limits.
 async fn post_form(
     client: &Client,
     url: &Url,
@@ -340,7 +340,7 @@ async fn post_form(
                     .map_err(network_error)?;
                 let status = response.status();
                 let headers = response.headers().clone();
-                let body = response.bytes().await.map_err(network_error)?.to_vec();
+                let body = read_small_body(response).await?;
                 if status == StatusCode::TOO_MANY_REQUESTS {
                     return Err(from_response(status.as_u16(), &headers, &body));
                 }

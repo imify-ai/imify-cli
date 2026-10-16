@@ -184,6 +184,24 @@ async fn get_returns_server_error_after_exhausting_retries() {
 }
 
 #[tokio::test]
+async fn an_error_body_over_1_mib_is_dropped_and_the_error_carries_the_reason_phrase() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .respond_with(
+            ResponseTemplate::new(404).set_body_json(json!({"detail": "x".repeat(1024 * 1024)})),
+        )
+        .mount(&server)
+        .await;
+
+    let error = get_dataset(&client(&server)).await.unwrap_err();
+
+    assert!(
+        matches!(error, Error::NotFound { ref message } if message == "Not Found"),
+        "{error:?}"
+    );
+}
+
+#[tokio::test]
 async fn get_not_found_is_sent_once() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))

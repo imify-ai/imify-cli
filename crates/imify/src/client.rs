@@ -19,6 +19,9 @@ const DEFAULT_READ_TIMEOUT: Duration = Duration::from_secs(60);
 /// Most redirects followed for one request.
 pub(crate) const MAX_REDIRECTS: usize = 5;
 
+/// Largest error body read, and largest body of an identity provider response.
+pub(crate) const MAX_SMALL_BODY_BYTES: usize = 1024 * 1024;
+
 /// A client for the imify platform API.
 ///
 /// Every request carries a `User-Agent` header and, when a token source is configured,
@@ -120,7 +123,7 @@ impl Client {
             |_, _, _| {},
             || async {
                 let response = http.get(url.clone()).send().await.map_err(network_error)?;
-                decode_with(response, &decode_json).await
+                decode_with(response, BodySize::Small, &decode_json).await
             },
         )
         .await
@@ -217,7 +220,7 @@ impl Client {
             request = request.json(body);
         }
         let response = request.send().await.map_err(network_error)?;
-        decode_with(response, decode).await
+        decode_with(response, BodySize::Unbounded, decode).await
     }
 
     /// The `Authorization` header value from the token source, `None` without one.
@@ -261,22 +264,70 @@ enum Authorize {
 
 /// Decodes a successful JSON response as `T` and maps any other response to an [`Error`].
 pub(crate) async fn decode<T: DeserializeOwned>(response: reqwest::Response) -> Result<T, Error> {
-    decode_with(response, &decode_json).await
+    decode_with(response, BodySize::Unbounded, &decode_json).await
 }
 
 /// Reads the whole response and turns it into `T` with `decode`. A redirect fails with
 /// [`Error::UnexpectedResponse`] without calling `decode`.
-async fn decode_with<T, D>(response: reqwest::Response, decode: &D) -> Result<T, Error>
+async fn decode_with<T, D>(
+    response: reqwest::Response,
+    success_body: BodySize,
+    decode: &D,
+) -> Result<T, Error>
 where
     D: Fn(StatusCode, &HeaderMap, &[u8]) -> Result<T, Error>,
 {
     let status = response.status();
     let headers = response.headers().clone();
-    let body = response.bytes().await.map_err(network_error)?;
+    let body = match success_body {
+        BodySize::Unbounded if status.is_success() => {
+            response.bytes().await.map_err(network_error)?.to_vec()
+        }
+        _ => read_small_body(response).await?,
+    };
     if status.is_redirection() {
         return Err(redirect_not_followed(status, &headers));
     }
     decode(status, &headers, &body)
+}
+
+/// How much of a success body is read. Other bodies are read as [`read_small_body`] does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BodySize {
+    Unbounded,
+    Small,
+}
+
+/// Reads a body of at most [`MAX_SMALL_BODY_BYTES`], checking `Content-Length` first and
+/// counting the bytes received. A larger success body fails with
+/// [`Error::UnexpectedResponse`]; a larger body of another status reads as empty, so the
+/// error built from it carries the reason phrase.
+pub(crate) async fn read_small_body(mut response: reqwest::Response) -> Result<Vec<u8>, Error> {
+    let status = response.status();
+    let too_large = || {
+        if status.is_success() {
+            Err(Error::UnexpectedResponse {
+                status: status.as_u16(),
+                message: format!("the response body exceeds {MAX_SMALL_BODY_BYTES} bytes"),
+            })
+        } else {
+            Ok(Vec::new())
+        }
+    };
+    let announced = response
+        .content_length()
+        .map(|length| usize::try_from(length).unwrap_or(usize::MAX));
+    if announced.is_some_and(|length| length > MAX_SMALL_BODY_BYTES) {
+        return too_large();
+    }
+    let mut body = Vec::with_capacity(announced.unwrap_or_default());
+    while let Some(chunk) = response.chunk().await.map_err(network_error)? {
+        if body.len() + chunk.len() > MAX_SMALL_BODY_BYTES {
+            return too_large();
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
 }
 
 /// Decodes a successful JSON response as `T` and maps any other status to an [`Error`].
