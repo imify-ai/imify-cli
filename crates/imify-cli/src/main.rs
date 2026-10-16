@@ -1,5 +1,7 @@
+mod browser;
 mod cli;
 mod commands;
+mod credentials;
 mod output;
 mod tui;
 
@@ -43,6 +45,10 @@ fn run(
         None => Ok(()),
         Some(Command::Whoami) => runtime()?.block_on(commands::auth::whoami(env, renderer)),
         Some(Command::Doctor) => runtime()?.block_on(commands::doctor::doctor(env, renderer)),
+        Some(Command::Login { no_browser }) => {
+            runtime()?.block_on(commands::auth::login(env, *no_browser, renderer))
+        }
+        Some(Command::Logout) => runtime()?.block_on(commands::auth::logout(env, renderer)),
         Some(Command::Datasets {
             command: DatasetsCommand::Ls(args),
         }) => runtime()?.block_on(commands::datasets::ls(env, args, renderer)),

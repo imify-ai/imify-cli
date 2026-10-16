@@ -10,14 +10,22 @@ use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
 
 const TOKEN: &str = "tok_7f3a9c-secret";
 
-/// The `imify` binary without the environment variables the CLI reads.
+/// The `imify` binary without the environment variables the CLI reads. Logins are read from
+/// a file in a directory that does not exist, never from the keychain.
 fn imify_command() -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_imify"));
     command
         .env_remove("IMIFY_OUTPUT")
         .env_remove("NO_COLOR")
         .env_remove("IMIFY_TOKEN")
-        .env_remove("IMIFY_API_URL");
+        .env_remove("IMIFY_API_URL")
+        .env_remove("IMIFY_OIDC_ISSUER")
+        .env_remove("IMIFY_OIDC_CLIENT_ID")
+        .env("IMIFY_CREDENTIAL_STORE", "file")
+        .env(
+            "IMIFY_CONFIG_DIR",
+            PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("no-login"),
+        );
     command
 }
 
@@ -184,7 +192,10 @@ async fn whoami_without_imify_token_fails_with_auth_required_and_sends_no_reques
 
     assert_eq!(output.status.code(), Some(3));
     assert!(server.received_requests().await.unwrap().is_empty());
-    insta::assert_snapshot!("whoami_auth_required_json", text(&output.stderr));
+    insta::assert_snapshot!(
+        "whoami_auth_required_json",
+        text(&output.stderr).replace(&server.uri(), "http://127.0.0.1:<port>")
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

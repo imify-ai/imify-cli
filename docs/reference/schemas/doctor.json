@@ -53,8 +53,8 @@
       }
     },
     "token_source": {
-      "description": "Where the access token comes from: `env` for `IMIFY_TOKEN`.",
-      "enum": ["env", null]
+      "description": "Where the access token comes from: `env` for `IMIFY_TOKEN`, `stored` for the stored login of the host.",
+      "enum": ["env", "stored", null]
     },
     "token_expires_at": {
       "description": "The `exp` claim of the access token, RFC 3339 in UTC.",

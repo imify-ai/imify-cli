@@ -54,11 +54,15 @@ pub async fn upload(
     let target = if args.dry_run {
         None
     } else {
-        Some(Target {
-            client: client(env)?,
-            journal_dir: journal_dir(env)?,
-            policy: resume_policy(args.resume, args.restart),
-        })
+        let api = client(env).await?;
+        Some((
+            Target {
+                client: api.client,
+                journal_dir: journal_dir(env)?,
+                policy: resume_policy(args.resume, args.restart),
+            },
+            api.origin,
+        ))
     };
     let name = session_name(&args.path)?;
     let report = imify::validate::validate_dataset(&args.path).map_err(dataset_root_error)?;
@@ -79,12 +83,14 @@ pub async fn upload(
         session: None,
         resumed: false,
     };
-    let Some(target) = target else {
+    let Some((target, origin)) = target else {
         return write_event(renderer, &result);
     };
 
     let new_session = NewSession::new(name.as_str()).task_description(args.task.as_str());
-    let sent = send(target, settings, &plan, &new_session, renderer).await?;
+    let sent = send(target, settings, &plan, &new_session, renderer)
+        .await
+        .map_err(|error| origin.adjust(error))?;
     result.session = Some(&sent.session);
     result.resumed = sent.resumed;
     write_event(renderer, &result)

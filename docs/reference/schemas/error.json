@@ -18,6 +18,8 @@
             "invalid_argument",
             "auth_required",
             "auth_rejected",
+            "auth_expired",
+            "login_failed",
             "permission_denied",
             "not_found",
             "dataset_invalid",

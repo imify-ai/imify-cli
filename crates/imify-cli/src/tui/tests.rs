@@ -502,6 +502,10 @@ impl Renderer for RecordingRenderer {
     fn error(&mut self, error: &CliError) -> io::Result<()> {
         writeln!(self.lines, "error: {}", error.message)
     }
+
+    fn warning(&mut self, message: &str) -> io::Result<()> {
+        writeln!(self.lines, "warning: {message}")
+    }
 }
 
 #[tokio::test(start_paused = true)]

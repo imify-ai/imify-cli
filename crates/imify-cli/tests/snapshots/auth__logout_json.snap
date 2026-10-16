@@ -1,0 +1,6 @@
+---
+source: crates/imify-cli/tests/auth.rs
+assertion_line: 340
+expression: login.redact(&text(&output.stdout))
+---
+{"host":"http://127.0.0.1:<api port>","removed":true,"revoked":true}

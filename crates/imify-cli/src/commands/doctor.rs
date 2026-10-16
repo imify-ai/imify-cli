@@ -6,6 +6,7 @@ use std::time::{Duration, Instant, SystemTime};
 use imify::auth::TokenSource;
 use imify::{Client, ClientBuilder, Readiness, RetryPolicy, User};
 
+use super::auth::TokenOrigin;
 use super::{api_url, invalid_api_url, write_result};
 use crate::output::renderer::{Render, Renderer};
 use crate::output::time::rfc3339;
@@ -269,7 +270,8 @@ async fn diagnose(env: &Environment) -> Report {
     }
     check_clock(reachable.as_ref(), &mut report);
 
-    let token_source = check_token(&mut report).await;
+    let host = api.as_ref().map(|(url, _)| url.as_str());
+    let token_source = check_token(env, host, &mut report).await;
     match (&api, token_source) {
         (_, None) => report.push(Check::skip_after("account", "token")),
         (Some((url, _)), Some(source)) if reachable.is_some() => {
@@ -283,9 +285,10 @@ async fn diagnose(env: &Environment) -> Report {
 /// Runs the `api_url` check and returns the URL with a client without a token source.
 fn check_api_url(env: &Environment, report: &mut Report) -> Option<(String, Client)> {
     let checked = api_url(env).and_then(|url| {
-        client_builder(url)
+        let url = url.as_str().trim_end_matches('/').to_owned();
+        client_builder(&url)
             .build()
-            .map(|client| (url.to_owned(), client))
+            .map(|client| (url, client))
             .map_err(|error| invalid_api_url(&error))
     });
     match checked {
@@ -382,15 +385,26 @@ fn check_clock(reachable: Option<&Reachable>, report: &mut Report) {
 
 /// Runs the `token` and `token_expiry` checks and returns the token source when it
 /// supplies a token.
-async fn check_token(report: &mut Report) -> Option<impl TokenSource + 'static> {
+async fn check_token(
+    env: &Environment,
+    host: Option<&str>,
+    report: &mut Report,
+) -> Option<impl TokenSource + 'static> {
     let variable = imify::auth::EnvToken::VARIABLE;
-    let source = match super::auth::token_source() {
-        Ok(Some(source)) => Ok(source),
-        Ok(None) => Err(
-            CliError::new(ErrorCode::AuthRequired, format!("{variable} is not set."))
-                .with_hint(AUTH_REQUIRED_HINT),
+    let resolved = match host {
+        Some(host) => super::auth::token_source(env, &host_key_of(host)).await,
+        None => super::auth::env_token_source(),
+    };
+    let (source, origin) = match resolved {
+        Ok(Some((source, origin))) => (Ok(source), origin),
+        Ok(None) => (
+            Err(
+                CliError::new(ErrorCode::AuthRequired, format!("{variable} is not set."))
+                    .with_hint(AUTH_REQUIRED_HINT),
+            ),
+            TokenOrigin::Env,
         ),
-        Err(error) => Err(error),
+        Err(error) => (Err(error), TokenOrigin::Env),
     };
     let token = match source {
         Ok(source) => source
@@ -408,8 +422,17 @@ async fn check_token(report: &mut Report) -> Option<impl TokenSource + 'static> 
             return None;
         }
     };
-    report.push(Check::ok("token", format!("{variable} is set.")));
-    report.token_source = Some("env");
+    report.push(Check::ok(
+        "token",
+        match origin {
+            TokenOrigin::Env => format!("{variable} is set."),
+            TokenOrigin::Login => "A login is stored for the host.".to_owned(),
+        },
+    ));
+    report.token_source = Some(match origin {
+        TokenOrigin::Env => "env",
+        TokenOrigin::Login => "stored",
+    });
     let expiry = match token.expires_at() {
         Some(expires_at) => {
             report.token_expires_at = Some(expires_at);
@@ -422,6 +445,14 @@ async fn check_token(report: &mut Report) -> Option<impl TokenSource + 'static> 
     };
     report.push(expiry);
     Some(source)
+}
+
+/// The host key of an `api_url` the `api_url` check accepted.
+fn host_key_of(api_url: &str) -> String {
+    url::Url::parse(api_url).map_or_else(
+        |_| api_url.to_owned(),
+        |url| crate::credentials::host_key(&url),
+    )
 }
 
 async fn check_account(url: &str, source: impl TokenSource + 'static, report: &mut Report) {

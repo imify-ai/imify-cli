@@ -26,7 +26,13 @@ pub async fn ls(
     args: &LsArgs,
     renderer: &mut dyn Renderer,
 ) -> Result<(), CliError> {
-    let datasets = client(env)?.datasets().list().await?;
+    let api = client(env).await?;
+    let datasets = api
+        .client
+        .datasets()
+        .list()
+        .await
+        .map_err(|error| api.error(error))?;
     write_result(renderer, &DatasetList(select(datasets, args)))
 }
 

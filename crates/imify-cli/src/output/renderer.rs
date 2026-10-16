@@ -45,6 +45,20 @@ pub trait Renderer {
     ///
     /// Returns the error of the underlying writer.
     fn error(&mut self, error: &CliError) -> io::Result<()>;
+    /// Writes `warning: <message>` to stderr. With `--quiet`, nothing is written.
+    ///
+    /// # Errors
+    ///
+    /// Returns the error of the underlying writer.
+    fn warning(&mut self, message: &str) -> io::Result<()>;
+}
+
+fn write_warning(stderr: &mut dyn Write, quiet: bool, message: &str) -> io::Result<()> {
+    if quiet {
+        return Ok(());
+    }
+    writeln!(stderr, "warning: {message}")?;
+    stderr.flush()
 }
 
 /// Writes text for people: results on stdout, events and errors on stderr.
@@ -95,6 +109,10 @@ impl Renderer for HumanRenderer {
             writeln!(self.stderr, "hint: {hint}")?;
         }
         self.stderr.flush()
+    }
+
+    fn warning(&mut self, message: &str) -> io::Result<()> {
+        write_warning(&mut self.stderr, self.quiet, message)
     }
 }
 
@@ -154,6 +172,10 @@ impl Renderer for JsonRenderer {
 
     fn error(&mut self, error: &CliError) -> io::Result<()> {
         write_line(&mut self.stderr, &error.envelope())
+    }
+
+    fn warning(&mut self, message: &str) -> io::Result<()> {
+        write_warning(&mut self.stderr, self.quiet, message)
     }
 }
 
@@ -370,5 +392,35 @@ mod tests {
             streams.stderr.text(),
             "error: Not logged in.\nhint: Run `imify login`.\n"
         );
+    }
+
+    #[test]
+    fn warnings_go_to_stderr_in_both_modes() {
+        let (mut human, human_streams) = human_renderer(false);
+        let (mut json, json_streams) = json_renderer(false);
+
+        human.warning("No keychain is available.").unwrap();
+        json.warning("No keychain is available.").unwrap();
+
+        assert_eq!(
+            [human_streams.stderr.text(), json_streams.stderr.text()],
+            [
+                "warning: No keychain is available.\n",
+                "warning: No keychain is available.\n"
+            ]
+        );
+        assert_eq!(
+            human_streams.stdout.text() + &json_streams.stdout.text(),
+            ""
+        );
+    }
+
+    #[test]
+    fn quiet_drops_warnings() {
+        let (mut renderer, streams) = human_renderer(true);
+
+        renderer.warning("No keychain is available.").unwrap();
+
+        assert_eq!(streams.stderr.text(), "");
     }
 }

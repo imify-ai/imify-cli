@@ -72,7 +72,7 @@ The example shows one of the seven checks.
 | `latency_ms` | Duration of `GET /api/health` in milliseconds. |
 | `clock_skew_ms` | The server's `Date` minus the local time in milliseconds. Negative when the local clock is ahead. The `Date` header has a resolution of 1 s. |
 | `readiness` | `status`, `db` and `storage` from `GET /api/health/ready`. |
-| `token_source` | `env` when the token comes from `IMIFY_TOKEN`. |
+| `token_source` | `env` when the token comes from `IMIFY_TOKEN`, `stored` when it comes from the stored login of the host. |
 | `token_expires_at` | The token's `exp` claim, RFC 3339 in UTC. |
 | `user` | `subject`, `name` and `role` from `GET /api/v1/me`. |
 | `checks` | `name`, `status`, `message`, `code` and `hint` of each check, in report order. `code` is set for `fail` only. |

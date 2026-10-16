@@ -1,0 +1,7 @@
+---
+source: crates/imify-cli/tests/auth.rs
+assertion_line: 351
+expression: login.redact(&text(&output.stdout))
+---
+Logged out of http://127.0.0.1:<api port>.
+Tokens issued before the logout stay valid until they expire.

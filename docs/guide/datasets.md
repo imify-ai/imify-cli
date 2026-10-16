@@ -13,7 +13,7 @@ ID                                    TASK                  FORMAT      EMBODIME
 
 `imify datasets ls` prints every dataset visible to the user the access token belongs to. A dataset holds the episodes recorded for one task on one embodiment. `EPISODES` is the number of episodes in the dataset, `ACCEPTED` the number that passed quality control. Values are never truncated. Without datasets, the command prints `No datasets.` and exits with code 0.
 
-The command requires `IMIFY_TOKEN` and `IMIFY_API_URL`, as described in the [README](../../README.md#authentication).
+The command requires `IMIFY_API_URL` and a login or `IMIFY_TOKEN`, as described in [Authentication](authentication.md).
 
 ### Filter
 
@@ -67,7 +67,8 @@ Schema: [`datasets-ls.json`](../reference/schemas/datasets-ls.json).
 | Code | Exit | Cause |
 |---|---|---|
 | `invalid_argument` | 2 | `IMIFY_API_URL` is unset or invalid, or `--sort` names an unknown field. |
-| `auth_required` | 3 | `IMIFY_TOKEN` is not set. |
+| `auth_required` | 3 | There is no login for the host, and `IMIFY_TOKEN` is not set. |
+| `auth_expired` | 3 | The stored login has expired or was revoked. |
 | `auth_rejected` | 3 | The API rejected the token. |
 | `permission_denied` | 3 | The token lacks the permission to list datasets. |
 | `network`, `server`, `rate_limited` | 7 | The API could not be reached, failed, or throttled the request. |

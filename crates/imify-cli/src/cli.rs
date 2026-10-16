@@ -62,6 +62,24 @@ Writes a report to stdout. Exits with the error code of the first failing check,
   IMIFY_TOKEN=<token> IMIFY_API_URL=https://api.example.com imify doctor"
     )]
     Doctor,
+    /// Sign in through the browser and store the login for the host
+    #[command(
+        long_about = "Sign in through the browser and store the login for the host in IMIFY_API_URL.
+
+Opens the browser and waits up to 5 minutes. The login is stored in the OS keychain, or in a file readable only by the user when no keychain is available.",
+        after_help = "Examples:
+  IMIFY_API_URL=https://api.example.com imify login
+  imify login --no-browser"
+    )]
+    Login {
+        /// Print the sign-in URL and read the redirect URL from the terminal instead of opening a browser
+        #[arg(long)]
+        no_browser: bool,
+    },
+    /// Revoke and remove the stored login for the host
+    #[command(after_help = "Example:
+  IMIFY_API_URL=https://api.example.com imify logout")]
+    Logout,
     /// Work with datasets
     Datasets {
         #[command(subcommand)]

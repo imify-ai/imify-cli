@@ -9,16 +9,20 @@ mod error;
     )
 )]
 pub mod interaction;
+pub mod paste;
 pub mod renderer;
 pub mod table;
 pub mod time;
 
 use std::ffi::OsString;
 use std::io::{self, IsTerminal};
+use std::path::PathBuf;
 
 use tracing::level_filters::LevelFilter;
 
-pub use self::error::{AUTH_REJECTED_HINT, AUTH_REQUIRED_HINT, CliError, ErrorCode};
+pub use self::error::{
+    AUTH_REJECTED_HINT, AUTH_REQUIRED_HINT, CliError, ErrorCode, LOGIN_HINT, PASTE_HINT,
+};
 use self::renderer::{HumanRenderer, JsonRenderer, Renderer};
 use crate::cli::GlobalArgs;
 
@@ -46,11 +50,20 @@ pub struct Environment {
     pub home: Option<OsString>,
     /// `XDG_STATE_HOME`; `None` when unset.
     pub state_home: Option<OsString>,
+    /// `IMIFY_OIDC_ISSUER`; `None` when unset or not valid UTF-8.
+    pub oidc_issuer: Option<String>,
+    /// `IMIFY_OIDC_CLIENT_ID`; `None` when unset or not valid UTF-8.
+    pub oidc_client_id: Option<String>,
+    /// `IMIFY_CREDENTIAL_STORE`; `None` when unset or not valid UTF-8.
+    pub credential_store: Option<String>,
+    /// `IMIFY_CONFIG_DIR`; `None` when unset.
+    pub config_dir: Option<PathBuf>,
 }
 
 impl Environment {
-    /// Reads `IMIFY_OUTPUT`, `NO_COLOR`, `IMIFY_API_URL`, `TERM`, `HOME`, `XDG_STATE_HOME` and
-    /// whether stdin and stderr are terminals.
+    /// Reads `IMIFY_OUTPUT`, `NO_COLOR`, `IMIFY_API_URL`, `TERM`, `HOME`, `XDG_STATE_HOME`,
+    /// `IMIFY_OIDC_ISSUER`, `IMIFY_OIDC_CLIENT_ID`, `IMIFY_CREDENTIAL_STORE`,
+    /// `IMIFY_CONFIG_DIR` and whether stdin and stderr are terminals.
     pub fn capture() -> Self {
         Self {
             imify_output: std::env::var("IMIFY_OUTPUT").ok(),
@@ -61,6 +74,10 @@ impl Environment {
             term: std::env::var("TERM").ok(),
             home: std::env::var_os("HOME"),
             state_home: std::env::var_os("XDG_STATE_HOME"),
+            oidc_issuer: std::env::var("IMIFY_OIDC_ISSUER").ok(),
+            oidc_client_id: std::env::var("IMIFY_OIDC_CLIENT_ID").ok(),
+            credential_store: std::env::var("IMIFY_CREDENTIAL_STORE").ok(),
+            config_dir: std::env::var_os("IMIFY_CONFIG_DIR").map(PathBuf::from),
         }
     }
 
