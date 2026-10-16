@@ -954,6 +954,7 @@ dependencies = [
  "assert_cmd",
  "clap",
  "imify",
+ "imify-test-support",
  "insta",
  "jsonschema",
  "serde",

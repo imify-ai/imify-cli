@@ -25,6 +25,8 @@ pub enum ErrorCode {
     PermissionDenied,
     /// The requested resource does not exist.
     NotFound,
+    /// The local dataset failed validation.
+    DatasetInvalid,
     /// The request conflicts with the current state of the resource.
     Conflict,
     /// The server could not be reached.
@@ -42,13 +44,14 @@ pub enum ErrorCode {
 impl ErrorCode {
     /// Every error code, in documentation order.
     #[cfg(test)]
-    pub const ALL: [Self; 12] = [
+    pub const ALL: [Self; 13] = [
         Self::Internal,
         Self::InvalidArgument,
         Self::AuthRequired,
         Self::AuthRejected,
         Self::PermissionDenied,
         Self::NotFound,
+        Self::DatasetInvalid,
         Self::Conflict,
         Self::Network,
         Self::Server,
@@ -64,6 +67,7 @@ impl ErrorCode {
             Self::InvalidArgument => 2,
             Self::AuthRequired | Self::AuthRejected | Self::PermissionDenied => 3,
             Self::NotFound => 4,
+            Self::DatasetInvalid => 5,
             Self::Conflict => 6,
             Self::Network | Self::Server | Self::RateLimited => 7,
             Self::Cancelled => 8,
@@ -174,6 +178,7 @@ mod tests {
                 (ErrorCode::AuthRejected, 3),
                 (ErrorCode::PermissionDenied, 3),
                 (ErrorCode::NotFound, 4),
+                (ErrorCode::DatasetInvalid, 5),
                 (ErrorCode::Conflict, 6),
                 (ErrorCode::Network, 7),
                 (ErrorCode::Server, 7),
@@ -200,6 +205,7 @@ mod tests {
                 "auth_rejected",
                 "permission_denied",
                 "not_found",
+                "dataset_invalid",
                 "conflict",
                 "network",
                 "server",

@@ -2,8 +2,8 @@
 
 ```console
 $ imify datasets validate ./pick-cube
-error    episode_length_mismatch  data/chunk-000/episode_000000.parquet  Episode 0 has 10 rows; meta/episodes.jsonl declares 11.
 warning  unexpected_entry         notes.txt                              Not uploaded: only meta/, data/ and videos/ are uploaded.
+error    episode_length_mismatch  data/chunk-000/episode_000000.parquet  Episode 0 has 10 rows; meta/episodes.jsonl declares 11.
 1 error, 1 warning
 error: The dataset has 1 error.
 hint: Fix the errors listed in the report and run `imify datasets validate ./pick-cube` again.
@@ -25,7 +25,7 @@ The report goes to stdout for valid and invalid datasets. Each line is one findi
 
 ```console
 $ imify datasets validate ./pick-cube --json
-{"codebase_version":"v2.1","valid":false,"findings":[{"code":"episode_length_mismatch","severity":"error","path":"data/chunk-000/episode_000000.parquet","message":"Episode 0 has 10 rows; meta/episodes.jsonl declares 11."}]}
+{"codebase_version":"v2.1","findings":[{"code":"unexpected_entry","message":"Not uploaded: only meta/, data/ and videos/ are uploaded.","path":"notes.txt","severity":"warning"},{"code":"episode_length_mismatch","message":"Episode 0 has 10 rows; meta/episodes.jsonl declares 11.","path":"data/chunk-000/episode_000000.parquet","severity":"error"}],"valid":false}
 ```
 
 stderr:
@@ -41,7 +41,7 @@ stderr:
 The checks run in this order:
 
 1. Top-level entries. `meta/`, `data/` and `videos/` are uploaded. Hidden entries, whose names start with `.`, are skipped without a finding.
-2. `meta/info.json` exists and is a JSON object. `codebase_version` is `v2.1` or `v3.<n>`. `fps` is greater than 0. `features`, `data_path` and `chunks_size` are present with the expected types. `data_path` and `video_path` use only the placeholders of their format, written as `{name}` or `{name:0Nd}`.
+2. `meta/info.json` exists and is a JSON object. `codebase_version` is `v2.1` or `v3.<n>`. `fps` is greater than 0. `features`, `data_path` and `chunks_size` are present with the expected types. `data_path` and `video_path` use only the placeholders of their format, written as `{name}` or, zero-padded, as `{name:06d}`.
 3. The episodes index, `meta/episodes.jsonl` for v2.1 or `meta/episodes/**/*.parquet` for v3.x, lists each episode with its `length`. The number of episodes equals `total_episodes`.
 4. Every `*.parquet` file under `data/` and `meta/` has a readable footer.
 5. The data file of each episode exists. Its rows for the episode equal the episode's `length`. Within the episode, `timestamp` increases strictly, and consecutive timestamps differ by 1/fps within 1e-4 s.

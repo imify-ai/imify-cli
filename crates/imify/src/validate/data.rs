@@ -63,36 +63,7 @@ struct FileChecker<'a> {
 
 impl FileChecker<'_> {
     fn check(&self, root: &Path, findings: &mut Vec<Finding>) {
-        let full_path = root.join(self.path);
-        if !full_path.is_file() {
-            findings.push(self.finding(FindingCode::DataFileMissing, self.missing_message()));
-            return;
-        }
-        let reader = match parquet::open(&full_path) {
-            Ok(reader) => reader,
-            Err(reason) => {
-                findings.push(self.finding(
-                    FindingCode::ParquetUnreadable,
-                    format!("The file {reason}."),
-                ));
-                return;
-            }
-        };
-        let columns = self.columns();
-        if let Some((column, codec)) = parquet::unsupported_codec(&reader, &columns) {
-            findings.push(self.finding(
-                FindingCode::ContentNotChecked,
-                format!(
-                    "Column {column} uses the codec {codec}, which is not decoded; the row counts and timestamps of this file are not checked."
-                ),
-            ));
-            return;
-        }
-        let timestamps = match parquet::read_columns(&reader, &columns) {
-            Ok(values) => self.timestamps_by_episode(values),
-            Err(reason) => Err(reason),
-        };
-        match timestamps {
+        match self.read_timestamps(root) {
             Ok(timestamps) => {
                 for episode in self.episodes {
                     let episode_timestamps = timestamps
@@ -101,13 +72,35 @@ impl FileChecker<'_> {
                     self.check_episode(episode, episode_timestamps, findings);
                 }
             }
-            Err(reason) => {
-                findings.push(self.finding(
-                    FindingCode::ParquetUnreadable,
-                    format!("The file {reason}."),
-                ));
-            }
+            Err(finding) => findings.push(finding),
         }
+    }
+
+    /// The timestamps of each episode in the file, or the finding that stops the check.
+    fn read_timestamps(&self, root: &Path) -> Result<BTreeMap<u64, Vec<f64>>, Finding> {
+        let full_path = root.join(self.path);
+        if !full_path.is_file() {
+            return Err(self.finding(FindingCode::DataFileMissing, self.missing_message()));
+        }
+        let unreadable = |reason| {
+            self.finding(
+                FindingCode::ParquetUnreadable,
+                format!("The file {reason}."),
+            )
+        };
+        let reader = parquet::open(&full_path).map_err(unreadable)?;
+        let columns = self.columns();
+        if let Some((column, codec)) = parquet::unsupported_codec(&reader, &columns) {
+            return Err(self.finding(
+                FindingCode::ContentNotChecked,
+                format!(
+                    "Column {column} uses the codec {codec}, which is not decoded; the row counts and timestamps of this file are not checked."
+                ),
+            ));
+        }
+        parquet::read_columns(&reader, &columns)
+            .and_then(|values| self.timestamps_by_episode(values))
+            .map_err(unreadable)
     }
 
     /// The columns read from the file.

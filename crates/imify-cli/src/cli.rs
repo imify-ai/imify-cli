@@ -1,6 +1,7 @@
 //! The command-line grammar: global flags and the top-level commands.
 
 use std::ffi::OsString;
+use std::path::PathBuf;
 
 use clap::{ArgAction, Args, CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
 
@@ -67,6 +68,12 @@ pub enum DatasetsCommand {
         imify datasets ls --embodiment so100 --sort episodes --reverse\n  \
         imify datasets ls --task cube --json")]
     Ls(LsArgs),
+    #[command(
+        about = "Check a local LeRobot dataset before an upload",
+        long_about = "Check a local LeRobot dataset before an upload.\n\nWrites the report to stdout and exits with 5 when it has an error. Needs no network access and no token.",
+        after_help = "Example:\n  imify datasets validate ./pick-cube"
+    )]
+    Validate(ValidateArgs),
 }
 
 /// Filters and order of `imify datasets ls`.
@@ -98,6 +105,13 @@ pub enum SortField {
     Embodiment,
     Episodes,
     Accepted,
+}
+
+/// The argument of `imify datasets validate`.
+#[derive(Debug, Args)]
+pub struct ValidateArgs {
+    /// The dataset root: the directory that contains meta/info.json
+    pub path: PathBuf,
 }
 
 /// Parses `args`, including the program name. `color` enables color in help and errors.

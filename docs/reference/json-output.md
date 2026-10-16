@@ -69,6 +69,7 @@ Schema: [`schemas/error.json`](schemas/error.json).
 | `auth_rejected` | 3 | The server rejected the access token. |
 | `permission_denied` | 3 | The access token lacks the permission for the request. |
 | `not_found` | 4 | The resource does not exist. |
+| `dataset_invalid` | 5 | `imify datasets validate` found at least one error in the dataset. |
 | `conflict` | 6 | The request conflicts with the current state of the resource. |
 | `network` | 7 | The server could not be reached. |
 | `server` | 7 | The server failed to handle the request. |
@@ -76,7 +77,7 @@ Schema: [`schemas/error.json`](schemas/error.json).
 | `cancelled` | 8 | The user declined a confirmation prompt. |
 | `interrupted` | 130 | The user stopped the command with an interrupt signal. |
 
-Exit code 0 means success. Exit code 5 means validation failed; the codes that produce it belong to the commands that validate.
+Exit code 0 means success.
 
 ## Prompts
 

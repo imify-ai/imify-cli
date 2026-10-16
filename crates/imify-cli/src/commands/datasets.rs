@@ -4,12 +4,13 @@ use std::cmp::Ordering;
 use std::io::{self, Write};
 
 use imify::datasets::Dataset;
+use imify::validate::{Finding, Report};
 
 use super::{client, write_result};
-use crate::cli::{LsArgs, SortField};
+use crate::cli::{LsArgs, SortField, ValidateArgs};
 use crate::output::renderer::{Render, Renderer};
 use crate::output::table::{Column, Table};
-use crate::output::{CliError, Environment};
+use crate::output::{CliError, Environment, ErrorCode};
 
 /// `imify datasets ls`: prints the datasets that match the filters, in the requested order.
 ///
@@ -122,6 +123,124 @@ fn dataset_json(dataset: &Dataset) -> serde_json::Value {
         "episodes": dataset.episodes,
         "accepted": dataset.accepted,
     })
+}
+
+/// Separates the columns of the human report.
+const COLUMN_GAP: &str = "  ";
+
+/// `imify datasets validate <path>`: checks a local dataset and prints the report.
+///
+/// # Errors
+///
+/// Returns `invalid_argument` when `<path>` is not a readable directory, `dataset_invalid`
+/// after printing a report with at least one error, and `internal` when stdout cannot be
+/// written.
+pub fn validate(args: &ValidateArgs, renderer: &mut dyn Renderer) -> Result<(), CliError> {
+    let report = imify::validate::validate_dataset(&args.path).map_err(validate_error)?;
+    write_result(renderer, &ValidationReport(&report))?;
+    let errors = report.errors().count();
+    if errors == 0 {
+        return Ok(());
+    }
+    Err(CliError::new(
+        ErrorCode::DatasetInvalid,
+        format!("The dataset has {}.", count(errors, "error")),
+    )
+    .with_hint(format!(
+        "Fix the errors listed in the report and run `imify datasets validate {}` again.",
+        args.path.display()
+    )))
+}
+
+fn validate_error(error: imify::Error) -> CliError {
+    match error {
+        imify::Error::Io { path, source } => CliError::new(
+            ErrorCode::InvalidArgument,
+            format!("Cannot read the directory {}: {source}.", path.display()),
+        )
+        .with_hint("Pass the dataset root: the directory that contains `meta/info.json`."),
+        other => other.into(),
+    }
+}
+
+/// `n` followed by `noun`, with an `s` unless `n` is 1.
+fn count(n: usize, noun: &str) -> String {
+    if n == 1 {
+        format!("{n} {noun}")
+    } else {
+        format!("{n} {noun}s")
+    }
+}
+
+/// The result of `imify datasets validate`.
+struct ValidationReport<'a>(&'a Report);
+
+impl ValidationReport<'_> {
+    fn path(finding: &Finding) -> String {
+        finding
+            .path
+            .as_deref()
+            .map_or_else(|| "-".to_owned(), |path| path.display().to_string())
+    }
+}
+
+impl Render for ValidationReport<'_> {
+    fn kind(&self) -> &'static str {
+        "validation_report"
+    }
+
+    fn json(&self) -> serde_json::Value {
+        let findings: Vec<serde_json::Value> = self
+            .0
+            .findings
+            .iter()
+            .map(|finding| {
+                serde_json::json!({
+                    "code": finding.code.as_str(),
+                    "severity": finding.severity().as_str(),
+                    "path": finding.path.as_deref().map(|path| path.display().to_string()),
+                    "message": finding.message,
+                })
+            })
+            .collect();
+        serde_json::json!({
+            "codebase_version": self.0.codebase_version,
+            "valid": self.0.is_valid(),
+            "findings": findings,
+        })
+    }
+
+    fn human(&self, w: &mut dyn Write) -> io::Result<()> {
+        let findings = &self.0.findings;
+        let rows: Vec<[String; 3]> = findings
+            .iter()
+            .map(|finding| {
+                [
+                    finding.severity().as_str().to_owned(),
+                    finding.code.as_str().to_owned(),
+                    Self::path(finding),
+                ]
+            })
+            .collect();
+        let widths: [usize; 3] = std::array::from_fn(|column| {
+            rows.iter()
+                .map(|row| row[column].chars().count())
+                .max()
+                .unwrap_or(0)
+        });
+        for (row, finding) in rows.iter().zip(findings) {
+            for (cell, width) in row.iter().zip(widths) {
+                write!(w, "{cell:width$}{COLUMN_GAP}")?;
+            }
+            writeln!(w, "{}", finding.message)?;
+        }
+        writeln!(
+            w,
+            "{}, {}",
+            count(self.0.errors().count(), "error"),
+            count(self.0.warnings().count(), "warning")
+        )
+    }
 }
 
 #[cfg(test)]

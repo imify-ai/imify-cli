@@ -1,0 +1,7 @@
+---
+source: crates/imify-cli/tests/cli.rs
+expression: text(&output.stdout)
+---
+warning  unexpected_entry  notes.txt                                                     Not uploaded: only meta/, data/ and videos/ are uploaded.
+warning  video_missing     videos/chunk-000/observation.images.front/episode_000000.mp4  The observation.images.front video of episode 0 does not exist.
+0 errors, 2 warnings

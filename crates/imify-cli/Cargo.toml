@@ -29,6 +29,7 @@ tracing-subscriber = { version = "0.3", default-features = false, features = ["f
 
 [dev-dependencies]
 assert_cmd = "2"
+imify-test-support = { path = "../imify-test-support" }
 insta = "1.49"
 jsonschema = { version = "0.58", default-features = false }
 tokio = { version = "1.47", features = ["macros", "rt-multi-thread"] }

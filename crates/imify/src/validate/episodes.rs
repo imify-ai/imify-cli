@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use serde_json::Value;
 
@@ -111,7 +111,7 @@ fn read_parquet(
     Ok(episodes)
 }
 
-fn read_parquet_file(root: &Path, file: &PathBuf, info: &Info) -> Result<Vec<Episode>, String> {
+fn read_parquet_file(root: &Path, file: &Path, info: &Info) -> Result<Vec<Episode>, String> {
     let mut names = vec![
         "episode_index".to_owned(),
         "length".to_owned(),

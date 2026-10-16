@@ -1,6 +1,7 @@
 use std::process::Output;
 
 use assert_cmd::Command;
+use imify_test_support::{DatasetBuilder, Defect, Format, SyntheticDataset};
 use serde_json::json;
 use wiremock::matchers::{header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -433,4 +434,117 @@ fn datasets_ls_help_shows_examples() {
 
     assert!(output.status.success());
     assert!(text(&output.stdout).contains("Examples:\n  imify datasets ls\n"));
+}
+
+/// Runs `imify datasets validate <path>` in the root of `dataset`, so output names no
+/// temporary directory.
+fn validate_path(dataset: &SyntheticDataset, path: &str, extra_args: &[&str]) -> Output {
+    let mut args = vec!["datasets", "validate", path];
+    args.extend_from_slice(extra_args);
+    let mut command = Command::new(env!("CARGO_BIN_EXE_imify"));
+    command
+        .current_dir(dataset.root())
+        .env_remove("IMIFY_OUTPUT")
+        .env_remove("NO_COLOR")
+        .env_remove("IMIFY_TOKEN")
+        .env_remove("IMIFY_API_URL")
+        .args(args);
+    command.assert().get_output().clone()
+}
+
+fn validate(dataset: &SyntheticDataset, extra_args: &[&str]) -> Output {
+    validate_path(dataset, ".", extra_args)
+}
+
+fn dataset(format: Format, defects: &[Defect]) -> std::io::Result<SyntheticDataset> {
+    defects
+        .iter()
+        .fold(DatasetBuilder::new(format), |builder, defect| {
+            builder.defect(defect.clone())
+        })
+        .build()
+}
+
+fn invalid_dataset() -> std::io::Result<SyntheticDataset> {
+    dataset(
+        Format::V2_1,
+        &[
+            Defect::EpisodeLength,
+            Defect::StrayFile("notes.txt".to_owned()),
+        ],
+    )
+}
+
+#[test]
+fn datasets_validate_prints_the_report_of_a_valid_dataset() {
+    let output = validate(&dataset(Format::V3_0, &[]).unwrap(), &[]);
+
+    assert_eq!(output.status.code(), Some(0), "{}", text(&output.stderr));
+    assert_eq!(text(&output.stderr), "");
+    insta::assert_snapshot!("datasets_validate_valid_human", text(&output.stdout));
+}
+
+#[test]
+fn datasets_validate_json_prints_the_report_of_a_valid_dataset() {
+    let output = validate(&dataset(Format::V3_0, &[]).unwrap(), &["--json"]);
+
+    assert_eq!(output.status.code(), Some(0), "{}", text(&output.stderr));
+    insta::assert_snapshot!("datasets_validate_valid_json", text(&output.stdout));
+}
+
+#[test]
+fn datasets_validate_with_warnings_only_exits_0() {
+    let defects = [
+        Defect::StrayFile("notes.txt".to_owned()),
+        Defect::MissingVideo,
+    ];
+
+    let output = validate(&dataset(Format::V2_1, &defects).unwrap(), &[]);
+
+    assert_eq!(output.status.code(), Some(0), "{}", text(&output.stderr));
+    insta::assert_snapshot!("datasets_validate_warnings_human", text(&output.stdout));
+}
+
+#[test]
+fn datasets_validate_prints_the_report_and_fails_with_dataset_invalid() {
+    let output = validate(&invalid_dataset().unwrap(), &[]);
+
+    assert_eq!(output.status.code(), Some(5));
+    insta::assert_snapshot!("datasets_validate_invalid_human", text(&output.stdout));
+    insta::assert_snapshot!(
+        "datasets_validate_invalid_human_stderr",
+        text(&output.stderr)
+    );
+}
+
+#[test]
+fn datasets_validate_json_writes_the_report_to_stdout_and_the_envelope_to_stderr() {
+    let output = validate(&invalid_dataset().unwrap(), &["--json"]);
+
+    assert_eq!(output.status.code(), Some(5));
+    insta::assert_snapshot!("datasets_validate_invalid_json", text(&output.stdout));
+    insta::assert_snapshot!(
+        "datasets_validate_invalid_envelope_json",
+        text(&output.stderr)
+    );
+}
+
+#[test]
+fn datasets_validate_of_a_missing_directory_is_a_usage_error_naming_meta_info_json() {
+    let output = validate_path(
+        &dataset(Format::V2_1, &[]).unwrap(),
+        "no-such-dataset",
+        &["--json"],
+    );
+
+    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(text(&output.stdout), "");
+    let envelope: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
+    assert_eq!(envelope["error"]["code"], "invalid_argument");
+    assert!(
+        envelope["error"]["hint"]
+            .as_str()
+            .unwrap()
+            .contains("meta/info.json")
+    );
 }

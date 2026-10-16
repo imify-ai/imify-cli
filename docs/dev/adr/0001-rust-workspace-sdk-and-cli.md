@@ -14,5 +14,5 @@ The workspace also has one unpublished crate, `imify-test-support`. It generates
 ## Consequences
 - Static binaries for macOS and Linux; no interpreter to install.
 - The SDK is usable on its own and is published to crates.io.
-- Local dataset validation is a Rust implementation of the format rules, separate from the server. It is kept shallow so it does not drift from the server, which stays authoritative.
+- Local dataset validation is a Rust implementation of the platform's ingest rules, separate from the server, which stays authoritative. A check is an error only when the platform enforces the same rule; every other check is a warning. The local check therefore never rejects a dataset the server accepts, and a drift between the two shows up as a missed error, not as a false rejection.
 - SDKs in other languages, if needed, are generated from the API or bind to this crate.

@@ -2,7 +2,8 @@
 
 use std::path::PathBuf;
 
-/// A path template with `{name}` and `{name:0Nd}` placeholders.
+/// A path template with placeholders such as `{video_key}` and zero-padded integer
+/// placeholders such as `{episode_index:06d}`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct Template(Vec<Part>);
 
@@ -25,7 +26,7 @@ impl Template {
     /// Parses `text`, accepting only placeholders named in `names`.
     ///
     /// Returns the reason when a placeholder is unknown, has a format spec other than
-    /// `0Nd`, or a brace is unbalanced.
+    /// a zero-padded width such as `06d`, or a brace is unbalanced.
     pub(super) fn parse(text: &str, names: &[&str]) -> Result<Self, String> {
         let mut parts = Vec::new();
         let mut rest = text;
