@@ -296,7 +296,7 @@ fn every_camera_gets_a_video_feature_and_video_files() {
 
 #[test]
 fn video_size_sets_the_length_of_every_video_file() {
-    for format in [Format::V2_1, Format::V3_0] {
+    for (format, video_count) in [(Format::V2_1, 2), (Format::V3_0, 1)] {
         let dataset = DatasetBuilder::new(format).video_size(100).build().unwrap();
 
         let videos: Vec<&PathBuf> = dataset
@@ -304,7 +304,7 @@ fn video_size_sets_the_length_of_every_video_file() {
             .iter()
             .filter(|path| path.starts_with("videos"))
             .collect();
-        assert!(!videos.is_empty());
+        assert_eq!(videos.len(), video_count, "{format:?}");
         for video in videos {
             assert_eq!(fs::metadata(dataset.root().join(video)).unwrap().len(), 100);
         }
