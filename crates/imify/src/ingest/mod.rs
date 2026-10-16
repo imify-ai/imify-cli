@@ -59,7 +59,7 @@ mod session;
 mod transport;
 
 pub use engine::Uploader;
-pub use plan::{PlannedFile, UploadPlan};
+pub use plan::{PlannedFile, SkipReason, SkippedEntry, UploadPlan};
 pub use session::{NewSession, Session, SessionId, SessionStatus};
 
 const DEFAULT_CONCURRENCY: NonZeroUsize = match NonZeroUsize::new(4) {

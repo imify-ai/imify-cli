@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use parquet::basic::{self, LogicalType, Repetition, Type as PhysicalType};
 use parquet::data_type::{ByteArray, ByteArrayType, FloatType, Int64Type};
+use parquet::file::metadata::{ParquetMetaDataReader, ParquetMetaDataWriter};
 use parquet::file::properties::WriterProperties;
 use parquet::file::writer::SerializedFileWriter;
 use parquet::schema::types::Type;
@@ -58,6 +59,39 @@ impl Column {
         builder.with_repetition(Repetition::REQUIRED).build()
     }
 }
+
+/// Rewrites the footer of the parquet file `bytes` so that every row group declares
+/// `rows` rows. The column data is unchanged.
+pub(crate) fn declare_rows(bytes: &[u8], rows: i64) -> io::Result<Vec<u8>> {
+    let invalid = |message: &str| io::Error::new(io::ErrorKind::InvalidData, message.to_owned());
+    let footer_start = bytes
+        .len()
+        .checked_sub(FOOTER_LENGTH)
+        .ok_or_else(|| invalid("shorter than a parquet footer"))?;
+    let mut length = [0; 4];
+    length.copy_from_slice(&bytes[footer_start..footer_start + 4]);
+    let metadata_start = usize::try_from(u32::from_le_bytes(length))
+        .ok()
+        .and_then(|length| footer_start.checked_sub(length))
+        .ok_or_else(|| invalid("metadata length exceeds the file"))?;
+    let metadata = ParquetMetaDataReader::decode_metadata(&bytes[metadata_start..footer_start])
+        .map_err(io::Error::other)?;
+    let row_groups = metadata
+        .row_groups()
+        .iter()
+        .map(|group| group.clone().into_builder().set_num_rows(rows).build())
+        .collect::<parquet::errors::Result<Vec<_>>>()
+        .map_err(io::Error::other)?;
+    let metadata = metadata.into_builder().set_row_groups(row_groups).build();
+    let mut rewritten = bytes[..metadata_start].to_vec();
+    ParquetMetaDataWriter::new(&mut rewritten, &metadata)
+        .finish()
+        .map_err(io::Error::other)?;
+    Ok(rewritten)
+}
+
+/// The metadata length and the magic bytes at the end of a parquet file.
+const FOOTER_LENGTH: usize = 8;
 
 /// Encodes `columns` as an uncompressed parquet file with one row group.
 pub(crate) fn encode(columns: &[Column]) -> io::Result<Vec<u8>> {

@@ -41,7 +41,7 @@ stderr:
 The checks run in this order:
 
 1. Top-level entries. `meta/`, `data/` and `videos/` are uploaded. Hidden entries, whose names start with `.`, are skipped without a finding.
-2. `meta/info.json` exists and is a JSON object. `codebase_version` is `v2.1` or `v3.<n>`. `fps` is greater than 0. `features`, `data_path` and `chunks_size` are present with the expected types. `data_path` and `video_path` use only the placeholders of their format, written as `{name}` or, zero-padded, as `{name:06d}`.
+2. `meta/info.json` exists and is a JSON object. `codebase_version` is `v2.1` or `v3.<n>`. `fps` is greater than 0. `features`, `data_path` and `chunks_size` are present with the expected types. `data_path` and `video_path` use only the placeholders of their format, written as `{name}` or, zero-padded, as `{name:06d}` with a width of at most 20. Each is at most 1024 bytes long and a relative path without a `..` component. The name of a video feature is not empty, has no `/` and does not start with `.`.
 3. The episodes index, `meta/episodes.jsonl` for v2.1 or `meta/episodes/**/*.parquet` for v3.x, lists each episode with its `length`. The number of episodes equals `total_episodes`.
 4. Every `*.parquet` file under `data/` and `meta/` has a readable footer.
 5. The data file of each episode exists. Its rows for the episode equal the episode's `length`. Within the episode, `timestamp` increases strictly, and consecutive timestamps differ by 1/fps within 1e-4 s.
@@ -50,6 +50,16 @@ The checks run in this order:
 Checks 3 to 6 need a readable `meta/info.json` with a supported version. Checks 5 and 6 need a readable episodes index.
 
 Parquet columns are decoded when they are uncompressed or Snappy-compressed. For a data file with another codec, check 5 reports `content_not_checked` and skips the row counts and timestamps of that file.
+
+Files are read only when they are regular files; symbolic links are not followed. A symbolic link, a FIFO or a device in place of `meta/info.json`, the episodes index or a parquet file is reported as unreadable, and in place of a video as `video_missing`, because the upload skips it. Limits:
+
+| Input | Limit | Finding when exceeded |
+|---|---|---|
+| `meta/info.json`, `meta/episodes.jsonl` | 64 MiB | `info_malformed`, `episodes_index_unreadable` |
+| Rows of a data file, from its footer | 10,000,000 | `content_not_checked` |
+| Rows of an episodes index file, from its footer | 10,000,000 | `episodes_index_unreadable` |
+
+A parquet file that makes the parquet reader fail in any other way is reported as `parquet_unreadable`.
 
 ## Finding codes
 
@@ -68,6 +78,6 @@ An error means the platform rejects the dataset for the same reason. A warning m
 | `unexpected_entry` | warning | A top-level entry other than `meta/`, `data/`, `videos/` or a hidden entry. It is not uploaded. |
 | `episode_count_mismatch` | warning | The number of episodes differs from `total_episodes`. |
 | `episodes_index_unreadable` | warning | The episodes index is missing or does not parse. The data and video checks are skipped. |
-| `video_missing` | warning | A video file that `video_path` expands to does not exist. |
+| `video_missing` | warning | A video file that `video_path` expands to does not exist or is not a regular file. |
 | `timestamp_spacing` | warning | Consecutive timestamps differ from 1/fps by more than 1e-4 s. |
-| `content_not_checked` | warning | A parquet column uses a codec other than Snappy, so the row counts and timestamps of that file are not checked. |
+| `content_not_checked` | warning | A parquet column uses a codec other than Snappy, or a data file has more than 10,000,000 rows, so the row counts and timestamps of that file are not checked. |

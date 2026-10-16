@@ -943,7 +943,64 @@ async fn datasets_upload_of_a_dataset_with_warnings_only_uploads_and_lists_the_w
     assert_eq!(events[0]["warnings"], 1);
     assert_eq!(events[0]["findings"][0]["code"], "unexpected_entry");
     assert_eq!(events[1]["skipped"], json!(["notes.txt"]));
+    assert_eq!(
+        events[1]["skipped_entries"],
+        json!([{"path": "notes.txt", "reason": "outside_dataset"}])
+    );
     assert_eq!(events.last().unwrap()["type"], "result");
+}
+
+/// Adds `videos/extra.mp4` as a symbolic link to a file outside the dataset, kept alive by
+/// the returned directory.
+fn link_outside(dataset: &PickCube) -> std::io::Result<tempfile::TempDir> {
+    let outside = tempfile::tempdir()?;
+    std::fs::write(
+        outside.path().join("private.bin"),
+        b"not part of the dataset",
+    )?;
+    std::os::unix::fs::symlink(
+        outside.path().join("private.bin"),
+        dataset.root.join("videos/extra.mp4"),
+    )?;
+    Ok(outside)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn datasets_upload_skips_a_symbolic_link_and_names_it_in_the_planned_event() {
+    let server = ingest_api().await;
+    let dataset = pick_cube(&[]).unwrap();
+    let _outside = link_outside(&dataset).unwrap();
+
+    let output = upload(&dataset, Some(&server), &["--json"]);
+
+    assert_eq!(output.status.code(), Some(0), "{}", text(&output.stderr));
+    let events = json_lines(&output.stdout).unwrap();
+    assert_eq!(
+        events[1]["skipped_entries"],
+        json!([{"path": "videos/extra.mp4", "reason": "symbolic_link"}])
+    );
+    let requests = server.received_requests().await.unwrap();
+    assert!(
+        requests
+            .iter()
+            .all(|request| !request.url.path().contains("extra.mp4"))
+    );
+}
+
+#[test]
+fn datasets_upload_dry_run_names_a_skipped_symbolic_link() {
+    let dataset = pick_cube(&[]).unwrap();
+    let _outside = link_outside(&dataset).unwrap();
+
+    let output = upload(&dataset, None, &["--dry-run"]);
+
+    assert_eq!(output.status.code(), Some(0), "{}", text(&output.stderr));
+    assert!(
+        text(&output.stderr)
+            .contains("Skipped videos/extra.mp4: symbolic links are not uploaded.\n"),
+        "{}",
+        text(&output.stderr)
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

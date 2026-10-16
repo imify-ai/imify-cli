@@ -22,13 +22,19 @@ pub(crate) const MAX_REDIRECTS: usize = 5;
 /// Largest error body read, and largest body of an identity provider response.
 pub(crate) const MAX_SMALL_BODY_BYTES: usize = 1024 * 1024;
 
+/// Largest body of a successful API response.
+const MAX_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
+
 /// A client for the imify platform API.
 ///
 /// Every request carries a `User-Agent` header and, when a token source is configured,
 /// an `Authorization: Bearer` header. Failed requests are retried according to the
 /// client's [`RetryPolicy`]. Redirects with status 307 and 308 are followed, up to 5 in a
 /// row and never from `https` to `http`; the `Authorization` header is not sent to
-/// another host or port. Other redirects fail with [`Error::UnexpectedResponse`]. Requests
+/// another host or port. A file upload also never follows a redirect to `http` on a host
+/// other than `localhost`, `127.0.0.1` or `::1`. Other redirects fail with
+/// [`Error::UnexpectedResponse`]. A successful response body larger than 32 MiB fails with
+/// [`Error::UnexpectedResponse`]; an error body larger than 1 MiB is dropped. Requests
 /// to the identity provider differ: `config.json` and the discovery document follow
 /// redirects only within their origin, and token and revocation requests follow none.
 /// Cloning is cheap; clones share their connection pools.
@@ -220,7 +226,7 @@ impl Client {
             request = request.json(body);
         }
         let response = request.send().await.map_err(network_error)?;
-        decode_with(response, BodySize::Unbounded, decode).await
+        decode_with(response, BodySize::Large, decode).await
     }
 
     /// The `Authorization` header value from the token source, `None` without one.
@@ -264,7 +270,7 @@ enum Authorize {
 
 /// Decodes a successful JSON response as `T` and maps any other response to an [`Error`].
 pub(crate) async fn decode<T: DeserializeOwned>(response: reqwest::Response) -> Result<T, Error> {
-    decode_with(response, BodySize::Unbounded, &decode_json).await
+    decode_with(response, BodySize::Large, &decode_json).await
 }
 
 /// Reads the response and turns it into `T` with `decode`. A success body is read as
@@ -281,9 +287,7 @@ where
     let status = response.status();
     let headers = response.headers().clone();
     let body = match success_body {
-        BodySize::Unbounded if status.is_success() => {
-            response.bytes().await.map_err(network_error)?.to_vec()
-        }
+        BodySize::Large if status.is_success() => read_body(response, MAX_RESPONSE_BYTES).await?,
         _ => read_small_body(response).await?,
     };
     if status.is_redirection() {
@@ -292,24 +296,30 @@ where
     decode(status, &headers, &body)
 }
 
-/// How much of a success body is read. Other bodies are read as [`read_small_body`] does.
+/// How much of a success body is read: at most [`MAX_RESPONSE_BYTES`] or
+/// [`MAX_SMALL_BODY_BYTES`]. Other bodies are read as [`read_small_body`] does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BodySize {
-    Unbounded,
+    Large,
     Small,
 }
 
-/// Reads a body of at most [`MAX_SMALL_BODY_BYTES`], checking `Content-Length` first and
-/// counting the bytes received. A larger success body fails with
-/// [`Error::UnexpectedResponse`]; a larger body of another status reads as empty, so the
-/// error built from it carries the reason phrase.
-pub(crate) async fn read_small_body(mut response: reqwest::Response) -> Result<Vec<u8>, Error> {
+/// Reads a body of at most [`MAX_SMALL_BODY_BYTES`] as [`read_body`] does.
+pub(crate) async fn read_small_body(response: reqwest::Response) -> Result<Vec<u8>, Error> {
+    read_body(response, MAX_SMALL_BODY_BYTES).await
+}
+
+/// Reads a body of at most `limit` bytes, checking `Content-Length` first and counting the
+/// bytes received. A larger success body fails with [`Error::UnexpectedResponse`]; a
+/// larger body of another status reads as empty, so the error built from it carries the
+/// reason phrase.
+async fn read_body(mut response: reqwest::Response, limit: usize) -> Result<Vec<u8>, Error> {
     let status = response.status();
     let too_large = || {
         if status.is_success() {
             Err(Error::UnexpectedResponse {
                 status: status.as_u16(),
-                message: format!("the response body exceeds {MAX_SMALL_BODY_BYTES} bytes"),
+                message: format!("the response body exceeds {limit} bytes"),
             })
         } else {
             Ok(Vec::new())
@@ -318,12 +328,12 @@ pub(crate) async fn read_small_body(mut response: reqwest::Response) -> Result<V
     let announced = response
         .content_length()
         .map(|length| usize::try_from(length).unwrap_or(usize::MAX));
-    if announced.is_some_and(|length| length > MAX_SMALL_BODY_BYTES) {
+    if announced.is_some_and(|length| length > limit) {
         return too_large();
     }
     let mut body = Vec::with_capacity(announced.unwrap_or_default());
     while let Some(chunk) = response.chunk().await.map_err(network_error)? {
-        if body.len() + chunk.len() > MAX_SMALL_BODY_BYTES {
+        if body.len() + chunk.len() > limit {
             return too_large();
         }
         body.extend_from_slice(&chunk);
@@ -367,13 +377,24 @@ pub(crate) fn may_follow_redirect(status: StatusCode, previous: &Url, next: &Url
     ) && !downgrade
 }
 
+/// Like [`may_follow_redirect`], and never to plain `http` on a host other than
+/// `localhost`, `127.0.0.1` or `::1`, whatever the scheme of `previous`.
+pub(crate) fn may_follow_upload_redirect(status: StatusCode, previous: &Url, next: &Url) -> bool {
+    may_follow_redirect(status, previous, next) && (next.scheme() != "http" || is_loopback(next))
+}
+
 fn redirect_policy() -> redirect::Policy {
-    redirect::Policy::custom(|attempt| {
+    policy_following(may_follow_redirect)
+}
+
+/// Follows up to [`MAX_REDIRECTS`] redirects that `may_follow` allows.
+fn policy_following(may_follow: fn(StatusCode, &Url, &Url) -> bool) -> redirect::Policy {
+    redirect::Policy::custom(move |attempt| {
         let previous = attempt.previous();
         let allowed = previous.len() <= MAX_REDIRECTS
             && previous
                 .last()
-                .is_some_and(|last| may_follow_redirect(attempt.status(), last, attempt.url()));
+                .is_some_and(|last| may_follow(attempt.status(), last, attempt.url()));
         if allowed {
             attempt.follow()
         } else {
@@ -606,7 +627,8 @@ impl ClientBuilder {
                 .builder(redirect_policy())
                 .read_timeout(self.read_timeout),
         )?;
-        let upload_http = build_http(settings.builder(redirect_policy()))?;
+        let upload_http =
+            build_http(settings.builder(policy_following(may_follow_upload_redirect)))?;
         Ok(Client {
             http,
             upload_http,

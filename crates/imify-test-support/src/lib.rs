@@ -85,6 +85,14 @@ pub enum Defect {
     StrayFile(String),
     /// The first data parquet file is truncated to its first 16 bytes.
     CorruptDataFile,
+    /// The footer of the first parquet file below the directory `dir`, such as `data` or
+    /// `meta/episodes`, declares `rows` rows per row group. The column data is unchanged.
+    DeclaredRowCount {
+        /// Directory relative to the dataset root.
+        dir: String,
+        /// Row count the footer declares.
+        rows: i64,
+    },
     /// The first video file is not written.
     MissingVideo,
     /// The first data parquet file is not written.
@@ -398,6 +406,11 @@ fn apply_to_files(files: &mut BTreeMap<PathBuf, Vec<u8>>, defect: &Defect) -> io
                 bytes.truncate(CORRUPT_LENGTH);
             }
         }
+        Defect::DeclaredRowCount { dir, rows } => {
+            if let Some(bytes) = first_parquet_under(files, dir) {
+                *bytes = parquet::declare_rows(bytes, *rows)?;
+            }
+        }
         Defect::MissingVideo => remove_first_under(files, "videos"),
         Defect::MissingDataFile => remove_first_under(files, "data"),
         Defect::MissingEpisodesIndex => files.retain(|path, _| {
@@ -422,6 +435,18 @@ fn first_under<'a>(
     files
         .iter_mut()
         .find(|(path, _)| path.starts_with(dir))
+        .map(|(_, bytes)| bytes)
+}
+
+fn first_parquet_under<'a>(
+    files: &'a mut BTreeMap<PathBuf, Vec<u8>>,
+    dir: &str,
+) -> Option<&'a mut Vec<u8>> {
+    files
+        .iter_mut()
+        .find(|(path, _)| {
+            path.starts_with(dir) && path.extension().is_some_and(|ext| ext == "parquet")
+        })
         .map(|(_, bytes)| bytes)
 }
 

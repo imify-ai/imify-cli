@@ -99,7 +99,8 @@
         "type",
         "files",
         "bytes",
-        "skipped"
+        "skipped",
+        "skipped_entries"
       ],
       "properties": {
         "type": {
@@ -117,6 +118,31 @@
           "type": "array",
           "items": {
             "type": "string"
+          }
+        },
+        "skipped_entries": {
+          "description": "The entries of `skipped`, in the same order, with the reason each is not uploaded.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "path",
+              "reason"
+            ],
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "reason": {
+                "enum": [
+                  "outside_dataset",
+                  "hidden",
+                  "symbolic_link",
+                  "not_regular_file",
+                  "invalid_name"
+                ]
+              }
+            }
           }
         }
       }

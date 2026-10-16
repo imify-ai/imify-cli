@@ -1,13 +1,13 @@
 //! `meta/info.json`: parsing and the version, fps and field checks.
 
-use std::fs;
 use std::io;
 use std::path::Path;
 
 use serde_json::{Map, Value};
 
-use super::template::Template;
-use super::{Finding, FindingCode};
+use super::template::{self, Template};
+use super::{Finding, FindingCode, MAX_JSON_BYTES};
+use crate::local_file;
 
 /// Path of the info file relative to the dataset root.
 pub(super) const INFO_PATH: &str = "meta/info.json";
@@ -91,17 +91,18 @@ pub(super) fn read(root: &Path, findings: &mut Vec<Finding>) -> Declared {
 
 fn load(root: &Path) -> Result<Map<String, Value>, Finding> {
     let malformed = |message: String| Finding::new(FindingCode::InfoMalformed, INFO_PATH, message);
-    let bytes = fs::read(root.join(INFO_PATH)).map_err(|error| {
-        if error.kind() == io::ErrorKind::NotFound {
-            Finding::new(
-                FindingCode::InfoMissing,
-                INFO_PATH,
-                "meta/info.json does not exist.".to_owned(),
-            )
-        } else {
-            malformed(format!("meta/info.json cannot be read: {error}."))
-        }
-    })?;
+    let bytes =
+        local_file::read_capped(&root.join(INFO_PATH), MAX_JSON_BYTES).map_err(|error| {
+            if error.kind() == io::ErrorKind::NotFound {
+                Finding::new(
+                    FindingCode::InfoMissing,
+                    INFO_PATH,
+                    "meta/info.json does not exist.".to_owned(),
+                )
+            } else {
+                malformed(format!("meta/info.json cannot be read: {error}."))
+            }
+        })?;
     match serde_json::from_slice(&bytes) {
         Ok(Value::Object(fields)) => Ok(fields),
         Ok(_) => Err(malformed("meta/info.json is not a JSON object.".to_owned())),
@@ -214,11 +215,20 @@ impl Parser<'_> {
             );
             return Vec::new();
         };
-        features
+        let keys: Vec<String> = features
             .iter()
             .filter(|(_, feature)| feature.get("dtype").and_then(Value::as_str) == Some("video"))
             .map(|(name, _)| name.clone())
-            .collect()
+            .collect();
+        for key in keys.iter().filter(|key| !template::is_path_segment(key)) {
+            self.report(
+                FindingCode::InfoMalformed,
+                format!(
+                    "the video feature {key:?} cannot be a directory name: it is empty, contains / or starts with a dot."
+                ),
+            );
+        }
+        keys
     }
 
     fn template(&mut self, field: &str, names: &[&str]) -> Option<Template> {

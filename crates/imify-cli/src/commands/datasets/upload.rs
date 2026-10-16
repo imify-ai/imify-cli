@@ -8,7 +8,8 @@ use std::time::{Duration, Instant};
 
 use imify::JournalError;
 use imify::ingest::{
-    NewSession, ResumePolicy, Session, SessionStatus, UploadEvent, UploadPlan, Uploader,
+    NewSession, ResumePolicy, Session, SessionStatus, SkipReason, SkippedEntry, UploadEvent,
+    UploadPlan, Uploader,
 };
 use imify::validate::Report;
 use tokio::sync::mpsc::{self, UnboundedSender};
@@ -72,8 +73,9 @@ pub async fn upload(
         return Err(error);
     }
     let plan = UploadPlan::from_dir(&args.path).map_err(dataset_root_error)?;
-    // The live view shows the totals; its scrollback keeps the findings and the summary only.
-    if !settings.live_view {
+    // The live view shows the totals; its scrollback keeps the findings, the skipped symbolic
+    // links and the summary only.
+    if !settings.live_view || skipped_links(&plan).next().is_some() {
         write_event(renderer, &Planned(&plan))?;
     }
     let mut result = UploadResult {
@@ -334,10 +336,21 @@ impl Render for Planned<'_> {
     }
 
     fn json(&self) -> serde_json::Value {
+        let skipped = self.0.skipped();
+        let entries: Vec<serde_json::Value> = skipped
+            .iter()
+            .map(|entry| {
+                serde_json::json!({
+                    "path": entry.path(),
+                    "reason": entry.reason().as_str(),
+                })
+            })
+            .collect();
         serde_json::json!({
             "files": self.0.files().len(),
             "bytes": self.0.total_bytes(),
-            "skipped": self.0.skipped(),
+            "skipped": skipped.iter().map(SkippedEntry::path).collect::<Vec<_>>(),
+            "skipped_entries": entries,
         })
     }
 
@@ -347,8 +360,23 @@ impl Render for Planned<'_> {
             "Planned {} files ({}).",
             self.0.files().len(),
             format::bytes(self.0.total_bytes())
-        )
+        )?;
+        for link in skipped_links(self.0) {
+            writeln!(
+                w,
+                "Skipped {}: symbolic links are not uploaded.",
+                printable(link.path())
+            )?;
+        }
+        Ok(())
     }
+}
+
+/// The symbolic links the plan leaves out.
+fn skipped_links(plan: &UploadPlan) -> impl Iterator<Item = &SkippedEntry> {
+    plan.skipped()
+        .iter()
+        .filter(|entry| entry.reason() == SkipReason::SymbolicLink)
 }
 
 /// The `result` event: the ingest session, or with `--dry-run` only what would be uploaded.
