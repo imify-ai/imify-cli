@@ -20,6 +20,7 @@ getrandom = "0.4.3"
 httpdate = "1.0.3"
 parquet = { version = "60", default-features = false, features = ["snap"] }
 reqwest = { version = "0.12.28", default-features = false, features = ["json", "rustls-tls-native-roots", "stream"] }
+rustix = { version = "1.1.2", features = ["fs", "process"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sha2 = "0.11.1"

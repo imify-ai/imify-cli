@@ -26,6 +26,7 @@ mod discovery;
 mod error;
 mod health;
 pub mod ingest;
+mod local_file;
 mod retry;
 pub mod validate;
 

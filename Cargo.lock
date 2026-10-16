@@ -1477,6 +1477,7 @@ dependencies = [
  "imify-test-support",
  "parquet",
  "reqwest",
+ "rustix",
  "serde",
  "serde_json",
  "sha2",

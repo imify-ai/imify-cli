@@ -30,7 +30,7 @@ The command requires a login or `IMIFY_TOKEN` for the API host, as described in 
 ## Steps
 
 1. Validate the dataset with the checks of [`imify datasets validate`](datasets-validate.md). Findings are written as they are in that command's report. With an error finding, the command stops with `dataset_invalid` and sends no request.
-2. Plan the files: every regular file below `meta/`, `data/` and `videos/`. Other entries and hidden files are skipped.
+2. Plan the files: every regular file below `meta/`, `data/` and `videos/`. Other entries, hidden files and symbolic links are skipped; symbolic links are not followed, and each skipped link is named in the output. A file is opened without following a symbolic link, and the upload stops with `invalid_argument` when the file was replaced or its size changed since planning.
 3. Create an ingest session, or continue the session of an interrupted upload of the same directory, as described in [Resume](#resume). The session's name is the name of the dataset directory, `pick-cube` for `./pick-cube` and for `.` inside it.
 4. Send `meta/info.json`, then the other files, 4 at a time. A file that fails with a network error, a server error or a rate limit is sent again from its first byte. Each stored file is recorded in the upload journal.
 5. Complete the session.
@@ -63,7 +63,7 @@ With `--json`, `--quiet`, `-v`, `TERM=dumb` or stderr not on a terminal, the liv
 ```console
 $ imify datasets upload ./pick-cube --task "Pick up the red cube" --json
 {"errors":0,"findings":[],"type":"validated","warnings":0}
-{"bytes":8338,"files":6,"skipped":[],"type":"planned"}
+{"bytes":8338,"files":6,"skipped":[],"skipped_entries":[],"type":"planned"}
 {"session_id":"3f2c9a","type":"session_created"}
 {"path":"meta/info.json","size":1451,"type":"file_started"}
 {"path":"meta/info.json","size":1451,"type":"file_finished"}
@@ -78,7 +78,7 @@ $ imify datasets upload ./pick-cube --task "Pick up the red cube" --json
 | Type | Fields | Written |
 |---|---|---|
 | `validated` | `errors`, `warnings`, `findings` | Once. `findings` has the objects of `datasets validate --json`. |
-| `planned` | `files`, `bytes`, `skipped` | Once. `skipped` lists the entries that are not uploaded. |
+| `planned` | `files`, `bytes`, `skipped`, `skipped_entries` | Once. `skipped` lists the paths of the entries that are not uploaded. `skipped_entries` lists the same entries as objects with `path` and `reason`: `outside_dataset`, `hidden`, `symbolic_link`, `not_regular_file` or `invalid_name`. |
 | `session_created` | `session_id` | Once the session exists. |
 | `session_resumed` | `session_id`, `files_done`, `bytes_done` | Instead of `session_created`, when the upload continues an interrupted upload. `files_done` files of `bytes_done` bytes are not sent again. |
 | `file_started` | `path`, `size` | When a file transfer starts. |
@@ -112,7 +112,7 @@ Paths use `/` separators and are relative to the dataset root. Schema: [`dataset
 ```console
 $ imify datasets upload ./pick-cube --task "Pick up the red cube" --dry-run --json
 {"errors":0,"findings":[],"type":"validated","warnings":0}
-{"bytes":8338,"files":6,"skipped":[],"type":"planned"}
+{"bytes":8338,"files":6,"skipped":[],"skipped_entries":[],"type":"planned"}
 {"bytes":8338,"dry_run":true,"files":6,"name":"pick-cube","task":"Pick up the red cube","type":"result"}
 ```
 
@@ -127,7 +127,7 @@ Ctrl-C stops the upload: the transfers in flight are dropped and the command exi
 ```console
 $ imify datasets upload ./pick-cube --task "Pick up the red cube" --json
 {"errors":0,"findings":[],"type":"validated","warnings":0}
-{"bytes":8338,"files":6,"skipped":[],"type":"planned"}
+{"bytes":8338,"files":6,"skipped":[],"skipped_entries":[],"type":"planned"}
 {"bytes_done":7314,"files_done":5,"session_id":"3f2c9a","type":"session_resumed"}
 {"path":"videos/observation.images.front/chunk-000/file-000.mp4","size":1024,"type":"file_started"}
 {"path":"videos/observation.images.front/chunk-000/file-000.mp4","size":1024,"type":"file_finished"}

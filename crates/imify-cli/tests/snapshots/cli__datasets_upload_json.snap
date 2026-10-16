@@ -3,7 +3,7 @@ source: crates/imify-cli/tests/cli.rs
 expression: "with_sorted_transfers(&text(&output.stdout), \"\\\"file_\", \"\\\"completing\\\"\")"
 ---
 {"errors":0,"findings":[],"type":"validated","warnings":0}
-{"bytes":8338,"files":6,"skipped":[],"type":"planned"}
+{"bytes":8338,"files":6,"skipped":[],"skipped_entries":[],"type":"planned"}
 {"session_id":"3f2c9a","type":"session_created"}
 {"path":"data/chunk-000/file-000.parquet","size":1417,"type":"file_started"}
 {"path":"data/chunk-000/file-000.parquet","size":1417,"type":"file_finished"}

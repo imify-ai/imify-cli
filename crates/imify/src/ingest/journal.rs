@@ -24,7 +24,7 @@ use tokio::io::AsyncReadExt;
 
 use super::plan::{PlannedFile, UploadPlan};
 use super::session::{NewSession, SessionId};
-use super::transport::Digest;
+use super::transport::{Digest, open_planned};
 use crate::{Error, JournalError};
 
 const VERSION: u32 = 1;
@@ -308,15 +308,15 @@ async fn is_unchanged(root: &Path, file: &PlannedFile, entry: &Entry) -> Result<
     if modified.is_some() && modified == entry.modified_ns {
         return Ok(true);
     }
-    Ok(hex(&file_sha256(&root.join(file.path())).await?) == entry.sha256)
+    Ok(hex(&file_sha256(file, &root.join(file.path())).await?) == entry.sha256)
 }
 
-async fn file_sha256(path: &Path) -> Result<Digest, Error> {
+async fn file_sha256(planned: &PlannedFile, path: &Path) -> Result<Digest, Error> {
     let io_error = |source| Error::Io {
         path: path.to_owned(),
         source,
     };
-    let mut file = tokio::fs::File::open(path).await.map_err(io_error)?;
+    let mut file = open_planned(planned, path).await?;
     let mut hasher = Sha256::new();
     let mut buffer = vec![0; HASH_CHUNK_SIZE];
     loop {

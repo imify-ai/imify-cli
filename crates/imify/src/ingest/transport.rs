@@ -3,7 +3,7 @@
 use std::fmt;
 use std::future::Future;
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::pin::{Pin, pin};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -128,18 +128,8 @@ impl Transport for StreamingPut {
 }
 
 async fn file_body(upload: &FileUpload<'_>, tracker: Arc<Tracker>) -> Result<Body, Error> {
-    let io_error = |source| Error::Io {
-        path: upload.local_path.clone(),
-        source,
-    };
-    let file = tokio::fs::File::open(&upload.local_path)
-        .await
-        .map_err(io_error)?;
-    let actual = file.metadata().await.map_err(io_error)?.len();
+    let file = open_planned(upload.file, &upload.local_path).await?;
     let size = upload.file.size();
-    if actual != size {
-        return Err(changed_size(upload));
-    }
     let progress = Arc::clone(&upload.progress);
     let chunks = ReaderStream::with_capacity(file.take(size), CHUNK_SIZE);
     Ok(Body::wrap_stream(tracked(chunks, size, tracker, progress)))
@@ -170,13 +160,27 @@ fn tracked(
     chunks.chain(end)
 }
 
+/// Opens `file` at `local_path` on the blocking thread pool, as [`PlannedFile::open`]
+/// does.
+pub(crate) async fn open_planned(
+    file: &PlannedFile,
+    local_path: &Path,
+) -> Result<tokio::fs::File, Error> {
+    let (file, local_path) = (file.clone(), local_path.to_owned());
+    let path = local_path.clone();
+    match tokio::task::spawn_blocking(move || file.open(&local_path)).await {
+        Ok(opened) => opened.map(tokio::fs::File::from_std),
+        Err(join_error) => Err(Error::Io {
+            path,
+            source: io::Error::from(join_error),
+        }),
+    }
+}
+
 fn changed_size(upload: &FileUpload<'_>) -> Error {
     Error::Io {
         path: upload.local_path.clone(),
-        source: io::Error::other(format!(
-            "file size changed since planning, expected {} bytes",
-            upload.file.size()
-        )),
+        source: upload.file.changed_size(),
     }
 }
 

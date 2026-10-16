@@ -96,6 +96,11 @@ fn dataset(content: &[u8]) -> tempfile::TempDir {
 
 async fn put_data_file(server: &MockServer, root: &std::path::Path) -> Result<Digest, Error> {
     let plan = UploadPlan::from_dir(root).unwrap();
+    put_planned(server, &plan).await
+}
+
+async fn put_planned(server: &MockServer, plan: &UploadPlan) -> Result<Digest, Error> {
+    let root = plan.root();
     let file = plan
         .files()
         .iter()
@@ -174,4 +179,38 @@ async fn put_after_a_failed_attempt_returns_the_hash_of_the_stored_attempt() {
             "72399361da6a7754fec986dca5b7cbaf1c810a28ded4abaf56b2106d06cb78b0".to_owned()
         )
     );
+}
+
+#[tokio::test]
+async fn put_of_a_file_replaced_by_a_symbolic_link_after_planning_sends_nothing() {
+    let server = MockServer::start().await;
+    Mock::given(method("PUT"))
+        .respond_with(stored(10))
+        .expect(0)
+        .mount(&server)
+        .await;
+    let root = dataset(b"0123456789");
+    let plan = UploadPlan::from_dir(root.path()).unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    std::fs::write(outside.path().join("secret"), b"abcdefghij").unwrap();
+    std::fs::remove_file(root.path().join(STORED_PATH)).unwrap();
+    std::os::unix::fs::symlink(outside.path().join("secret"), root.path().join(STORED_PATH))
+        .unwrap();
+
+    let error = put_planned(&server, &plan).await.unwrap_err();
+
+    assert!(matches!(error, Error::Io { .. }), "{error:?}");
+}
+
+#[tokio::test]
+async fn put_of_a_file_replaced_by_a_fifo_after_planning_fails_without_blocking() {
+    let server = MockServer::start().await;
+    let root = dataset(b"0123456789");
+    let plan = UploadPlan::from_dir(root.path()).unwrap();
+    std::fs::remove_file(root.path().join(STORED_PATH)).unwrap();
+    crate::local_file::make_fifo(&root.path().join(STORED_PATH));
+
+    let error = put_planned(&server, &plan).await.unwrap_err();
+
+    assert!(matches!(error, Error::Io { .. }), "{error:?}");
 }
