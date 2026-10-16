@@ -150,7 +150,9 @@ There is one journal per API host and dataset directory, in the state directory 
 | Linux | `$XDG_STATE_HOME/imify/uploads/`, or `~/.local/state/imify/uploads/` when `XDG_STATE_HOME` is unset |
 | macOS | `~/Library/Application Support/imify/uploads/` |
 
-A journal cannot be continued when the `--task` value differs from the interrupted upload, a journaled file is no longer in the dataset directory, or the journal is corrupt. The command then fails with `conflict` and the hint to run again with `--restart`.
+A journal cannot be continued when the `--task` value differs from the interrupted upload, a journaled file is no longer in the dataset directory, or the journal is corrupt. A journal is corrupt when it is a symbolic link, is larger than 64 MiB, does not parse, or names another API URL or dataset directory than its file name stands for. The command then fails with `conflict` and the hint to run again with `--restart`.
+
+The journal directory is created with mode `0700`. An existing journal directory that belongs to another user, or that the group or others can write, fails the upload with `internal` before any request.
 
 ## Errors
 

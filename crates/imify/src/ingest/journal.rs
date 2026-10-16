@@ -12,12 +12,14 @@ use std::fmt::Write as _;
 use std::fs::{self, DirBuilder, File, OpenOptions};
 use std::io::{self, Write as _};
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use reqwest::Url;
+use rustix::fs::OFlags;
+use rustix::process::geteuid;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 use tokio::io::AsyncReadExt;
@@ -25,9 +27,11 @@ use tokio::io::AsyncReadExt;
 use super::plan::{PlannedFile, UploadPlan};
 use super::session::{NewSession, SessionId};
 use super::transport::{Digest, open_planned};
-use crate::{Error, JournalError};
+use crate::{Error, JournalError, local_file};
 
 const VERSION: u32 = 1;
+/// Largest journal read.
+const MAX_JOURNAL_BYTES: u64 = 64 * 1024 * 1024;
 const DIR_MODE: u32 = 0o700;
 const FILE_MODE: u32 = 0o600;
 const HASH_CHUNK_SIZE: usize = 256 * 1024;
@@ -83,6 +87,7 @@ impl JournalFile {
             .recursive(true)
             .mode(DIR_MODE)
             .create(dir)
+            .and_then(|()| check_private(dir))
             .map_err(|source| journal_error(dir, JournalError::Io(source)))?;
         let root = fs::canonicalize(root).map_err(|source| Error::Io {
             path: root.to_owned(),
@@ -112,11 +117,28 @@ impl JournalFile {
     }
 
     fn load_blocking(&self) -> Result<Option<Recorded>, Error> {
-        match fs::read_to_string(&self.path) {
-            Ok(text) => self.parse(&text).map(Some),
-            Err(source) if source.kind() == io::ErrorKind::NotFound => Ok(None),
-            Err(source) => Err(self.error(JournalError::Io(source))),
+        let bytes = match local_file::read_capped(&self.path, MAX_JOURNAL_BYTES) {
+            Ok(bytes) => bytes,
+            Err(source) if source.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(source)
+                if matches!(
+                    source.kind(),
+                    io::ErrorKind::InvalidInput | io::ErrorKind::FileTooLarge
+                ) =>
+            {
+                return Err(self.error(JournalError::Corrupt(source.to_string())));
+            }
+            Err(source) => return Err(self.error(JournalError::Io(source))),
+        };
+        let text = String::from_utf8(bytes)
+            .map_err(|error| self.error(JournalError::Corrupt(error.to_string())))?;
+        let recorded = self.parse(&text)?;
+        if recorded.header.api_url != self.api_url || recorded.header.root != self.root {
+            return Err(self.error(JournalError::Corrupt(
+                "the header names another API URL or dataset directory".to_owned(),
+            )));
         }
+        Ok(Some(recorded))
     }
 
     /// Writes a journal with only the header for `session` and opens it for appending.
@@ -146,10 +168,15 @@ impl JournalFile {
     fn write_header(&self, header: &Header) -> Result<(), Error> {
         let temporary = self.path.with_extension("jsonl.tmp");
         let write = || -> io::Result<()> {
+            // Removes a file or link left by a crash; the link itself, not its target.
+            match fs::remove_file(&temporary) {
+                Err(error) if error.kind() != io::ErrorKind::NotFound => return Err(error),
+                _ => {}
+            }
             let mut file = OpenOptions::new()
                 .write(true)
-                .create(true)
-                .truncate(true)
+                .create_new(true)
+                .custom_flags(no_follow())
                 .mode(FILE_MODE)
                 .open(&temporary)?;
             file.write_all(&json_line(header)?)?;
@@ -168,6 +195,7 @@ impl JournalFile {
     fn writer_blocking(&self) -> Result<JournalWriter, Error> {
         let file = OpenOptions::new()
             .append(true)
+            .custom_flags(no_follow())
             .open(&self.path)
             .map_err(|source| self.error(JournalError::Io(source)))?;
         Ok(JournalWriter {
@@ -378,6 +406,33 @@ where
             JournalError::Io(io::Error::from(join_error)),
         )),
     }
+}
+
+/// The `open` flag that fails on a symbolic link as the last path component.
+fn no_follow() -> i32 {
+    OFlags::NOFOLLOW.bits().cast_signed()
+}
+
+/// Fails with [`io::ErrorKind::PermissionDenied`] unless `dir` is a directory owned by the
+/// current user and not writable by group or others.
+fn check_private(dir: &Path) -> io::Result<()> {
+    let metadata = fs::metadata(dir)?;
+    let refused = |reason: &str| {
+        Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!("the journal directory {reason}"),
+        ))
+    };
+    if !metadata.is_dir() {
+        return refused("is not a directory");
+    }
+    if metadata.uid() != geteuid().as_raw() {
+        return refused("is owned by another user");
+    }
+    if metadata.mode() & 0o022 != 0 {
+        return refused("is writable by group or others; run `chmod 700` on it");
+    }
+    Ok(())
 }
 
 fn json_line(value: &impl Serialize) -> io::Result<Vec<u8>> {

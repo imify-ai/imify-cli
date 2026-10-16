@@ -29,13 +29,155 @@ fn directories() -> (TempDir, PathBuf, PathBuf) {
     (temp, journals, root)
 }
 
+/// The dataset root that [`HEADER`] names; [`load`] writes the located root in its place.
+const HEADER_ROOT: &str = "/data/pick-place";
+
+/// Writes `content` as the journal of a new dataset root and loads it.
 async fn load(content: &str) -> Result<Option<Recorded>, Error> {
     let (_temp, journals, root) = directories();
     let journal = JournalFile::locate(&journals, &api_url("https://api.example.com"), &root)
         .await
         .unwrap();
+    let content = content.replace(HEADER_ROOT, &journal.root.display().to_string());
     fs::write(journal.path(), content).unwrap();
     journal.load().await
+}
+
+fn is_corrupt(result: &Result<Option<Recorded>, Error>) -> bool {
+    matches!(
+        result,
+        Err(Error::Journal {
+            reason: JournalError::Corrupt(_),
+            ..
+        })
+    )
+}
+
+#[tokio::test]
+async fn journal_whose_header_names_another_api_fails_with_corrupt() {
+    let content = format!(
+        "{}\n",
+        HEADER.replace("https://api.example.com/", "https://other.example.com/")
+    );
+
+    assert!(is_corrupt(&load(&content).await));
+}
+
+#[tokio::test]
+async fn journal_whose_header_names_another_root_fails_with_corrupt() {
+    let content = format!("{}\n", HEADER.replace(HEADER_ROOT, "/data/other"));
+    let (_temp, journals, root) = directories();
+    let journal = JournalFile::locate(&journals, &api_url("https://api.example.com"), &root)
+        .await
+        .unwrap();
+    fs::write(journal.path(), content).unwrap();
+
+    assert!(is_corrupt(&journal.load().await));
+}
+
+#[tokio::test]
+async fn journal_larger_than_64_mib_fails_with_corrupt() {
+    let (_temp, journals, root) = directories();
+    let journal = JournalFile::locate(&journals, &api_url("https://api.example.com"), &root)
+        .await
+        .unwrap();
+    fs::File::create(journal.path())
+        .unwrap()
+        .set_len(64 * 1024 * 1024 + 1)
+        .unwrap();
+
+    assert!(is_corrupt(&journal.load().await));
+}
+
+#[tokio::test]
+async fn journal_that_is_a_symbolic_link_fails_with_corrupt() {
+    let (temp, journals, root) = directories();
+    let journal = JournalFile::locate(&journals, &api_url("https://api.example.com"), &root)
+        .await
+        .unwrap();
+    let elsewhere = temp.path().join("elsewhere.jsonl");
+    fs::write(&elsewhere, format!("{HEADER}\n")).unwrap();
+    std::os::unix::fs::symlink(&elsewhere, journal.path()).unwrap();
+
+    assert!(is_corrupt(&journal.load().await));
+}
+
+#[tokio::test]
+async fn creating_a_journal_does_not_write_through_a_link_at_the_temporary_path() {
+    let (temp, journals, root) = directories();
+    let journal = JournalFile::locate(&journals, &api_url("https://api.example.com"), &root)
+        .await
+        .unwrap();
+    let victim = temp.path().join("victim");
+    fs::write(&victim, b"unchanged").unwrap();
+    std::os::unix::fs::symlink(&victim, journal.path().with_extension("jsonl.tmp")).unwrap();
+
+    journal
+        .create(&SessionId::new("3f2c9a"), &NewSession::new("pick-place"))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        (
+            fs::read(&victim).unwrap(),
+            journal.load().await.unwrap().is_some()
+        ),
+        (b"unchanged".to_vec(), true)
+    );
+}
+
+#[tokio::test]
+async fn creating_a_journal_replaces_a_temporary_file_left_by_a_crash() {
+    let (_temp, journals, root) = directories();
+    let journal = JournalFile::locate(&journals, &api_url("https://api.example.com"), &root)
+        .await
+        .unwrap();
+    fs::write(journal.path().with_extension("jsonl.tmp"), b"partial").unwrap();
+
+    journal
+        .create(&SessionId::new("3f2c9a"), &NewSession::new("pick-place"))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        journal.load().await.unwrap().unwrap().session().as_str(),
+        "3f2c9a"
+    );
+}
+
+#[tokio::test]
+async fn an_existing_journal_directory_writable_by_others_is_refused() {
+    use std::os::unix::fs::PermissionsExt;
+    for mode in [0o777, 0o770, 0o707] {
+        let (_temp, journals, root) = directories();
+        fs::create_dir(&journals).unwrap();
+        fs::set_permissions(&journals, fs::Permissions::from_mode(mode)).unwrap();
+
+        let error = JournalFile::locate(&journals, &api_url("https://api.example.com"), &root)
+            .await
+            .unwrap_err();
+
+        assert!(
+            matches!(
+                error,
+                Error::Journal { reason: JournalError::Io(ref source), .. }
+                    if source.kind() == io::ErrorKind::PermissionDenied
+            ),
+            "{mode:o}: {error:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn an_existing_journal_directory_readable_by_others_is_used() {
+    use std::os::unix::fs::PermissionsExt;
+    let (_temp, journals, root) = directories();
+    fs::create_dir(&journals).unwrap();
+    fs::set_permissions(&journals, fs::Permissions::from_mode(0o755)).unwrap();
+
+    let located = JournalFile::locate(&journals, &api_url("https://api.example.com"), &root).await;
+
+    assert!(located.is_ok());
 }
 
 #[tokio::test]
