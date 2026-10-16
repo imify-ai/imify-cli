@@ -47,7 +47,7 @@ Each command's output has a schema in [`schemas/`](schemas/).
 {"type":"result","dataset_id":42}
 ```
 
-A long-running command with `--json` writes newline-delimited JSON events to stdout. Every line has a `type`. The last line has type `result` and carries the result. With `--quiet`, only the `result` line is written. In human mode, events go to stderr and the result goes to stdout.
+A long-running command with `--json` writes newline-delimited JSON events to stdout. Every line has a `type`. The last line has type `result` and carries the result. With `--quiet`, only the `result` line is written. In human mode, events go to stderr and the result goes to stdout. When stderr is a terminal, a live progress view replaces the event lines, except with `--quiet`, `-v`, `-vv` or `TERM=dumb`. Ctrl-C stops the command with `interrupted` and exit code 130.
 
 Schema: [`schemas/event.json`](schemas/event.json).
 
