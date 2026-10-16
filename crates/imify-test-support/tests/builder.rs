@@ -448,6 +448,47 @@ fn corrupt_data_file_truncates_the_first_data_file_to_16_bytes() {
     assert!(SerializedFileReader::new(File::open(&corrupt).unwrap()).is_err());
 }
 
+/// The `timestamp` values of every data file.
+fn data_timestamps(dataset: &SyntheticDataset) -> TestResult<Vec<Field>> {
+    let mut timestamps = Vec::new();
+    for path in dataset
+        .files()
+        .iter()
+        .filter(|path| path.starts_with("data"))
+    {
+        let reader = SerializedFileReader::new(File::open(dataset.root().join(path))?)?;
+        for row in reader.get_row_iter(None)? {
+            let row = row?;
+            let timestamp = row
+                .get_column_iter()
+                .find(|(name, _)| *name == "timestamp")
+                .map(|(_, field)| field.clone());
+            timestamps.extend(timestamp);
+        }
+    }
+    Ok(timestamps)
+}
+
+#[test]
+fn text_timestamps_write_the_text_into_every_timestamp_of_every_data_file() {
+    for format in [Format::V2_1, Format::V3_0] {
+        let dataset = DatasetBuilder::new(format)
+            .defect(Defect::TextTimestamps("late".to_owned()))
+            .build()
+            .unwrap();
+
+        let timestamps = data_timestamps(&dataset).unwrap();
+
+        assert_eq!(timestamps.len(), 20);
+        assert!(
+            timestamps
+                .iter()
+                .all(|field| *field == Field::Str("late".to_owned())),
+            "{timestamps:?}"
+        );
+    }
+}
+
 #[test]
 fn missing_video_omits_the_first_video_file() {
     let (before, after) = with_and_without(Defect::MissingVideo).unwrap();

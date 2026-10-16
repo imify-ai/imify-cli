@@ -28,6 +28,8 @@ pub(crate) struct Shape {
     pub(crate) clock: Clock,
     /// Frames the episodes index declares for episode 0 beyond its row count.
     pub(crate) declared_surplus: u32,
+    /// Text that replaces every timestamp in the data files.
+    pub(crate) text_timestamp: Option<String>,
 }
 
 /// How the timestamps of episode 0 deviate from one frame period per frame.
@@ -144,11 +146,16 @@ pub(crate) struct Frames {
     episode_index: Vec<i64>,
     index: Vec<i64>,
     task_index: Vec<i64>,
+    /// Written in every row of the `timestamp` column instead of `timestamp`.
+    text_timestamp: Option<String>,
 }
 
 impl Frames {
     pub(crate) fn of_episodes(shape: &Shape, episodes: impl IntoIterator<Item = u32>) -> Self {
-        let mut frames = Self::default();
+        let mut frames = Self {
+            text_timestamp: shape.text_timestamp.clone(),
+            ..Self::default()
+        };
         for episode in episodes {
             for frame in 0..shape.frames_per_episode {
                 let index =
@@ -165,9 +172,13 @@ impl Frames {
 
     /// The frames as a data parquet file.
     pub(crate) fn to_parquet(&self, compression: Compression) -> io::Result<Vec<u8>> {
+        let timestamp = match &self.text_timestamp {
+            Some(text) => Column::utf8("timestamp", vec![text.clone(); self.timestamp.len()]),
+            None => Column::float("timestamp", self.timestamp.clone()),
+        };
         parquet::encode_compressed(
             &[
-                Column::float("timestamp", self.timestamp.clone()),
+                timestamp,
                 Column::int64("frame_index", self.frame_index.clone()),
                 Column::int64("episode_index", self.episode_index.clone()),
                 Column::int64("index", self.index.clone()),
