@@ -27,6 +27,23 @@ pr_body = """
 {{ release.changelog }}{% endif %}{% endfor %}
 """
 
+[changelog]
+# The release-plz default body, except that `imify` has no release link: it is not tagged.
+body = '''
+
+## [{{ version }}]{%- if release_link and package != "imify" -%}({{ release_link }}){% endif %} - {{ timestamp | date(format="%Y-%m-%d") }}
+{% for group, commits in commits | group_by(attribute="group") %}
+### {{ group | upper_first }}
+
+{% for commit in commits %}
+{%- if commit.scope -%}
+- *({{commit.scope}})* {% if commit.breaking %}[**breaking**] {% endif %}{{ commit.message }}{%- if commit.links %} ({% for link in commit.links %}[{{link.text}}]({{link.href}}) {% endfor -%}){% endif %}
+{% else -%}
+- {% if commit.breaking %}[**breaking**] {% endif %}{{ commit.message }}
+{% endif -%}
+{% endfor -%}
+{% endfor %}'''
+
 [[package]]
 name = "imify"
 git_tag_enable = false
