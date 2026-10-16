@@ -84,11 +84,12 @@ pub enum DatasetsCommand {
     )]
     Validate(ValidateArgs),
     #[command(
-        about = "Upload a local LeRobot dataset into a new ingest session",
-        long_about = "Upload a local LeRobot dataset into a new ingest session.\n\nValidates the dataset first and uploads nothing when the report has an error. Uploads meta/, data/ and videos/, with meta/info.json first. Writes the ingest session to stdout. Ctrl-C stops the upload and leaves the session open.",
+        about = "Upload a local LeRobot dataset into an ingest session",
+        long_about = "Upload a local LeRobot dataset into an ingest session.\n\nValidates the dataset first and uploads nothing when the report has an error. Uploads meta/, data/ and videos/, with meta/info.json first. Writes the ingest session to stdout. Ctrl-C stops the upload and leaves the session open. Running the same upload again continues that session and sends only the files it lacks.",
         after_help = "Examples:\n  \
             imify datasets upload ./pick-cube --task \"Pick up the red cube\"\n  \
-            imify datasets upload ./pick-cube --task \"Pick up the red cube\" --dry-run"
+            imify datasets upload ./pick-cube --task \"Pick up the red cube\" --dry-run\n  \
+            imify datasets upload ./pick-cube --task \"Pick up the red cube\" --restart"
     )]
     Upload(UploadArgs),
 }
@@ -142,6 +143,12 @@ pub struct UploadArgs {
     /// Validate and list the files to upload; needs no token and no network
     #[arg(long)]
     pub dry_run: bool,
+    /// Continue the interrupted upload of PATH; fail when there is none
+    #[arg(long, conflicts_with = "restart")]
+    pub resume: bool,
+    /// Discard the interrupted upload of PATH and start a new ingest session
+    #[arg(long)]
+    pub restart: bool,
 }
 
 /// Accepts `value` unless it is empty or whitespace only.

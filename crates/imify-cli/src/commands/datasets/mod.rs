@@ -1,5 +1,6 @@
 //! Dataset commands.
 
+mod journal;
 pub mod upload;
 
 use std::cmp::Ordering;

@@ -42,11 +42,15 @@ pub struct Environment {
     pub stderr_is_tty: bool,
     /// `TERM`; `None` when unset or not valid UTF-8.
     pub term: Option<String>,
+    /// `HOME`; `None` when unset.
+    pub home: Option<OsString>,
+    /// `XDG_STATE_HOME`; `None` when unset.
+    pub state_home: Option<OsString>,
 }
 
 impl Environment {
-    /// Reads `IMIFY_OUTPUT`, `NO_COLOR`, `IMIFY_API_URL`, `TERM` and whether stdin and stderr are
-    /// terminals.
+    /// Reads `IMIFY_OUTPUT`, `NO_COLOR`, `IMIFY_API_URL`, `TERM`, `HOME`, `XDG_STATE_HOME` and
+    /// whether stdin and stderr are terminals.
     pub fn capture() -> Self {
         Self {
             imify_output: std::env::var("IMIFY_OUTPUT").ok(),
@@ -55,6 +59,8 @@ impl Environment {
             stdin_is_tty: io::stdin().is_terminal(),
             stderr_is_tty: io::stderr().is_terminal(),
             term: std::env::var("TERM").ok(),
+            home: std::env::var_os("HOME"),
+            state_home: std::env::var_os("XDG_STATE_HOME"),
         }
     }
 

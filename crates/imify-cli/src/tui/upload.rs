@@ -313,6 +313,16 @@ impl View for UploadView {
                 self.session = Some(session);
                 self.phase = Phase::Uploading;
             }
+            UploadStep::SessionResumed {
+                session,
+                files_done,
+                bytes_done,
+            } => {
+                self.session = Some(session);
+                self.phase = Phase::Uploading;
+                self.finished_files += files_done;
+                self.finished_bytes += bytes_done;
+            }
             UploadStep::FileStarted { path, size } => self.in_flight.push(FileInFlight {
                 path,
                 size,

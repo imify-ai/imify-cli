@@ -345,3 +345,83 @@ fn summary_after_a_failure_counts_the_finished_files() {
 
     snapshot("upload_summary_failed", &text(&view.summary()));
 }
+
+// Resume
+
+fn session_resumed(seconds: f64, files_done: usize, bytes_done: u64) -> UploadProgress {
+    at(
+        seconds,
+        UploadStep::SessionResumed {
+            session: "3f2c9a".to_owned(),
+            files_done,
+            bytes_done,
+        },
+    )
+}
+
+#[test]
+fn resumed_session_counts_the_files_and_bytes_already_uploaded_as_done() {
+    let mut view = view();
+
+    view.apply(session_resumed(0.5, 5, 600 * MIB));
+
+    let frame = render_to_text(&view, 80);
+    assert_eq!(view.bytes_done(), 600 * MIB);
+    assert!(frame.contains("5/8 files"), "{frame}");
+    assert!(
+        frame.starts_with("Uploading  pick-cube  session 3f2c9a"),
+        "{frame}"
+    );
+}
+
+#[test]
+fn bytes_already_uploaded_do_not_count_toward_the_rate() {
+    let mut view = view();
+
+    apply_all(
+        &mut view,
+        [
+            session_resumed(0.0, 5, 600 * MIB),
+            started(1.0, DATA_0, 300 * MIB),
+            sent(2.0, DATA_0, 20 * MIB),
+        ],
+    );
+
+    // 20 MiB between the resume at 0 s and 2 s.
+    assert_eq!(view.rate(), 10.0 * 1024.0 * 1024.0);
+}
+
+#[test]
+fn resumed_frame_with_one_file_in_flight() {
+    let mut view = view();
+    apply_all(
+        &mut view,
+        [
+            session_resumed(0.5, 5, 600 * MIB),
+            started(1.0, DATA_0, 300 * MIB),
+            sent(3.0, DATA_0, 60 * MIB),
+        ],
+    );
+
+    snapshot("upload_resumed_80", &render_to_text(&view, 80));
+}
+
+#[test]
+fn summary_after_a_resumed_upload_counts_the_files_of_the_whole_session() {
+    let mut view = view();
+    apply_all(
+        &mut view,
+        [
+            session_resumed(0.5, 7, TOTAL_BYTES - 300 * MIB),
+            started(1.0, DATA_0, 300 * MIB),
+            finished(10.0, DATA_0, 300 * MIB),
+            at(10.5, UploadStep::Completing),
+            at(11.0, UploadStep::Finished),
+        ],
+    );
+
+    assert_eq!(
+        text(&view.summary()),
+        "Uploaded 8 files (1.4 GiB) in 11s to ingest session 3f2c9a."
+    );
+}
