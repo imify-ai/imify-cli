@@ -71,15 +71,36 @@ impl Default for RetryPolicy {
     }
 }
 
+/// Which failures a request is repeated after.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RetryMode {
+    /// Sending the request twice has the same effect as sending it once: retried on
+    /// network errors, server errors and rate limits.
+    Idempotent,
+    /// Sending the request twice may apply it twice: retried only on connection failures
+    /// and rate limits, when the API did not process it.
+    NotIdempotent,
+}
+
+impl From<&Method> for RetryMode {
+    fn from(method: &Method) -> Self {
+        if [Method::GET, Method::HEAD, Method::PUT, Method::DELETE].contains(method) {
+            Self::Idempotent
+        } else {
+            Self::NotIdempotent
+        }
+    }
+}
+
 /// Decides whether the request that failed with `error` on retry number `attempt` (the
 /// first attempt is 0) is sent again.
 pub(crate) fn should_retry(
     policy: &RetryPolicy,
-    method: &Method,
+    mode: impl Into<RetryMode>,
     error: &Error,
     attempt: u32,
 ) -> bool {
-    attempt < policy.max_retries && is_retryable(method, error)
+    attempt < policy.max_retries && is_retryable(mode.into(), error)
 }
 
 /// Returns how long to wait before retry number `attempt`.
@@ -92,17 +113,13 @@ pub(crate) fn delay(policy: &RetryPolicy, attempt: u32, error: &Error) -> Durati
     }
 }
 
-fn is_retryable(method: &Method, error: &Error) -> bool {
+fn is_retryable(mode: RetryMode, error: &Error) -> bool {
     match error {
         Error::RateLimited { .. } => true,
         Error::Network { .. } if error.is_connect_failure() => true,
-        Error::Network { .. } | Error::Server { .. } => is_idempotent(method),
+        Error::Network { .. } | Error::Server { .. } => mode == RetryMode::Idempotent,
         _ => false,
     }
-}
-
-fn is_idempotent(method: &Method) -> bool {
-    [Method::GET, Method::HEAD, Method::PUT, Method::DELETE].contains(method)
 }
 
 fn backoff_ceiling(policy: &RetryPolicy, attempt: u32) -> Duration {

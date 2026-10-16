@@ -208,3 +208,33 @@ fn default_policy_retries_three_times() {
         (3, Duration::from_millis(500), Duration::from_secs(30))
     );
 }
+
+#[test]
+fn idempotent_mode_retries_post_on_server_error() {
+    assert!(should_retry(
+        &policy(),
+        RetryMode::Idempotent,
+        &server_error(),
+        0
+    ));
+}
+
+#[test]
+fn idempotent_mode_retries_post_on_read_timeout() {
+    assert!(should_retry(
+        &policy(),
+        RetryMode::Idempotent,
+        &read_timeout(),
+        0
+    ));
+}
+
+#[test]
+fn method_mode_does_not_retry_post_on_server_error() {
+    assert!(!should_retry(
+        &policy(),
+        RetryMode::from(&Method::POST),
+        &server_error(),
+        0
+    ));
+}

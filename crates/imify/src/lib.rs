@@ -18,6 +18,7 @@ mod account;
 pub mod auth;
 mod client;
 mod error;
+pub mod ingest;
 mod retry;
 
 pub use account::User;

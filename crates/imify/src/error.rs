@@ -1,5 +1,6 @@
 //! The error type returned by every fallible SDK operation.
 
+use std::path::PathBuf;
 use std::time::Duration;
 
 use reqwest::StatusCode;
@@ -101,6 +102,15 @@ pub enum Error {
     Config {
         /// Which setting is invalid and why.
         message: String,
+    },
+
+    /// A local file or directory cannot be read, or changed while it was being read.
+    #[error("cannot read {}: {source}", path.display())]
+    Io {
+        /// The file or directory.
+        path: PathBuf,
+        /// The underlying I/O error.
+        source: std::io::Error,
     },
 }
 
