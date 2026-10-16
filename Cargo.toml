@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/imify", "crates/imify-cli"]
+members = ["crates/imify", "crates/imify-cli", "crates/imify-test-support"]
 
 [workspace.package]
 edition = "2024"

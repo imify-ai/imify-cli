@@ -7,7 +7,9 @@ Date: 2026-10-16
 The CLI must install with a single command and no runtime, start fast enough to be called in loops by agents, and move multi-GB datasets. The platform also needs an SDK; the CLI is meant to be a thin client over it, the way the AWS CLI relates to its SDK.
 
 ## Decision
-Rust. One Cargo workspace with two crates: `imify` (library, the SDK) and `imify-cli` (binary `imify`). The CLI crate does no network I/O of its own; CI rejects a direct HTTP client dependency in it.
+Rust. One Cargo workspace with two published crates: `imify` (library, the SDK) and `imify-cli` (binary `imify`). The CLI crate does no network I/O of its own; CI rejects a direct HTTP client dependency in it.
+
+The workspace also has one unpublished crate, `imify-test-support`. It generates synthetic datasets for tests, and the other crates use it only as a dev-dependency.
 
 ## Consequences
 - Static binaries for macOS and Linux; no interpreter to install.
