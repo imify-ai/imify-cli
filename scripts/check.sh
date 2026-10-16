@@ -19,6 +19,15 @@ cargo test --workspace --all-features --locked
 
 [[ "${1:-}" == "--fast" ]] && exit 0
 
+msrv="$(sed -n 's/^rust-version *= *"\([^"]*\)".*/\1/p' Cargo.toml)"
+: "${msrv:?rust-version not found in Cargo.toml}"
+step "msrv ($msrv)"
+if ! rustup toolchain list | grep "^$msrv-" >/dev/null; then
+  printf 'Rust %s is not installed. Install it with:\n  rustup toolchain install %s --profile minimal\n' "$msrv" "$msrv" >&2
+  exit 1
+fi
+cargo "+$msrv" check --workspace --all-features --all-targets --locked
+
 step "doc"
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --all-features --locked
 

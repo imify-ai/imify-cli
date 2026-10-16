@@ -3,11 +3,12 @@
 ## Setup
 
 - Rust 1.88 or newer (`rustup`).
+- The minimum supported Rust version for the MSRV gate: `rustup toolchain install 1.88 --profile minimal`. The gate reads the version from `rust-version` in `Cargo.toml`.
 - Gate tools: `cargo install --locked cargo-deny typos-cli`, and [Vale](https://vale.sh/docs/install).
 
 ```sh
 scripts/check.sh --fast   # fmt, clippy, tests
-scripts/check.sh          # every gate CI runs
+scripts/check.sh          # every gate CI runs, including `cargo check` on the MSRV
 ```
 
 ## Workflow
