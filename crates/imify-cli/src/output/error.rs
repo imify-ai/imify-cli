@@ -122,7 +122,7 @@ impl From<clap::Error> for CliError {
 pub const AUTH_REQUIRED_HINT: &str = "Set `IMIFY_TOKEN` to an access token.";
 
 /// The hint for an `auth_rejected` error.
-const AUTH_REJECTED_HINT: &str = "Set `IMIFY_TOKEN` to a valid, unexpired token.";
+pub const AUTH_REJECTED_HINT: &str = "Set `IMIFY_TOKEN` to a valid, unexpired token.";
 
 impl From<imify::Error> for CliError {
     fn from(error: imify::Error) -> Self {

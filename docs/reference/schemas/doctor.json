@@ -1,0 +1,99 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "imify doctor result",
+  "description": "Written to stdout by `imify doctor --json`: the result of every check and the values the checks produced. A value is null when its check did not produce it.",
+  "type": "object",
+  "required": [
+    "cli_version",
+    "platform",
+    "api_url",
+    "latency_ms",
+    "clock_skew_ms",
+    "readiness",
+    "token_source",
+    "token_expires_at",
+    "user",
+    "checks"
+  ],
+  "properties": {
+    "cli_version": {
+      "description": "Version of the imify CLI.",
+      "type": "string"
+    },
+    "platform": {
+      "description": "Operating system and CPU architecture the CLI was built for.",
+      "type": "object",
+      "required": ["os", "arch"],
+      "properties": {
+        "os": {"description": "Such as `macos` or `linux`.", "type": "string"},
+        "arch": {"description": "Such as `aarch64` or `x86_64`.", "type": "string"}
+      }
+    },
+    "api_url": {
+      "description": "The value of `IMIFY_API_URL`.",
+      "type": ["string", "null"]
+    },
+    "latency_ms": {
+      "description": "Duration of the `GET /api/health` request in milliseconds.",
+      "type": ["integer", "null"],
+      "minimum": 0
+    },
+    "clock_skew_ms": {
+      "description": "The server's `Date` header minus the local time in milliseconds. The `Date` header has a resolution of 1 s.",
+      "type": ["integer", "null"]
+    },
+    "readiness": {
+      "description": "The readiness document of the API.",
+      "type": ["object", "null"],
+      "required": ["status", "db", "storage"],
+      "properties": {
+        "status": {"description": "`ok` when the API can serve every request.", "type": "string"},
+        "db": {"description": "State of the database.", "type": "string"},
+        "storage": {"description": "State of the object storage.", "type": "string"}
+      }
+    },
+    "token_source": {
+      "description": "Where the access token comes from: `env` for `IMIFY_TOKEN`.",
+      "enum": ["env", null]
+    },
+    "token_expires_at": {
+      "description": "The `exp` claim of the access token, RFC 3339 in UTC.",
+      "type": ["string", "null"],
+      "format": "date-time"
+    },
+    "user": {
+      "description": "The user the access token belongs to.",
+      "type": ["object", "null"],
+      "required": ["subject", "name", "role"],
+      "properties": {
+        "subject": {"type": "string"},
+        "name": {"type": "string"},
+        "role": {"type": "string"}
+      }
+    },
+    "checks": {
+      "description": "The checks in the order they are reported.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "status", "message", "code", "hint"],
+        "properties": {
+          "name": {
+            "description": "Further names can be added.",
+            "enum": ["api_url", "health", "readiness", "clock", "token", "token_expiry", "account"]
+          },
+          "status": {"enum": ["ok", "warn", "fail", "skip"]},
+          "message": {"type": "string"},
+          "code": {
+            "description": "Error code of a failed check, as in error.json; null unless `status` is `fail`.",
+            "type": ["string", "null"]
+          },
+          "hint": {
+            "description": "What to do next; null when there is no hint.",
+            "type": ["string", "null"]
+          }
+        }
+      }
+    }
+  }
+}

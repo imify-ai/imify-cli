@@ -98,3 +98,64 @@ fn a_value_that_is_not_a_jwt_is_rejected_without_echoing_it() {
     ));
     assert!(!error.to_string().contains("not-a-jwt-secret"));
 }
+
+fn expiry_of(token: &str) -> Option<SystemTime> {
+    crate::auth::Token::new(token).expires_at()
+}
+
+fn unix_time(seconds: u64) -> SystemTime {
+    UNIX_EPOCH + std::time::Duration::from_secs(seconds)
+}
+
+fn encoded(segment: &str) -> String {
+    URL_SAFE_NO_PAD.encode(segment)
+}
+
+#[test]
+fn expires_at_returns_the_exp_claim_of_a_jwt() {
+    let token = jwt(&json!({"sub": "user-1234", "exp": 1_792_152_000}));
+
+    assert_eq!(expiry_of(&token), Some(unix_time(1_792_152_000)));
+}
+
+#[test]
+fn expires_at_ignores_the_signature_segment() {
+    let header = encoded(r#"{"alg":"RS256"}"#);
+    let payload = encoded(r#"{"exp":1792152000}"#);
+
+    let token = format!("{header}.{payload}.%%not-base64%%");
+
+    assert_eq!(expiry_of(&token), Some(unix_time(1_792_152_000)));
+}
+
+#[test]
+fn expires_at_is_none_for_an_opaque_token() {
+    assert_eq!(expiry_of("tok_7f3a9c-secret"), None);
+}
+
+#[test]
+fn expires_at_is_none_for_a_payload_that_is_not_base64url() {
+    let header = encoded(r#"{"alg":"RS256"}"#);
+
+    assert_eq!(expiry_of(&format!("{header}.%%%.c2ln")), None);
+}
+
+#[test]
+fn expires_at_is_none_for_a_payload_that_is_not_json() {
+    let header = encoded(r#"{"alg":"RS256"}"#);
+
+    assert_eq!(
+        expiry_of(&format!("{header}.{}.c2ln", encoded("not json"))),
+        None
+    );
+}
+
+#[test]
+fn expires_at_is_none_without_an_exp_claim() {
+    assert_eq!(expiry_of(&jwt(&json!({"sub": "user-1234"}))), None);
+}
+
+#[test]
+fn expires_at_is_none_for_a_non_numeric_exp_claim() {
+    assert_eq!(expiry_of(&jwt(&json!({"exp": "tomorrow"}))), None);
+}

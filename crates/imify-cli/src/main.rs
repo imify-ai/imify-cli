@@ -42,6 +42,7 @@ fn run(
     match command {
         None => Ok(()),
         Some(Command::Whoami) => runtime()?.block_on(commands::auth::whoami(env, renderer)),
+        Some(Command::Doctor) => runtime()?.block_on(commands::doctor::doctor(env, renderer)),
         Some(Command::Datasets {
             command: DatasetsCommand::Ls(args),
         }) => runtime()?.block_on(commands::datasets::ls(env, args, renderer)),

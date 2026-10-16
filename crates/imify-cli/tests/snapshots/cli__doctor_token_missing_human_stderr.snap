@@ -1,0 +1,6 @@
+---
+source: crates/imify-cli/tests/cli.rs
+expression: text(&output.stderr)
+---
+error: 1 check failed: token.
+hint: Set `IMIFY_TOKEN` to an access token.

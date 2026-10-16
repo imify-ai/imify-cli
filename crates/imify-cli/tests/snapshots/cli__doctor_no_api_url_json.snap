@@ -1,0 +1,5 @@
+---
+source: crates/imify-cli/tests/cli.rs
+expression: "normalize_doctor_json(&output.stdout, \"http://unused\")"
+---
+{"api_url":null,"checks":[{"code":"invalid_argument","hint":"Set `IMIFY_API_URL` to the API host, such as `https://api.example.com`.","message":"IMIFY_API_URL is not set.","name":"api_url","status":"fail"},{"code":null,"hint":null,"message":"Skipped because api_url did not pass.","name":"health","status":"skip"},{"code":null,"hint":null,"message":"Skipped because health did not pass.","name":"readiness","status":"skip"},{"code":null,"hint":null,"message":"Skipped because health did not pass.","name":"clock","status":"skip"},{"code":null,"hint":null,"message":"IMIFY_TOKEN is set.","name":"token","status":"ok"},{"code":null,"hint":null,"message":"Expires at 2100-01-01T00:00:00Z.","name":"token_expiry","status":"ok"},{"code":null,"hint":null,"message":"Skipped because health did not pass.","name":"account","status":"skip"}],"cli_version":"0.0.0","clock_skew_ms":null,"latency_ms":null,"platform":{"arch":"<arch>","os":"<os>"},"readiness":null,"token_expires_at":"2100-01-01T00:00:00Z","token_source":"env","user":null}

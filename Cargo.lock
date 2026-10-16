@@ -1137,6 +1137,7 @@ dependencies = [
  "fastrand",
  "futures-util",
  "getrandom 0.3.4",
+ "httpdate",
  "imify-test-support",
  "parquet",
  "reqwest",

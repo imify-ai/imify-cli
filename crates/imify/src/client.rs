@@ -94,7 +94,15 @@ impl Client {
         self.retry(
             mode,
             |_, _, _| {},
-            || self.send(Authorize::Yes, method.clone(), url.clone(), body),
+            || {
+                self.send(
+                    Authorize::Yes,
+                    method.clone(),
+                    url.clone(),
+                    body,
+                    &decode_json,
+                )
+            },
         )
         .await
     }
@@ -107,10 +115,27 @@ impl Client {
         method: Method,
         url: Url,
     ) -> Result<T, Error> {
+        self.execute_unauthenticated_with(mode, method, url, &decode_json)
+            .await
+    }
+
+    /// Sends a request without an `Authorization` header to `url` and turns the response
+    /// into `T` with `decode`, retrying failures that `mode` allows. `decode` receives every
+    /// response except redirects, which fail with [`Error::UnexpectedResponse`].
+    pub(crate) async fn execute_unauthenticated_with<T, D>(
+        &self,
+        mode: RetryMode,
+        method: Method,
+        url: Url,
+        decode: &D,
+    ) -> Result<T, Error>
+    where
+        D: Fn(StatusCode, &HeaderMap, &[u8]) -> Result<T, Error>,
+    {
         self.retry(
             mode,
             |_, _, _| {},
-            || self.send(Authorize::No, method.clone(), url.clone(), None),
+            || self.send(Authorize::No, method.clone(), url.clone(), None, decode),
         )
         .await
     }
@@ -164,13 +189,17 @@ impl Client {
         url.origin() == self.base_url.origin()
     }
 
-    async fn send<T: DeserializeOwned>(
+    async fn send<T, D>(
         &self,
         authorize: Authorize,
         method: Method,
         url: Url,
         body: Option<&serde_json::Value>,
-    ) -> Result<T, Error> {
+        decode: &D,
+    ) -> Result<T, Error>
+    where
+        D: Fn(StatusCode, &HeaderMap, &[u8]) -> Result<T, Error>,
+    {
         let mut request = self.http.request(method, url);
         if authorize == Authorize::Yes
             && let Some(authorization) = self.authorization().await?
@@ -181,7 +210,7 @@ impl Client {
             request = request.json(body);
         }
         let response = request.send().await.map_err(network_error)?;
-        decode(response).await
+        decode_with(response, decode).await
     }
 
     /// The `Authorization` header value from the token source, `None` without one.
@@ -225,16 +254,34 @@ enum Authorize {
 
 /// Decodes a successful JSON response as `T` and maps any other response to an [`Error`].
 pub(crate) async fn decode<T: DeserializeOwned>(response: reqwest::Response) -> Result<T, Error> {
+    decode_with(response, &decode_json).await
+}
+
+/// Reads the whole response and turns it into `T` with `decode`. A redirect fails with
+/// [`Error::UnexpectedResponse`] without calling `decode`.
+async fn decode_with<T, D>(response: reqwest::Response, decode: &D) -> Result<T, Error>
+where
+    D: Fn(StatusCode, &HeaderMap, &[u8]) -> Result<T, Error>,
+{
     let status = response.status();
     let headers = response.headers().clone();
     let body = response.bytes().await.map_err(network_error)?;
     if status.is_redirection() {
         return Err(redirect_not_followed(status, &headers));
     }
+    decode(status, &headers, &body)
+}
+
+/// Decodes a successful JSON response as `T` and maps any other status to an [`Error`].
+pub(crate) fn decode_json<T: DeserializeOwned>(
+    status: StatusCode,
+    headers: &HeaderMap,
+    body: &[u8],
+) -> Result<T, Error> {
     if !status.is_success() {
-        return Err(from_response(status.as_u16(), &headers, &body));
+        return Err(from_response(status.as_u16(), headers, body));
     }
-    serde_json::from_slice(&body).map_err(|error| Error::UnexpectedResponse {
+    serde_json::from_slice(body).map_err(|error| Error::UnexpectedResponse {
         status: status.as_u16(),
         message: format!("response body does not match the expected type: {error}"),
     })

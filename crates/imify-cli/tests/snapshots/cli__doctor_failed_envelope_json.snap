@@ -1,0 +1,5 @@
+---
+source: crates/imify-cli/tests/cli.rs
+expression: text(&output.stderr)
+---
+{"error":{"code":"server","message":"2 checks failed: health, token.","hint":null}}
