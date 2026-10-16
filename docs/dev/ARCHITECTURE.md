@@ -33,6 +33,7 @@ crates/imify/src/
   lib.rs            re-exports the public API
   client.rs         Client, ClientBuilder
   error.rs          Error, the single error type of the SDK
+  retry.rs          RetryPolicy, retry decisions and backoff
   auth/             TokenSource trait and its implementations
   datasets/         dataset endpoints and models
   ingest/           upload engine: Transport trait, planner, resume journal, progress events
