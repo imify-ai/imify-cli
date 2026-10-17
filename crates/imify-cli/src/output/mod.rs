@@ -24,6 +24,7 @@ use tracing_subscriber::filter::Targets;
 
 pub use self::error::{
     AUTH_REJECTED_HINT, AUTH_REQUIRED_HINT, CliError, ErrorCode, LOGIN_HINT, PASTE_HINT,
+    UNSET_TOKEN_HINT,
 };
 use self::renderer::{HumanRenderer, JsonRenderer, Renderer};
 use crate::cli::GlobalArgs;

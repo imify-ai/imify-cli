@@ -138,6 +138,11 @@ pub const AUTH_REQUIRED_HINT: &str = "Run `imify auth login`, or set `IMIFY_TOKE
 /// The hint for an `auth_rejected` error when the token comes from `IMIFY_TOKEN`.
 pub const AUTH_REJECTED_HINT: &str = "Set `IMIFY_TOKEN` to a valid, unexpired token.";
 
+/// The hint for an `auth_rejected` error when the token comes from `IMIFY_TOKEN` and a login
+/// is stored for the host.
+pub const UNSET_TOKEN_HINT: &str =
+    "Unset `IMIFY_TOKEN` to use the stored login, or set it to a valid, unexpired token.";
+
 /// The hint when the user has to sign in again.
 pub const LOGIN_HINT: &str = "Run `imify auth login`.";
 

@@ -1666,6 +1666,114 @@ async fn doctor_trace_output_and_json_report_contain_no_part_of_the_token() {
     }
 }
 
+const UNSET_TOKEN_HINT: &str =
+    "Unset `IMIFY_TOKEN` to use the stored login, or set it to a valid, unexpired token.";
+
+/// A configuration directory whose credentials file holds a login for `api_url`.
+fn config_dir_with_login(api_url: &str) -> std::io::Result<tempfile::TempDir> {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let config_dir = tempfile::tempdir()?;
+    let issuer = "http://127.0.0.1:1";
+    let file = json!({
+        api_url: {
+            "version": 1,
+            "issuer": issuer,
+            "client_id": "client-1",
+            "token_endpoint": format!("{issuer}/oauth2/token"),
+            "revocation_endpoint": format!("{issuer}/oauth2/revoke"),
+            "id_token": VALID_JWT,
+            "id_token_expires_at": 4_102_444_800_u64,
+            "refresh_token": "rt_5b1e-secret",
+        }
+    });
+    let path = config_dir.path().join("credentials.json");
+    std::fs::write(&path, file.to_string())?;
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+    Ok(config_dir)
+}
+
+/// `imify doctor --json` for `server` with `IMIFY_TOKEN` set to `token` and the login stored
+/// in `config_dir`.
+fn doctor_with_stored_login(
+    server: &MockServer,
+    token: &str,
+    config_dir: &tempfile::TempDir,
+) -> Output {
+    imify(
+        &["doctor", "--json"],
+        &[
+            ("IMIFY_API_URL", &server.uri()),
+            ("IMIFY_TOKEN", token),
+            (
+                "IMIFY_CONFIG_DIR",
+                config_dir.path().to_str().unwrap_or_default(),
+            ),
+        ],
+    )
+}
+
+/// The hint of the check named `name` in a JSON report.
+fn check_hint(stdout: &[u8], name: &str) -> serde_json::Value {
+    let report: serde_json::Value = serde_json::from_slice(stdout).unwrap_or_default();
+    report["checks"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|check| check["name"] == name)
+        .map(|check| check["hint"].clone())
+        .unwrap_or_default()
+}
+
+fn error_hint(output: &Output) -> serde_json::Value {
+    let envelope: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap_or_default();
+    envelope["error"]["hint"].clone()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn doctor_with_a_rejected_imify_token_and_a_stored_login_hints_at_unsetting_it() {
+    let server = doctor_api(
+        health_ok(),
+        ready(200, "ok"),
+        ResponseTemplate::new(401).set_body_json(json!({"detail": "Invalid token"})),
+    )
+    .await;
+    let config_dir = config_dir_with_login(&server.uri()).unwrap();
+
+    let output = doctor_with_stored_login(&server, TOKEN, &config_dir);
+
+    assert_eq!(error_code(&output).as_deref(), Some("auth_rejected"));
+    assert_eq!(
+        (check_hint(&output.stdout, "account"), error_hint(&output)),
+        (json!(UNSET_TOKEN_HINT), json!(UNSET_TOKEN_HINT))
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn doctor_with_an_expired_imify_token_and_a_stored_login_hints_at_unsetting_it() {
+    let server = healthy_api().await;
+    let config_dir = config_dir_with_login(&server.uri()).unwrap();
+
+    let output = doctor_with_stored_login(&server, EXPIRED_JWT, &config_dir);
+
+    assert_eq!(
+        check_hint(&output.stdout, "token_expiry"),
+        json!(UNSET_TOKEN_HINT)
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn doctor_with_an_expired_imify_token_and_no_stored_login_hints_at_a_valid_token() {
+    let server = healthy_api().await;
+
+    let output = doctor(Some(&server.uri()), Some(EXPIRED_JWT), &["--json"]);
+
+    assert_eq!(
+        check_hint(&output.stdout, "token_expiry"),
+        json!("Set `IMIFY_TOKEN` to a valid, unexpired token.")
+    );
+}
+
 #[test]
 fn doctor_help_shows_the_example() {
     let output = imify(&["doctor", "--help"], &[]);

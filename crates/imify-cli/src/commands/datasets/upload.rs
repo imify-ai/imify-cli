@@ -63,7 +63,7 @@ pub async fn upload(
                 journal_dir: journal_dir(env)?,
                 policy: resume_policy(args.resume, args.restart),
             },
-            api.origin,
+            (api.origin, api.lookup),
         ))
     };
     let name = session_name(&args.path)?;
@@ -87,7 +87,7 @@ pub async fn upload(
         session: None,
         resumed: false,
     };
-    let Some((target, origin)) = target else {
+    let Some((target, (origin, lookup))) = target else {
         return write_event(renderer, &result);
     };
 
@@ -107,9 +107,10 @@ pub async fn upload(
         write_event(renderer, &Planned(&plan))?;
     }
     let new_session = NewSession::new(name.as_str()).task_description(args.task.as_str());
-    let sent = send(target, live, &plan, &new_session, renderer)
-        .await
-        .map_err(|error| origin.adjust(error))?;
+    let sent = match send(target, live, &plan, &new_session, renderer).await {
+        Ok(sent) => sent,
+        Err(error) => return Err(origin.adjust(error, lookup).await),
+    };
     result.session = Some(&sent.session);
     result.resumed = sent.resumed;
     write_event(renderer, &result)

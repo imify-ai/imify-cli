@@ -7,22 +7,24 @@ pub mod doctor;
 
 use url::Url;
 
-use self::auth::TokenOrigin;
+use self::auth::{LoginLookup, TokenOrigin};
 use crate::config::resolve_api_url;
 use crate::output::renderer::{Render, Renderer};
 use crate::output::{AUTH_REQUIRED_HINT, CliError, Environment, ErrorCode};
 
-/// An API client and where its token comes from.
+/// An API client, where its token comes from and the lookup of the host's stored login.
 #[derive(Debug)]
 pub struct Api {
     pub client: imify::Client,
     pub origin: TokenOrigin,
+    pub lookup: LoginLookup,
 }
 
 impl Api {
-    /// The CLI error for a failed request of this client. Hints follow the token's origin.
-    pub fn error(&self, error: imify::Error) -> CliError {
-        self.origin.adjust(error.into())
+    /// The CLI error for a failed request of this client. Hints follow the token's origin, as
+    /// in [`TokenOrigin::adjust`].
+    pub async fn error(self, error: imify::Error) -> CliError {
+        self.origin.adjust(error.into(), self.lookup).await
     }
 }
 
@@ -52,7 +54,11 @@ pub async fn client(env: &Environment) -> Result<Api, CliError> {
         .token_source(token_source)
         .build()
         .map_err(|error| api_url.invalid(&error))?;
-    Ok(Api { client, origin })
+    Ok(Api {
+        client,
+        origin,
+        lookup: LoginLookup::new(env, &host),
+    })
 }
 
 /// The API URL from `--api-url`, `IMIFY_API_URL`, the config file or the default, in that

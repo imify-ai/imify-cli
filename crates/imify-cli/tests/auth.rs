@@ -286,6 +286,160 @@ async fn a_rejected_stored_login_hints_at_imify_login() {
     );
 }
 
+const UNSET_TOKEN_HINT: &str =
+    "Unset `IMIFY_TOKEN` to use the stored login, or set it to a valid, unexpired token.";
+const AUTH_REJECTED_HINT: &str = "Set `IMIFY_TOKEN` to a valid, unexpired token.";
+
+/// Mounts a `/api/v1/me` that rejects every token on `api`.
+async fn reject_every_token(api: &MockServer) {
+    Mock::given(method("GET"))
+        .and(path("/api/v1/me"))
+        .respond_with(ResponseTemplate::new(401).set_body_json(json!({"detail": "Invalid token"})))
+        .mount(api)
+        .await;
+}
+
+/// `(code, hint)` of the error envelope.
+fn code_and_hint(output: &Output) -> (Value, Value) {
+    let envelope = envelope(output);
+    (
+        envelope["error"]["code"].clone(),
+        envelope["error"]["hint"].clone(),
+    )
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_rejected_imify_token_with_a_stored_login_hints_at_unsetting_it() {
+    let login = Login::stored(3600).await.unwrap();
+    reject_every_token(&login.api).await;
+
+    let output = login.run(&["auth", "whoami", "--json"], &[("IMIFY_TOKEN", ENV_TOKEN)]);
+
+    assert_eq!(output.status.code(), Some(3));
+    assert_eq!(
+        code_and_hint(&output),
+        (json!("auth_rejected"), json!(UNSET_TOKEN_HINT))
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_rejected_imify_token_without_a_stored_login_hints_at_a_valid_token() {
+    let api = MockServer::start().await;
+    reject_every_token(&api).await;
+    let config_dir = tempfile::tempdir().unwrap();
+
+    let output = run(
+        &api.uri(),
+        config_dir.path(),
+        &["auth", "whoami", "--json"],
+        &[("IMIFY_TOKEN", ENV_TOKEN)],
+    );
+
+    assert_eq!(
+        code_and_hint(&output),
+        (json!("auth_rejected"), json!(AUTH_REJECTED_HINT))
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_rejected_imify_token_with_a_login_for_another_host_only_hints_at_a_valid_token() {
+    let login = Login::stored(3600).await.unwrap();
+    let other_api = MockServer::start().await;
+    reject_every_token(&other_api).await;
+
+    let output = run(
+        &other_api.uri(),
+        login.config_dir.path(),
+        &["auth", "whoami", "--json"],
+        &[("IMIFY_TOKEN", ENV_TOKEN)],
+    );
+
+    assert_eq!(
+        code_and_hint(&output),
+        (json!("auth_rejected"), json!(AUTH_REJECTED_HINT))
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_rejected_imify_token_with_an_unreadable_credentials_file_keeps_auth_rejected() {
+    let login = Login::stored(3600).await.unwrap();
+    reject_every_token(&login.api).await;
+    std::fs::set_permissions(
+        login.credentials_file(),
+        std::fs::Permissions::from_mode(0o644),
+    )
+    .unwrap();
+
+    let output = login.run(&["auth", "whoami", "--json"], &[("IMIFY_TOKEN", ENV_TOKEN)]);
+
+    assert_eq!(
+        code_and_hint(&output),
+        (json!("auth_rejected"), json!(AUTH_REJECTED_HINT))
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn trace_output_of_a_rejected_imify_token_names_the_unreadable_credential_store() {
+    let login = Login::stored(3600).await.unwrap();
+    reject_every_token(&login.api).await;
+    std::fs::set_permissions(
+        login.credentials_file(),
+        std::fs::Permissions::from_mode(0o644),
+    )
+    .unwrap();
+
+    let output = login.run(&["auth", "whoami", "-vv"], &[("IMIFY_TOKEN", ENV_TOKEN)]);
+
+    assert!(
+        text(&output.stderr)
+            .contains("cannot read the credential store to look for a stored login"),
+        "{}",
+        text(&output.stderr)
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_rejected_imify_token_with_an_unsupported_credential_store_keeps_auth_rejected() {
+    let login = Login::stored(3600).await.unwrap();
+    reject_every_token(&login.api).await;
+
+    let output = login.run(
+        &["auth", "whoami", "--json"],
+        &[
+            ("IMIFY_TOKEN", ENV_TOKEN),
+            ("IMIFY_CREDENTIAL_STORE", "vault"),
+        ],
+    );
+
+    assert_eq!(
+        code_and_hint(&output),
+        (json!("auth_rejected"), json!(AUTH_REJECTED_HINT))
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn whoami_with_a_valid_imify_token_does_not_wait_for_the_credentials_file() {
+    let login = Login::stored(3600).await.unwrap();
+    login.answer_me().await;
+    let lock =
+        std::fs::File::create(login.config_dir.path().join("credentials.json.lock")).unwrap();
+    rustix::fs::flock(&lock, rustix::fs::FlockOperation::LockExclusive).unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_imify"))
+        .env_remove("IMIFY_OUTPUT")
+        .env("IMIFY_API_URL", login.api.uri())
+        .env("IMIFY_CREDENTIAL_STORE", "file")
+        .env("IMIFY_CONFIG_DIR", login.config_dir.path())
+        .env("IMIFY_TOKEN", ENV_TOKEN)
+        .args(["auth", "whoami", "--json"])
+        .timeout(std::time::Duration::from_secs(10))
+        .assert()
+        .get_output()
+        .clone();
+
+    assert!(output.status.success(), "{}", text(&output.stderr));
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn whoami_without_a_login_names_the_host() {
     let api = MockServer::start().await;

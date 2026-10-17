@@ -77,7 +77,7 @@ Schema: [`auth-logout.json`](../reference/schemas/auth-logout.json).
 1. `IMIFY_TOKEN`, when set and not empty.
 2. The stored login for the API host.
 
-Without either, a command fails with `auth_required`. `imify auth login` warns when `IMIFY_TOKEN` is set, because the variable takes precedence over the new login.
+Without either, a command fails with `auth_required`. `imify auth login` warns when `IMIFY_TOKEN` is set, because the variable takes precedence over the new login. When the API rejects `IMIFY_TOKEN` and a login is stored for the host, the `auth_rejected` hint is ``Unset `IMIFY_TOKEN` to use the stored login, or set it to a valid, unexpired token.``.
 
 A stored login holds an ID token and a refresh token. The CLI renews the ID token when less than 60 s remain before it expires. When the identity provider refuses the renewal, the command fails with `auth_expired`; run `imify auth login` again.
 
