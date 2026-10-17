@@ -64,11 +64,19 @@ const CASES: &[(&str, &[&str])] = &[
     ("auth-login.json", &["login_json.snap"]),
     ("config-get.json", &["config__get_default_json.snap"]),
     ("config-list.json", &["config__list_json.snap"]),
-    ("config-set.json", &["config__set_json.snap"]),
+    (
+        "config-set.json",
+        &["config__set_json.snap", "config__set_profile_json.snap"],
+    ),
     (
         "config-unset.json",
-        &["config__unset_json.snap", "config__unset_not_set_json.snap"],
+        &[
+            "config__unset_json.snap",
+            "config__unset_not_set_json.snap",
+            "config__unset_profile_json.snap",
+        ],
     ),
+    ("config-profiles.json", &["config__profiles_json.snap"]),
     (
         "auth-logout.json",
         &[

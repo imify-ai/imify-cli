@@ -253,37 +253,34 @@ fn saving_creates_the_file_0600_and_the_directory_0700() {
     let dir = parent.path().join("imify");
     let file = ConfigFile::open(&env_in(&dir)).unwrap();
 
-    file.save(&Values {
-        api_url: Some("https://a.example.com".to_owned()),
-    })
-    .unwrap();
+    file.save(&contents_with(&[("default", "https://a.example.com")]))
+        .unwrap();
 
     assert_eq!((mode_of(&dir), mode_of(file.path())), (0o700, 0o600));
 }
 
 #[test]
-fn saved_values_load_back() {
+fn saved_contents_load_back() {
     let dir = tempfile::tempdir().unwrap();
     let file = ConfigFile::open(&env_in(dir.path())).unwrap();
-    let values = Values {
-        api_url: Some("https://a.example.com".to_owned()),
-    };
+    let contents = contents_with(&[
+        ("default", "https://a.example.com"),
+        ("staging", "https://s.example.com"),
+    ]);
 
-    file.save(&values).unwrap();
+    file.save(&contents).unwrap();
 
-    assert_eq!(file.load().unwrap(), values);
+    assert_eq!(file.load().unwrap(), contents);
 }
 
 #[test]
 fn saving_no_values_removes_the_file() {
     let dir = tempfile::tempdir().unwrap();
     let file = ConfigFile::open(&env_in(dir.path())).unwrap();
-    file.save(&Values {
-        api_url: Some("https://a.example.com".to_owned()),
-    })
-    .unwrap();
+    file.save(&contents_with(&[("default", "https://a.example.com")]))
+        .unwrap();
 
-    file.save(&Values::default()).unwrap();
+    file.save(&Contents::default()).unwrap();
 
     assert!(!file.path().exists());
 }
@@ -294,4 +291,447 @@ fn key_names_use_dashes_on_the_command_line_and_underscores_in_the_file() {
         (Key::ApiUrl.name(), Key::ApiUrl.file_name()),
         ("api-url", "api_url")
     );
+}
+
+/// Contents with `api_url` set in each named profile; `default` sets the top-level key.
+fn contents_with(api_urls: &[(&str, &str)]) -> Contents {
+    let mut contents = Contents::default();
+    for (name, url) in api_urls {
+        contents
+            .profile_or_insert(ProfileName::parse(name).unwrap())
+            .set(Key::ApiUrl, Some((*url).to_owned()));
+    }
+    contents
+}
+
+fn env_with_profile(dir: &Path, flag: Option<&str>, variable: Option<&str>) -> Environment {
+    Environment {
+        profile_flag: flag.map(str::to_owned),
+        profile: variable.map(str::to_owned),
+        ..env_in(dir)
+    }
+}
+
+const PROFILES: &str = "api_url = \"https://top.example.com\"\n\n\
+    [profiles.staging]\napi_url = \"https://staging.example.com\"\n\n\
+    [profiles.empty]\n";
+
+#[test]
+fn without_flag_or_variable_the_default_profile_is_selected() {
+    let selected = select_profile(&Environment::default()).unwrap();
+
+    assert_eq!(
+        (selected.name.as_str(), selected.source),
+        ("default", ProfileSource::Default)
+    );
+}
+
+#[test]
+fn imify_profile_selects_a_profile() {
+    let env = Environment {
+        profile: Some("staging".to_owned()),
+        ..Environment::default()
+    };
+
+    let selected = select_profile(&env).unwrap();
+
+    assert_eq!(
+        (selected.name.as_str(), selected.source),
+        ("staging", ProfileSource::Env)
+    );
+}
+
+#[test]
+fn the_profile_flag_takes_precedence_over_imify_profile() {
+    let env = Environment {
+        profile_flag: Some("local".to_owned()),
+        profile: Some("staging".to_owned()),
+        ..Environment::default()
+    };
+
+    let selected = select_profile(&env).unwrap();
+
+    assert_eq!(
+        (selected.name.as_str(), selected.source),
+        ("local", ProfileSource::Flag)
+    );
+}
+
+#[test]
+fn an_empty_imify_profile_selects_the_default_profile() {
+    let env = Environment {
+        profile: Some(String::new()),
+        ..Environment::default()
+    };
+
+    assert_eq!(select_profile(&env).unwrap().name.as_str(), "default");
+}
+
+#[test]
+fn profile_names_have_1_to_64_letters_digits_dashes_and_underscores() {
+    let long = "a".repeat(64);
+    let too_long = "a".repeat(65);
+    let names = [
+        "staging", "a", "Prod-2", "9_x", &long, "", "-a", "_a", "a.b", "a b", "ä", &too_long,
+    ];
+
+    let accepted = names.map(|name| ProfileName::parse(name).is_ok());
+
+    assert_eq!(
+        accepted,
+        [
+            true, true, true, true, true, false, false, false, false, false, false, false
+        ]
+    );
+}
+
+#[test]
+fn an_invalid_profile_name_from_the_flag_names_the_flag_and_escapes_control_characters() {
+    let env = Environment {
+        profile_flag: Some("a\u{1b}[2J".to_owned()),
+        ..Environment::default()
+    };
+
+    let error = select_profile(&env).unwrap_err();
+
+    assert_eq!(error.code, ErrorCode::InvalidArgument);
+    assert_eq!(
+        error.message,
+        "--profile has the invalid profile name 'a\\u{1b}[2J': use 1 to 64 letters, digits, \
+         '-' and '_', starting with a letter or digit."
+    );
+}
+
+#[test]
+fn an_invalid_profile_name_from_the_variable_names_the_variable() {
+    let env = Environment {
+        profile: Some("a.b".to_owned()),
+        ..Environment::default()
+    };
+
+    let error = select_profile(&env).unwrap_err();
+
+    assert!(
+        error.message.starts_with("IMIFY_PROFILE has the invalid"),
+        "{}",
+        error.message
+    );
+    assert!(
+        error
+            .hint
+            .as_deref()
+            .unwrap_or_default()
+            .contains("IMIFY_PROFILE"),
+        "{:?}",
+        error.hint
+    );
+}
+
+#[test]
+fn a_file_with_only_top_level_keys_resolves_from_the_default_profile() {
+    let dir = tempfile::tempdir().unwrap();
+    write_config(dir.path(), "api_url = \"https://file.example.com\"\n");
+
+    let api_url = resolve_api_url(&env_in(dir.path())).unwrap();
+
+    assert_eq!(
+        (
+            api_url.to_string(),
+            api_url.source,
+            api_url.profile.as_deref()
+        ),
+        (
+            "https://file.example.com".to_owned(),
+            Source::Config,
+            Some("default")
+        )
+    );
+}
+
+#[test]
+fn a_selected_profile_supplies_its_api_url() {
+    let dir = tempfile::tempdir().unwrap();
+    write_config(dir.path(), PROFILES);
+
+    let api_url = resolve_api_url(&env_with_profile(dir.path(), Some("staging"), None)).unwrap();
+
+    assert_eq!(
+        (api_url.to_string(), api_url.profile.as_deref()),
+        ("https://staging.example.com".to_owned(), Some("staging"))
+    );
+}
+
+#[test]
+fn a_profile_without_api_url_falls_back_to_the_top_level_api_url() {
+    let dir = tempfile::tempdir().unwrap();
+    write_config(dir.path(), PROFILES);
+
+    let api_url = resolve_api_url(&env_with_profile(dir.path(), None, Some("empty"))).unwrap();
+
+    assert_eq!(
+        (api_url.to_string(), api_url.profile.as_deref()),
+        ("https://top.example.com".to_owned(), Some("default"))
+    );
+}
+
+#[test]
+fn a_profile_without_api_url_and_no_top_level_api_url_falls_back_to_the_default() {
+    let dir = tempfile::tempdir().unwrap();
+    write_config(dir.path(), "[profiles.empty]\n");
+
+    let api_url = resolve_api_url(&env_with_profile(dir.path(), Some("empty"), None)).unwrap();
+
+    assert_eq!(
+        (api_url.to_string(), api_url.source, api_url.profile),
+        (DEFAULT_API_URL.to_owned(), Source::Default, None)
+    );
+}
+
+#[test]
+fn imify_api_url_takes_precedence_over_the_selected_profile() {
+    let dir = tempfile::tempdir().unwrap();
+    write_config(dir.path(), PROFILES);
+    let env = Environment {
+        api_url: Some("https://env.example.com".to_owned()),
+        ..env_with_profile(dir.path(), Some("staging"), None)
+    };
+
+    assert_eq!(
+        resolved(&env),
+        ("https://env.example.com".to_owned(), Source::Env)
+    );
+}
+
+#[test]
+fn the_api_url_flag_takes_precedence_over_the_selected_profile() {
+    let dir = tempfile::tempdir().unwrap();
+    write_config(dir.path(), PROFILES);
+    let env = Environment {
+        api_url_flag: Some("https://flag.example.com".to_owned()),
+        ..env_with_profile(dir.path(), Some("staging"), None)
+    };
+
+    assert_eq!(
+        resolved(&env),
+        ("https://flag.example.com".to_owned(), Source::Flag)
+    );
+}
+
+#[test]
+fn an_api_url_from_the_flag_or_the_variable_names_no_profile() {
+    let dir = tempfile::tempdir().unwrap();
+    write_config(dir.path(), PROFILES);
+    let base = env_with_profile(dir.path(), Some("staging"), None);
+    let flag = Environment {
+        api_url_flag: Some("https://flag.example.com".to_owned()),
+        ..base.clone()
+    };
+    let variable = Environment {
+        api_url: Some("https://env.example.com".to_owned()),
+        ..base
+    };
+
+    let profiles = [flag, variable].map(|env| resolve_api_url(&env).unwrap().profile);
+
+    assert_eq!(profiles, [None, None]);
+}
+
+#[test]
+fn the_default_profile_selects_the_top_level_keys() {
+    let dir = tempfile::tempdir().unwrap();
+    write_config(dir.path(), PROFILES);
+
+    assert_eq!(
+        resolved(&env_with_profile(dir.path(), Some("default"), None)),
+        ("https://top.example.com".to_owned(), Source::Config)
+    );
+}
+
+#[test]
+fn an_unknown_profile_is_an_invalid_argument_naming_the_profile_the_source_and_the_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = write_config(dir.path(), PROFILES);
+
+    let error = resolve_api_url(&env_with_profile(dir.path(), None, Some("prod"))).unwrap_err();
+
+    assert_eq!(error.code, ErrorCode::InvalidArgument);
+    assert_eq!(
+        error.message,
+        format!(
+            "IMIFY_PROFILE selects the profile 'prod', which is not in {}.",
+            path.display()
+        )
+    );
+    assert_eq!(
+        error.hint.as_deref(),
+        Some(
+            "Run `imify config profiles` to list the profiles, `imify config set api-url <URL> \
+             --profile prod` to create it, or unset IMIFY_PROFILE."
+        )
+    );
+}
+
+#[test]
+fn an_unknown_profile_fails_even_when_the_api_url_flag_is_set() {
+    let dir = tempfile::tempdir().unwrap();
+    write_config(dir.path(), PROFILES);
+    let env = Environment {
+        api_url_flag: Some("https://flag.example.com".to_owned()),
+        ..env_with_profile(dir.path(), Some("prod"), None)
+    };
+
+    let error = resolve_api_url(&env).unwrap_err();
+
+    assert!(
+        error
+            .message
+            .starts_with("--profile selects the profile 'prod'"),
+        "{}",
+        error.message
+    );
+}
+
+#[test]
+fn an_invalid_profile_table_name_is_an_invalid_argument_naming_the_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = write_config(dir.path(), "[profiles.\"a.b\"]\n");
+
+    let error = resolve_api_url(&env_in(dir.path())).unwrap_err();
+
+    assert_eq!(error.code, ErrorCode::InvalidArgument);
+    assert!(
+        error.message.starts_with(&path.display().to_string()) && error.message.contains("a.b"),
+        "{}",
+        error.message
+    );
+}
+
+#[test]
+fn a_profiles_default_table_is_an_invalid_argument() {
+    let dir = tempfile::tempdir().unwrap();
+    write_config(dir.path(), "[profiles.default]\n");
+
+    let error = resolve_api_url(&env_in(dir.path())).unwrap_err();
+
+    assert_eq!(error.code, ErrorCode::InvalidArgument);
+    assert!(
+        error.message.contains("profiles.default"),
+        "{}",
+        error.message
+    );
+}
+
+#[test]
+fn an_unknown_key_in_a_profile_names_the_key_the_profile_and_the_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = write_config(dir.path(), "[profiles.staging]\nhost = \"x\"\n");
+
+    let error = resolve_api_url(&env_in(dir.path())).unwrap_err();
+
+    assert_eq!(error.code, ErrorCode::InvalidArgument);
+    for part in [path.display().to_string().as_str(), "host", "staging"] {
+        assert!(error.message.contains(part), "{part}: {}", error.message);
+    }
+}
+
+#[test]
+fn an_invalid_api_url_in_a_profile_names_the_profile_and_the_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = write_config(
+        dir.path(),
+        "[profiles.staging]\napi_url = \"http://staging.example.com\"\n",
+    );
+
+    let error = resolve_api_url(&env_with_profile(dir.path(), Some("staging"), None)).unwrap_err();
+
+    assert!(
+        error.message.starts_with(&format!(
+            "api_url in profile staging in {} is invalid",
+            path.display()
+        )),
+        "{}",
+        error.message
+    );
+    assert_eq!(
+        error.hint.as_deref(),
+        Some(
+            "Run `imify config set api-url <URL> --profile staging`, or `imify config unset \
+             api-url --profile staging`."
+        )
+    );
+}
+
+#[test]
+fn saving_without_profiles_writes_no_profiles_table() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = ConfigFile::open(&env_in(dir.path())).unwrap();
+
+    file.save(&contents_with(&[("default", "https://a.example.com")]))
+        .unwrap();
+
+    assert_eq!(
+        std::fs::read_to_string(file.path()).unwrap(),
+        "api_url = \"https://a.example.com\"\n"
+    );
+}
+
+#[test]
+fn saving_writes_the_top_level_keys_then_the_profiles_by_name() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = ConfigFile::open(&env_in(dir.path())).unwrap();
+
+    file.save(&contents_with(&[
+        ("staging", "https://s.example.com"),
+        ("default", "https://d.example.com"),
+        ("local", "http://localhost:8000"),
+    ]))
+    .unwrap();
+
+    assert_eq!(
+        std::fs::read_to_string(file.path()).unwrap(),
+        "api_url = \"https://d.example.com\"\n\n\
+         [profiles.local]\napi_url = \"http://localhost:8000\"\n\n\
+         [profiles.staging]\napi_url = \"https://s.example.com\"\n"
+    );
+}
+
+#[test]
+fn an_empty_profile_table_is_kept_when_saving() {
+    let dir = tempfile::tempdir().unwrap();
+    write_config(dir.path(), PROFILES);
+    let file = ConfigFile::open(&env_in(dir.path())).unwrap();
+    let contents = file.load().unwrap();
+
+    file.save(&contents).unwrap();
+
+    let loaded = file.load().unwrap();
+    assert_eq!(loaded, contents);
+    assert!(
+        loaded
+            .profile(&ProfileName::parse("empty").unwrap())
+            .is_some()
+    );
+}
+
+#[test]
+fn removing_the_last_key_of_a_profile_removes_its_table() {
+    let mut contents = contents_with(&[("staging", "https://s.example.com")]);
+
+    contents.remove(&ProfileName::parse("staging").unwrap(), Key::ApiUrl);
+
+    assert_eq!(contents, Contents::default());
+}
+
+#[test]
+fn profile_names_list_default_first_then_the_others_by_name() {
+    let dir = tempfile::tempdir().unwrap();
+    write_config(dir.path(), PROFILES);
+    let contents = ConfigFile::open(&env_in(dir.path()))
+        .unwrap()
+        .load()
+        .unwrap();
+
+    let names: Vec<&str> = contents.profile_names().map(ProfileName::as_str).collect();
+
+    assert_eq!(names, ["default", "empty", "staging"]);
 }

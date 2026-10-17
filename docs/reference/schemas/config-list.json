@@ -5,7 +5,7 @@
   "type": "array",
   "items": {
     "type": "object",
-    "required": ["key", "value", "source"],
+    "required": ["key", "value", "source", "profile"],
     "properties": {
       "key": {
         "description": "The setting, as named on the command line.",
@@ -19,6 +19,10 @@
       "source": {
         "description": "Where the value comes from: the `--api-url` flag, the `IMIFY_API_URL` variable, the config file, or the built-in default.",
         "enum": ["flag", "env", "config", "default"]
+      },
+      "profile": {
+        "description": "The profile whose table in the config file supplied the value, `default` for a top-level key, when `source` is `config`; otherwise `null`.",
+        "type": ["string", "null"]
       }
     }
   }

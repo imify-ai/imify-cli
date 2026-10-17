@@ -2,4 +2,4 @@
 source: crates/imify-cli/tests/config.rs
 expression: text(&json.stdout)
 ---
-[{"key":"api-url","source":"config","value":"https://api.example.com"}]
+[{"key":"api-url","profile":"default","source":"config","value":"https://api.example.com"}]

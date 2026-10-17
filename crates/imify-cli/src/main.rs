@@ -34,6 +34,7 @@ fn main() -> ExitCode {
     };
     init_tracing(&settings);
     env.api_url_flag.clone_from(&cli.global.api_url);
+    env.profile_flag.clone_from(&cli.global.profile);
 
     let mut renderer = settings.renderer();
     match run(cli.command.as_ref(), &env, &settings, renderer.as_mut()) {
@@ -63,6 +64,7 @@ fn run(
             ConfigCommand::Set { key, value } => commands::config::set(env, *key, value, renderer),
             ConfigCommand::Unset { key } => commands::config::unset(env, *key, renderer),
             ConfigCommand::List => commands::config::list(env, renderer),
+            ConfigCommand::Profiles => commands::config::profiles(env, renderer),
         },
         Some(Command::Datasets {
             command: DatasetsCommand::Ls(args),

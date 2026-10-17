@@ -1,0 +1,5 @@
+---
+source: crates/imify-cli/tests/config.rs
+expression: text(&json.stdout)
+---
+[{"active":false,"api_url":"https://top.example.com","name":"default"},{"active":false,"api_url":"https://top.example.com","name":"empty"},{"active":false,"api_url":"http://localhost:8000","name":"local"},{"active":true,"api_url":"https://staging.example.com","name":"staging"}]

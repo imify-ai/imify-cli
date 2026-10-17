@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "imify config profiles result",
+  "description": "Written to stdout by `imify config profiles --json`: every profile in the config file, `default` first, then the other profiles sorted by name.",
+  "type": "array",
+  "items": {
+    "type": "object",
+    "required": ["name", "active", "api_url"],
+    "properties": {
+      "name": {
+        "description": "The profile name. `default` is the profile the top-level keys form.",
+        "type": "string",
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"
+      },
+      "active": {
+        "description": "Whether `--profile`, `IMIFY_PROFILE` or the default selects this profile. No profile is active when the selected one does not exist.",
+        "type": "boolean"
+      },
+      "api_url": {
+        "description": "The API URL the profile resolves to without `--api-url` and `IMIFY_API_URL`: its own `api_url`, else the top-level `api_url`, else the built-in default.",
+        "type": "string",
+        "minLength": 1
+      }
+    }
+  }
+}

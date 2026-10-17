@@ -19,6 +19,7 @@ fn imify_command() -> Command {
         .env_remove("NO_COLOR")
         .env_remove("IMIFY_TOKEN")
         .env_remove("IMIFY_API_URL")
+        .env_remove("IMIFY_PROFILE")
         .env_remove("IMIFY_OIDC_ISSUER")
         .env_remove("IMIFY_OIDC_CLIENT_ID")
         .env("IMIFY_CREDENTIAL_STORE", "file")
