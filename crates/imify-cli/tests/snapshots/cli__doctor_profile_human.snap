@@ -1,0 +1,15 @@
+---
+source: crates/imify-cli/tests/cli.rs
+expression: "normalize_doctor_text(&text(&output.stdout), &server.uri())"
+---
+imify-cli <version> (<os> <arch>)
+profile staging
+
+ok    api_url       http://127.0.0.1:<port> (config.toml, profile staging)
+ok    health        Reachable in <n> ms.
+ok    readiness     Database ok, storage ok.
+ok    clock         The local clock is within 60 s of the server.
+ok    token         IMIFY_TOKEN is set.
+ok    token_expiry  Expires at 2100-01-01T00:00:00Z.
+ok    account       Ada Lovelace (admin).
+ok    oidc          Issuer https://login.example.com, client client-1.

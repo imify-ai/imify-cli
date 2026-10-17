@@ -3,6 +3,7 @@
 ```console
 $ imify doctor
 imify-cli 0.1.0 (macos aarch64)
+profile default
 
 ok    api_url       https://api.example.com (IMIFY_API_URL)
 ok    health        Reachable in 84 ms.
@@ -16,6 +17,18 @@ ok    oidc          Issuer https://login.example.com, client client-1.
 ```
 
 `imify doctor` checks the CLI configuration, the API, the access token and the identity provider settings, then writes a report to stdout. It contacts the API host, which `--api-url`, `IMIFY_API_URL`, the config file or the default selects (see [Configuration](configuration.md)), and sends four requests: `GET /api/health` and `GET /api/health/ready` without a token, `GET /api/v1/me` with the token, then `GET /config.json` without a token. With both `IMIFY_OIDC_ISSUER` and `IMIFY_OIDC_CLIENT_ID` set, it does not request `config.json`. A stored login whose ID token expires within 60 s is refreshed before `GET /api/v1/me`, with one request to the identity provider's token endpoint. Requests are not retried and time out after 10 s without progress.
+
+The `profile` line names the selected [profile](configuration.md#profiles). With a profile other than `default` selected, the `api_url` line also names the profile that supplied the URL from the config file:
+
+```console
+$ imify doctor --profile staging
+imify-cli 0.1.0 (macos aarch64)
+profile staging
+
+ok    api_url       https://staging.example.com (config.toml, profile staging)
+```
+
+A profile without `api_url` uses the top-level `api_url`, and the line reads `(config.toml, profile default)`. When the config file has no such profile, or the name is invalid, the `api_url` check fails with `invalid_argument`.
 
 With a stored login, the `token` line names where the login is stored and whether it has a refresh token:
 
@@ -37,7 +50,7 @@ Each line is one check: status, name and message. A `fail` or `warn` line with a
 
 | Name | Fails when (error code) | Warns when | Skipped when |
 |---|---|---|---|
-| `api_url` | The API URL is not a URL, has a user name, password, query or fragment, or uses `http` for a host other than `localhost`, `127.0.0.1` or `::1` (`invalid_argument`). The message names the source. | | |
+| `api_url` | The API URL is not a URL, has a user name, password, query or fragment, or uses `http` for a host other than `localhost`, `127.0.0.1` or `::1` (`invalid_argument`). The message names the source. Also fails when the selected profile is not in the config file or its name is invalid (`invalid_argument`); the message names the profile. | | |
 | `health` | `GET /api/health` fails (`network`, `server`, `not_found`, `rate_limited`, `internal`), or its `status` is not `ok` (`server`). | | `api_url` failed. |
 | `readiness` | The API reports a `status` other than `ok` (`server`). The message names the state of the database and the storage. Also fails when the request fails. | | `health` did not pass. |
 | `clock` | | The local clock differs from the response's `Date` header by more than 60 s. | `health` did not pass, or the response has no `Date` header. |
@@ -72,7 +85,7 @@ hint: Set `IMIFY_TOKEN` to an access token.
 
 ```console
 $ imify doctor --json
-{"api_url":"https://api.example.com","api_url_source":"env","checks":[{"code":null,"hint":null,"message":"https://api.example.com (IMIFY_API_URL)","name":"api_url","status":"ok"}],"cli_version":"0.1.0","clock_skew_ms":-95000,"config_dir":"/home/robot/.config/imify","credential_store":"auto","latency_ms":84,"login":{"has_refresh_token":true,"storage":"keychain"},"oidc":{"client_id":"client-1","issuer":"https://login.example.com","issuer_https":true},"platform":{"arch":"aarch64","os":"macos"},"readiness":{"db":"ok","status":"ok","storage":"ok"},"token_expires_at":"2026-10-16T12:00:00Z","token_source":"stored","user":{"name":"Ada Lovelace","role":"admin","subject":"user-1234"}}
+{"active_profile":"default","api_url":"https://api.example.com","api_url_profile":null,"api_url_source":"env","checks":[{"code":null,"hint":null,"message":"https://api.example.com (IMIFY_API_URL)","name":"api_url","status":"ok"}],"cli_version":"0.1.0","clock_skew_ms":-95000,"config_dir":"/home/robot/.config/imify","credential_store":"auto","latency_ms":84,"login":{"has_refresh_token":true,"storage":"keychain"},"oidc":{"client_id":"client-1","issuer":"https://login.example.com","issuer_https":true},"platform":{"arch":"aarch64","os":"macos"},"readiness":{"db":"ok","status":"ok","storage":"ok"},"token_expires_at":"2026-10-16T12:00:00Z","token_source":"stored","user":{"name":"Ada Lovelace","role":"admin","subject":"user-1234"}}
 ```
 
 The example shows one of the eight checks.
@@ -81,8 +94,10 @@ The example shows one of the eight checks.
 |---|---|
 | `cli_version` | Version of the CLI. |
 | `platform` | `os` and `arch` the CLI was built for. |
+| `active_profile` | The selected profile: `--profile`, else `IMIFY_PROFILE`, else `default`. Set also when the config file has no such profile. `null` when the name is invalid. |
 | `api_url` | The API URL the checks used. |
 | `api_url_source` | Where the API URL comes from: `flag`, `env`, `config` or `default`. |
+| `api_url_profile` | The profile whose table in the config file supplied the API URL, `default` for the top-level `api_url`, when `api_url_source` is `config`. Same value as `profile` in `imify config get api-url --json`. |
 | `latency_ms` | Duration of `GET /api/health` in milliseconds. |
 | `clock_skew_ms` | The server's `Date` minus the local time in milliseconds. Negative when the local clock is ahead. The `Date` header has a resolution of 1 s. |
 | `readiness` | `status`, `db` and `storage` from `GET /api/health/ready`. |

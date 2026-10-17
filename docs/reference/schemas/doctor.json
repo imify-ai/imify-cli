@@ -6,8 +6,10 @@
   "required": [
     "cli_version",
     "platform",
+    "active_profile",
     "api_url",
     "api_url_source",
+    "api_url_profile",
     "latency_ms",
     "clock_skew_ms",
     "readiness",
@@ -34,6 +36,10 @@
         "arch": {"description": "Such as `aarch64` or `x86_64`.", "type": "string"}
       }
     },
+    "active_profile": {
+      "description": "The selected profile: `--profile`, else `IMIFY_PROFILE`, else `default`. Set also when the config file has no such profile. Null when the selected name is not a valid profile name.",
+      "type": ["string", "null"]
+    },
     "api_url": {
       "description": "The API URL the checks used.",
       "type": ["string", "null"]
@@ -41,6 +47,10 @@
     "api_url_source": {
       "description": "Where the API URL comes from: the `--api-url` flag, the `IMIFY_API_URL` variable, the config file, or the built-in default.",
       "enum": ["flag", "env", "config", "default", null]
+    },
+    "api_url_profile": {
+      "description": "The profile whose table in the config file supplied the API URL, `default` for the top-level key, when `api_url_source` is `config`; otherwise null.",
+      "type": ["string", "null"]
     },
     "latency_ms": {
       "description": "Duration of the `GET /api/health` request in milliseconds.",

@@ -172,6 +172,7 @@ fn run(api_url: &str, config_dir: &Path, args: &[&str], env: &[(&str, &str)]) ->
         .env_remove("IMIFY_OUTPUT")
         .env_remove("NO_COLOR")
         .env_remove("IMIFY_TOKEN")
+        .env_remove("IMIFY_PROFILE")
         .env_remove("IMIFY_OIDC_ISSUER")
         .env_remove("IMIFY_OIDC_CLIENT_ID")
         .env("IMIFY_API_URL", api_url)
