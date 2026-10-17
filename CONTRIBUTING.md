@@ -25,6 +25,7 @@ Commits and PR descriptions contain no `Co-authored-by` lines and no tool attrib
 - The `imify-cli` crate does no network I/O; it calls the `imify` SDK crate.
 - Public SDK items have doc comments with an example that compiles.
 - Tests describe behavior, one behavior per test, and never contact a real server.
+- `docs/reference/cli.md` and `docs/man/` are generated from the command definitions; a test fails when they differ. After changing a command, a flag or help text, regenerate them with `IMIFY_UPDATE_REFERENCE=1 cargo test -p imify-cli reference`.
 - Prose is concise and factual; documentation opens with an example. Vale checks Markdown files against the house style in `.vale/styles/Imify/`.
 
 ## Decisions

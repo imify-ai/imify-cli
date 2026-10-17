@@ -1,0 +1,53 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH imify-datasets-upload 1 "" "imify" ""
+.SH NAME
+imify\-datasets\-upload \- Upload a local LeRobot dataset into an ingest session
+.SH SYNOPSIS
+\fBimify datasets upload\fR [\fB\-\-json\fR] [\fB\-\-dry\-run\fR] [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-\-resume\fR] [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-\-restart\fR] [\fB\-\-yes\fR] [\fB\-\-no\-color\fR] [\fB\-\-api\-url\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fB\-\-task\fR> <\fIPATH\fR> 
+.SH DESCRIPTION
+Upload a local LeRobot dataset into an ingest session.
+.PP
+Validates the dataset first and uploads nothing when the report has an error. Uploads meta/, data/ and videos/, with meta/info.json first. Writes the ingest session to stdout. Ctrl\-C stops the upload and leaves the session open. Running the same upload again continues that session and sends only the files it lacks.
+.SH OPTIONS
+.TP
+\fB\-\-json\fR
+Write JSON instead of text [env: IMIFY_OUTPUT=json]
+.TP
+\fB\-\-task\fR \fI<TEXT>\fR
+Task description of the recorded episodes
+.TP
+\fB\-\-dry\-run\fR
+Validate and list the files to upload; needs no token and no network
+.TP
+\fB\-q\fR, \fB\-\-quiet\fR
+Write the result only
+.TP
+\fB\-\-resume\fR
+Continue the interrupted upload of PATH; fail when there is none
+.TP
+\fB\-v\fR, \fB\-\-verbose\fR
+Log more detail to stderr: \-v for debug, \-vv for trace
+.TP
+\fB\-\-restart\fR
+Discard the interrupted upload of PATH and start a new ingest session
+.TP
+\fB\-\-yes\fR
+Confirm without prompting
+.TP
+\fB\-\-no\-color\fR
+Disable color [env: NO_COLOR]
+.TP
+\fB\-\-api\-url\fR \fI<URL>\fR
+API host [env: IMIFY_API_URL] [default: config file, then https://platform.imify.ai]
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)
+.TP
+<\fIPATH\fR>
+The dataset root: the directory that contains meta/info.json
+.SH EXTRA
+Examples:
+  imify datasets upload ./pick\-cube \-\-task "Pick up the red cube"
+  imify datasets upload ./pick\-cube \-\-task "Pick up the red cube" \-\-dry\-run
+  imify datasets upload ./pick\-cube \-\-task "Pick up the red cube" \-\-restart

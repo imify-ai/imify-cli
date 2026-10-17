@@ -43,6 +43,7 @@ zbus-secret-service-keyring-store = { version = "1.0.1", features = ["rt-tokio-c
 [dev-dependencies]
 assert_cmd = "2"
 base64 = "0.23.1"
+clap_mangen = "0.3"
 imify-test-support = { path = "../imify-test-support" }
 insta = "1.49"
 jsonschema = { version = "0.58", default-features = false }
