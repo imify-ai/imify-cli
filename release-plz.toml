@@ -4,6 +4,8 @@ git_release_enable = false
 # Off until the crate names are published for the first time.
 publish = false
 semver_check = true
+# A `feat` commit bumps the minor version below 1.0 as well.
+features_always_increment_minor = true
 pr_labels = ["release"]
 # The release PR body passes scripts/policy/check-message.sh: no emoji, no attribution footer.
 pr_body = """
@@ -47,7 +49,12 @@ body = '''
 [[package]]
 name = "imify"
 git_tag_enable = false
+# Not released until it is published: without a registry version or a tag, every run
+# would be its initial release.
+release = false
 
 [[package]]
 name = "imify-cli"
 git_tag_name = "v{{ version }}"
+# The current version comes from the latest `v` tag, not from crates.io.
+git_only = true
