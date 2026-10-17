@@ -9,11 +9,12 @@ mod private_file;
 #[cfg(test)]
 mod reference;
 mod tui;
+mod update;
 
 use std::ffi::OsString;
 use std::process::ExitCode;
 
-use cli::{AuthCommand, Command, ConfigCommand, DatasetsCommand};
+use cli::{AuthCommand, Command, ConfigCommand, DatasetsCommand, SelfCommand};
 use output::renderer::Renderer;
 use output::{CliError, Environment, ErrorCode, Settings};
 
@@ -76,6 +77,9 @@ fn run(
         }) => runtime()?.block_on(commands::datasets::upload::upload(
             env, settings, args, renderer,
         )),
+        Some(Command::Itself {
+            command: SelfCommand::Update,
+        }) => runtime()?.block_on(commands::self_update::update(env, renderer)),
     }
 }
 

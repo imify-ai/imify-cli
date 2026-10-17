@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "imify self update result",
+  "description": "Written to stdout by `imify self update --json`.",
+  "type": "object",
+  "required": ["updated", "previous_version", "version", "install_prefix"],
+  "properties": {
+    "updated": {
+      "description": "Whether the installer of a newer release ran. `false` when the running version is the latest release or newer.",
+      "type": "boolean"
+    },
+    "previous_version": {
+      "description": "The version that ran the command.",
+      "type": "string",
+      "minLength": 1
+    },
+    "version": {
+      "description": "The version installed after the command: the latest release when `updated` is `true`, otherwise `previous_version`.",
+      "type": "string",
+      "minLength": 1
+    },
+    "install_prefix": {
+      "description": "The install prefix from the install receipt. The binary is in its `bin` directory.",
+      "type": "string",
+      "minLength": 1
+    }
+  }
+}

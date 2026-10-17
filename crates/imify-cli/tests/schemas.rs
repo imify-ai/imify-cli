@@ -15,6 +15,15 @@ const CASES: &[(&str, &[&str])] = &[
             "cli__datasets_validate_invalid_envelope_json.snap",
             "cli__datasets_upload_rejected_json.snap",
             "cli__doctor_failed_envelope_json.snap",
+            "self_update__self_update_unsupported_json.snap",
+            "self_update__self_update_failed_json.snap",
+        ],
+    ),
+    (
+        "self-update.json",
+        &[
+            "self_update__self_update_json.snap",
+            "self_update__self_update_latest_json.snap",
         ],
     ),
     (

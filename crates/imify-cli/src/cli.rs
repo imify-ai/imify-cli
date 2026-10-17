@@ -95,6 +95,24 @@ Writes a report to stdout. Exits with the error code of the first failing check,
         #[command(subcommand)]
         command: DatasetsCommand,
     },
+    /// Manage this imify installation
+    #[command(name = "self", after_help = "Example:\n  imify self update")]
+    Itself {
+        #[command(subcommand)]
+        command: SelfCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum SelfCommand {
+    #[command(
+        about = "Update imify to the latest release",
+        long_about = "Update imify to the latest release.
+
+Works for an install by the imify installer: looks up the latest release on GitHub and, when it is newer, runs its installer for the install directory recorded in the install receipt. Other installs fail with a hint naming their update command.",
+        after_help = "Example:\n  imify self update"
+    )]
+    Update,
 }
 
 #[derive(Debug, Subcommand)]

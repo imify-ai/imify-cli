@@ -1,0 +1,5 @@
+---
+source: crates/imify-cli/tests/self_update.rs
+expression: machine.redact(&output.stderr)
+---
+{"error":{"code":"self_update_failed","message":"self update failed: the installer exited with exit status: 1","hint":"Run `imify self update -v` to see the installer output."}}

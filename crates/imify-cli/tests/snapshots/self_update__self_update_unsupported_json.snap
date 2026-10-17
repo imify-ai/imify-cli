@@ -1,0 +1,5 @@
+---
+source: crates/imify-cli/tests/self_update.rs
+expression: machine.redact(&output.stderr)
+---
+{"error":{"code":"self_update_unsupported","message":"This imify was not installed by the imify installer and cannot update itself.","hint":"Download it from https://github.com/imify-ai/imify-cli/releases/latest."}}

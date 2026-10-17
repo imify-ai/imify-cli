@@ -40,6 +40,14 @@ The shell installer and `cargo install` are not affected.
 
 From source, with Rust installed: `cargo install --locked --git https://github.com/imify-ai/imify-cli imify-cli`.
 
+### Update
+
+```sh
+imify self update
+```
+
+`imify self update` installs the latest release when the installer above installed `imify`. A `cargo install` updates with `cargo install --locked imify-cli`. See [Update imify](docs/guide/self-update.md).
+
 ### Verify a download
 
 Each release archive has a `.sha256` checksum file and a GitHub artifact attestation. Download an archive from the [releases page](https://github.com/imify-ai/imify-cli/releases) and check both:

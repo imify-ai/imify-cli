@@ -19,6 +19,7 @@ One file per decision, numbered in order. A decision is changed by a new ADR tha
 | [0013](0013-contribution-policy.md) | Contribution policy |
 | [0014](0014-ci-gates-and-guarded-paths.md) | CI gates and guarded paths |
 | [0015](0015-generated-sdk-api-layer.md) | SDK API layer generated from the vendored OpenAPI document |
+| [0016](0016-self-update-and-update-check.md) | Self update and update check |
 
 ## Template
 

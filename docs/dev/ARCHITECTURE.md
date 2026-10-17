@@ -25,6 +25,8 @@
 
 `imify-cli` never builds an HTTP request and never parses an API response. It calls `imify` and renders what it gets back. CI enforces this: `scripts/policy/check-crate-boundary.sh` fails when `imify-cli` depends directly on an HTTP client.
 
+Besides the platform API, the SDK contacts GitHub releases in `imify::update`, behind the feature `self-update` that `imify-cli` enables ([ADR 0016](adr/0016-self-update-and-update-check.md)).
+
 The SDK has no terminal concerns: it does not print, prompt or read environment variables other than the ones a `TokenSource` is documented to read. Progress is reported as typed events the caller consumes.
 
 ## Module layout
@@ -43,11 +45,13 @@ crates/imify/src/
   datasets/         dataset endpoints and models
   ingest/           upload engine: Transport trait, planner, pacing, resume journal, progress events
   validate/         offline structural checks of LeRobot v3 and v2.1 datasets
+  update.rs,        feature `self-update`: latest GitHub release, install receipt of the
+  update/           dist shell installer, download and run of the release's installer
 
 crates/imify-cli/src/
   main.rs           parse, dispatch, map errors to exit codes
   cli.rs            global flags and the top-level command enum
-  commands/         one module per noun: datasets, auth, config, doctor
+  commands/         one module per noun: datasets, auth, config, doctor, self (self_update)
   credentials/      where a login is stored: OS keychain, file; selection by IMIFY_CREDENTIAL_STORE
   browser.rs        opens the sign-in URL in the system browser
   config/           settings and their sources: --api-url, environment, profiles in config.toml, defaults
@@ -55,6 +59,7 @@ crates/imify-cli/src/
   private_file.rs   files only the user can change: mode checks, atomic writes
   output/           Renderer (human, json), error envelope, exit codes
   tui/              inline viewport, theme, terminal restore
+  update/           install method of the running binary and its update command
 ```
 
 ## Seams

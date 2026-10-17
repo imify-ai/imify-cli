@@ -178,6 +178,34 @@ pub enum Error {
         #[source]
         reason: JournalError,
     },
+
+    /// Updating the program failed: the install receipt cannot be read or describes an
+    /// install that cannot be updated, the release has no shell installer, or the installer
+    /// failed.
+    ///
+    /// ```
+    /// use imify::Error;
+    ///
+    /// fn installer_log(error: &Error) -> Option<&str> {
+    ///     match error {
+    ///         Error::SelfUpdate { installer_output, .. } => installer_output.as_deref(),
+    ///         _ => None,
+    ///     }
+    /// }
+    ///
+    /// let error = Error::SelfUpdate {
+    ///     message: "the installer exited with exit status: 1".into(),
+    ///     installer_output: Some("ERROR: no prebuilt binaries for this platform".into()),
+    /// };
+    /// assert_eq!(installer_log(&error), Some("ERROR: no prebuilt binaries for this platform"));
+    /// ```
+    #[error("self update failed: {message}")]
+    SelfUpdate {
+        /// What failed.
+        message: String,
+        /// stdout followed by stderr of the installer; `None` when it did not run.
+        installer_output: Option<String>,
+    },
 }
 
 /// Why the resume journal of an upload cannot be used, reported in [`Error::Journal`].
@@ -364,7 +392,7 @@ fn field_error(entry: &Value) -> Option<FieldError> {
     })
 }
 
-fn retry_after(headers: &HeaderMap) -> Option<Duration> {
+pub(crate) fn retry_after(headers: &HeaderMap) -> Option<Duration> {
     let seconds = headers
         .get(RETRY_AFTER)?
         .to_str()
