@@ -6,7 +6,7 @@ use wiremock::{Mock, ResponseTemplate};
 
 use super::*;
 use crate::auth::testing::{
-    ID_TOKEN_SUBJECT, MemoryStore, MockProvider, REFRESH_TOKEN, claims, client, jwt, unix_now,
+    ID_TOKEN_SUBJECT, MemoryStore, MockProvider, REFRESH_TOKEN, claims, client, jwt,
 };
 
 const NEW_REFRESH_TOKEN: &str = "rt_9c4d-rotated-secret";
@@ -122,7 +122,8 @@ async fn the_stored_id_token_is_returned_without_a_request_while_more_than_60_s_
 async fn the_id_token_is_refreshed_and_saved_when_less_than_60_s_remain() {
     let provider = MockProvider::start().await;
     let store = MemoryStore::holding(provider.credentials(30, Some(REFRESH_TOKEN)));
-    let new_id_token = provider.id_token(None, 3600);
+    let new_claims = claims(&provider.issuer(), None, 3600);
+    let new_id_token = jwt(&new_claims);
     provider
         .mount_token_response(json!({"id_token": new_id_token, "refresh_token": NEW_REFRESH_TOKEN}))
         .await;
@@ -133,15 +134,10 @@ async fn the_id_token_is_refreshed_and_saved_when_less_than_60_s_remain() {
     let saved = store.stored().unwrap();
     assert_eq!(saved.id_token(), new_id_token);
     assert_eq!(saved.refresh_token(), Some(NEW_REFRESH_TOKEN));
-    let expected_expiry = unix_now() + 3600;
-    let expiry = saved
-        .expires_at()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
-    assert!(
-        expiry.abs_diff(expected_expiry) <= 2,
-        "{expiry} vs {expected_expiry}"
+    let exp = new_claims["exp"].as_u64().unwrap();
+    assert_eq!(
+        saved.expires_at(),
+        std::time::UNIX_EPOCH + std::time::Duration::from_secs(exp)
     );
     assert_eq!(store.save_count(), 1);
 }
