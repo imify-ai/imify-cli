@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0](https://github.com/imify-ai/imify-cli/compare/v0.1.0...v0.2.0) - 2026-10-17
+
+### Added
+
+- *(cli)* show a hint when a newer release exists ([#87](https://github.com/imify-ai/imify-cli/pull/87))
+- *(cli)* imify self update ([#83](https://github.com/imify-ai/imify-cli/pull/83))
+- *(doctor)* report the active profile ([#85](https://github.com/imify-ai/imify-cli/pull/85))
+- *(cli)* profiles with --profile and IMIFY_PROFILE ([#84](https://github.com/imify-ai/imify-cli/pull/84))
+- *(doctor)* check the stored login ([#79](https://github.com/imify-ai/imify-cli/pull/79))
+- *(auth)* point to the stored login when IMIFY_TOKEN is rejected ([#75](https://github.com/imify-ai/imify-cli/pull/75))
+
+### Fixed
+
+- *(tui)* fall back to plain lines when the live view cannot start ([#74](https://github.com/imify-ai/imify-cli/pull/74))
+
+### Other
+
+- *(release)* publish a Homebrew formula to imify-ai/homebrew-tap ([#90](https://github.com/imify-ai/imify-cli/pull/90))
+- explain the macOS quarantine for browser-downloaded archives ([#81](https://github.com/imify-ai/imify-cli/pull/81))
+- *(cli)* generate the CLI reference and man pages ([#78](https://github.com/imify-ai/imify-cli/pull/78))
+- release v0.1.0 ([#24](https://github.com/imify-ai/imify-cli/pull/24))
+
 ## [0.1.0](https://github.com/imify-ai/imify-cli/releases/tag/v0.1.0) - 2026-10-16
 
 ### Added
