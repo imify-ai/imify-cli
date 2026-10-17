@@ -31,7 +31,7 @@ tokio-util = { version = "0.7.15", features = ["io"] }
 
 [features]
 # Updates a program installed by its dist shell installer: `imify::update`.
-self-update = ["dep:semver", "tokio/process"]
+self-update = ["dep:semver", "tokio/macros", "tokio/process"]
 
 [dev-dependencies]
 imify-test-support = { path = "../imify-test-support" }
