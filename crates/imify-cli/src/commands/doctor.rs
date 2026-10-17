@@ -12,7 +12,9 @@ use url::Url;
 
 use super::auth::{AuthSource, LoginLookup, TokenOrigin, oidc_settings, on_blocking_thread};
 use super::write_result;
-use crate::config::{ResolvedApiUrl, Source, is_loopback, resolve_api_url};
+use crate::config::{
+    ProfileName, ResolvedApiUrl, Source, is_loopback, resolve_api_url, select_profile,
+};
 use crate::credentials::{HostStore, Keychain, Location, StoreChoice, host_key};
 use crate::dirs::config_dir;
 use crate::output::renderer::{Render, Renderer};
@@ -272,8 +274,11 @@ fn client_builder(url: &str) -> ClientBuilder {
 /// Everything doctor found out: the checks in report order and the values they produced.
 #[derive(Debug, Default)]
 struct Report {
+    active_profile: Option<ProfileName>,
     api_url: Option<String>,
     api_url_source: Option<Source>,
+    /// The profile whose table supplied the API URL, as [`ResolvedApiUrl::profile`].
+    api_url_profile: Option<String>,
     latency_ms: Option<u64>,
     clock_skew_ms: Option<i64>,
     readiness: Option<Readiness>,
@@ -375,8 +380,10 @@ async fn check_oidc(env: &Environment, client: &Client, host: &str, report: &mut
     report.push(check);
 }
 
-/// Runs the `api_url` check and returns the URL with a client without a token source.
+/// Records the selected profile, runs the `api_url` check and returns the URL with a client
+/// without a token source.
 fn check_api_url(env: &Environment, report: &mut Report) -> Option<(ResolvedApiUrl, Client)> {
+    report.active_profile = select_profile(env).ok().map(|selected| selected.name);
     let checked = resolve_api_url(env).and_then(|api_url| {
         client_builder(&api_url.to_string())
             .build()
@@ -386,18 +393,30 @@ fn check_api_url(env: &Environment, report: &mut Report) -> Option<(ResolvedApiU
     match checked {
         Ok((api_url, client)) => {
             let url = api_url.to_string();
-            report.push(Check::ok(
-                "api_url",
-                format!("{url} ({})", api_url.source.api_url_label()),
-            ));
+            let origin = api_url_origin(&api_url, report.active_profile.as_ref());
+            report.push(Check::ok("api_url", format!("{url} ({origin})")));
             report.api_url = Some(url);
             report.api_url_source = Some(api_url.source);
+            report.api_url_profile.clone_from(&api_url.profile);
             Some((api_url, client))
         }
         Err(error) => {
             report.push(Check::fail("api_url", error));
             None
         }
+    }
+}
+
+/// Where `api_url` comes from, for people, such as `IMIFY_API_URL`. With a profile other than
+/// `default` active, a value from the config file also names the profile that supplied it, such
+/// as `config.toml, profile staging`.
+fn api_url_origin(api_url: &ResolvedApiUrl, active_profile: Option<&ProfileName>) -> String {
+    let label = api_url.source.api_url_label();
+    match (&api_url.profile, active_profile) {
+        (Some(supplier), Some(active)) if !active.is_default() => {
+            format!("{label}, profile {supplier}")
+        }
+        _ => label.to_owned(),
     }
 }
 
@@ -666,8 +685,10 @@ impl Render for Report {
         serde_json::json!({
             "cli_version": env!("CARGO_PKG_VERSION"),
             "platform": {"os": std::env::consts::OS, "arch": std::env::consts::ARCH},
+            "active_profile": self.active_profile.as_ref().map(ProfileName::as_str),
             "api_url": self.api_url,
             "api_url_source": self.api_url_source.map(Source::as_str),
+            "api_url_profile": self.api_url_profile,
             "latency_ms": self.latency_ms,
             "clock_skew_ms": self.clock_skew_ms,
             "readiness": self.readiness.as_ref().map(|readiness| serde_json::json!({
@@ -705,6 +726,9 @@ impl Render for Report {
             std::env::consts::OS,
             std::env::consts::ARCH
         )?;
+        if let Some(profile) = &self.active_profile {
+            writeln!(w, "profile {profile}")?;
+        }
         writeln!(w)?;
         for check in &self.checks {
             writeln!(
@@ -961,6 +985,32 @@ mod tests {
         assert_eq!(
             outcome(&checks).unwrap_err().message,
             "1 check failed: health."
+        );
+    }
+
+    #[test]
+    fn without_a_config_file_the_default_profile_is_active_and_supplies_no_api_url() {
+        let dir = tempfile::tempdir().unwrap();
+        let env = Environment {
+            config_dir: Some(dir.path().to_path_buf()),
+            ..Environment::default()
+        };
+        let mut report = Report::default();
+
+        check_api_url(&env, &mut report);
+
+        let json = report.json();
+        assert_eq!(
+            (
+                &json["active_profile"],
+                &json["api_url_source"],
+                &json["api_url_profile"]
+            ),
+            (
+                &serde_json::json!("default"),
+                &serde_json::json!("default"),
+                &serde_json::Value::Null
+            )
         );
     }
 
