@@ -12,6 +12,7 @@ Commands:
   auth      Sign in, sign out and show the signed-in user
   config    Read and change the settings in the config file
   datasets  Work with datasets
+  self      Manage this imify installation
   help      Print this message or the help of the given subcommand(s)
 
 Options:
@@ -593,4 +594,76 @@ Examples:
   imify datasets upload ./pick-cube --task "Pick up the red cube"
   imify datasets upload ./pick-cube --task "Pick up the red cube" --dry-run
   imify datasets upload ./pick-cube --task "Pick up the red cube" --restart
+```
+
+## imify self
+
+```text
+Manage this imify installation
+
+Usage: imify self [OPTIONS] <COMMAND>
+
+Commands:
+  update  Update imify to the latest release
+  help    Print this message or the help of the given subcommand(s)
+
+Options:
+      --json
+          Write JSON instead of text [env: IMIFY_OUTPUT=json]
+
+  -q, --quiet
+          Write the result only
+
+  -v, --verbose...
+          Log more detail to stderr: -v for debug, -vv for trace
+
+      --yes
+          Confirm without prompting
+
+      --no-color
+          Disable color [env: NO_COLOR]
+
+      --api-url <URL>
+          API host [env: IMIFY_API_URL] [default: config file, then https://platform.imify.ai]
+
+  -h, --help
+          Print help
+
+Example:
+  imify self update
+```
+
+## imify self update
+
+```text
+Update imify to the latest release.
+
+Works for an install by the imify installer: looks up the latest release on GitHub and, when it is newer, runs its installer for the install directory recorded in the install receipt. Other installs fail with a hint naming their update command.
+
+Usage: imify self update [OPTIONS]
+
+Options:
+      --json
+          Write JSON instead of text [env: IMIFY_OUTPUT=json]
+
+  -q, --quiet
+          Write the result only
+
+  -v, --verbose...
+          Log more detail to stderr: -v for debug, -vv for trace
+
+      --yes
+          Confirm without prompting
+
+      --no-color
+          Disable color [env: NO_COLOR]
+
+      --api-url <URL>
+          API host [env: IMIFY_API_URL] [default: config file, then https://platform.imify.ai]
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+Example:
+  imify self update
 ```

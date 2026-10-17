@@ -1,0 +1,5 @@
+---
+source: crates/imify-cli/tests/self_update.rs
+expression: machine.redact(&output.stdout)
+---
+{"install_prefix":"<home>/prefix","previous_version":"<version>","updated":true,"version":"99.0.0"}

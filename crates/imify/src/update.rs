@@ -292,13 +292,18 @@ fn decode_release(status: StatusCode, headers: &HeaderMap, body: &[u8]) -> Resul
     };
     let release: ReleaseJson = serde_json::from_slice(body)
         .map_err(|error| unexpected(format!("the response is not a release: {error}")))?;
-    let version = Version::parse(release.tag_name.strip_prefix('v').unwrap_or(&release.tag_name))
-        .map_err(|error| {
-            unexpected(format!(
-                "the release tag {:?} is not a version: {error}",
-                release.tag_name
-            ))
-        })?;
+    let version = Version::parse(
+        release
+            .tag_name
+            .strip_prefix('v')
+            .unwrap_or(&release.tag_name),
+    )
+    .map_err(|error| {
+        unexpected(format!(
+            "the release tag {:?} is not a version: {error}",
+            release.tag_name
+        ))
+    })?;
     Ok(Release {
         tag: release.tag_name,
         version,

@@ -1,5 +1,5 @@
-//! The directories of imify below the user's home: configuration and upload journals. Both
-//! follow the XDG base directory layout on every platform.
+//! The directories of imify below the user's home: configuration, upload journals and the
+//! installer's receipt directory. All follow the XDG base directory layout on every platform.
 
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
@@ -55,6 +55,13 @@ pub fn journal_dir(env: &Environment) -> Result<PathBuf, CliError> {
     .ok_or_else(|| {
         unknown_home("upload journal directory").with_hint("Set `HOME` to your home directory.")
     })
+}
+
+/// The user's configuration base directory, where the imify installer writes its install
+/// receipt: `$XDG_CONFIG_HOME`, otherwise `$HOME/.config`. `IMIFY_CONFIG_DIR` does not move it.
+/// `None` when neither `XDG_CONFIG_HOME` nor `HOME` is an absolute path.
+pub fn config_home(env: &Environment) -> Option<PathBuf> {
+    base_dir(env.config_home.as_deref(), env.home.as_deref(), ".config")
 }
 
 /// The XDG base directory `xdg_home` when it is an absolute path, otherwise `in_home` below
@@ -166,6 +173,37 @@ mod tests {
                 Some("Set `HOME` to your home directory, or `IMIFY_CONFIG_DIR` to a directory.")
             );
         }
+    }
+
+    #[test]
+    fn config_home_is_xdg_config_home_and_ignores_imify_config_dir() {
+        let env = Environment {
+            config_home: Some("/config".into()),
+            config_dir: Some("/etc/imify".into()),
+            ..home_robot()
+        };
+
+        assert_eq!(config_home(&env), Some(PathBuf::from("/config")));
+    }
+
+    #[test]
+    fn config_home_falls_back_to_dot_config_in_home() {
+        assert_eq!(
+            config_home(&home_robot()),
+            Some(PathBuf::from("/home/robot/.config"))
+        );
+    }
+
+    #[test]
+    fn config_home_without_an_absolute_home_is_none() {
+        let homes = unusable_homes().map(|home| {
+            config_home(&Environment {
+                home,
+                ..Environment::default()
+            })
+        });
+
+        assert_eq!(homes, [None, None, None]);
     }
 
     #[test]

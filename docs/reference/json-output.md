@@ -81,6 +81,8 @@ Schema: [`schemas/error.json`](schemas/error.json).
 | `rate_limited` | 7 | The server rejected the request because of its rate limit. |
 | `cancelled` | 8 | The user declined a confirmation prompt. |
 | `interrupted` | 130 | The user stopped the command with an interrupt signal. |
+| `self_update_unsupported` | 2 | `imify self update` found no install receipt of the imify installer for the running binary. The hint names the update command of the install method: `brew upgrade imify-cli`, `cargo install`, or the releases page. |
+| `self_update_failed` | 1 | `imify self update` did not complete: the install receipt is unreadable or has an unsupported layout, the release has no installer, or the installer failed. |
 
 Exit code 0 means success.
 

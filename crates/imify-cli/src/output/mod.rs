@@ -66,12 +66,17 @@ pub struct Environment {
     pub credential_store: Option<String>,
     /// `IMIFY_CONFIG_DIR`; `None` when unset.
     pub config_dir: Option<PathBuf>,
+    /// `CARGO_HOME`; `None` when unset.
+    pub cargo_home: Option<OsString>,
+    /// `IMIFY_CLI_INSTALLER_GHE_BASE_URL`; `None` when unset or not valid UTF-8.
+    pub installer_ghe_base_url: Option<String>,
 }
 
 impl Environment {
     /// Reads `IMIFY_OUTPUT`, `NO_COLOR`, `IMIFY_API_URL`, `TERM`, `HOME`, `XDG_CONFIG_HOME`,
     /// `XDG_STATE_HOME`, `IMIFY_OIDC_ISSUER`, `IMIFY_OIDC_CLIENT_ID`, `IMIFY_CREDENTIAL_STORE`,
-    /// `IMIFY_CONFIG_DIR` and whether stdin and stderr are terminals.
+    /// `IMIFY_CONFIG_DIR`, `CARGO_HOME`, `IMIFY_CLI_INSTALLER_GHE_BASE_URL` and whether stdin
+    /// and stderr are terminals.
     pub fn capture() -> Self {
         Self {
             api_url_flag: None,
@@ -88,6 +93,8 @@ impl Environment {
             oidc_client_id: std::env::var("IMIFY_OIDC_CLIENT_ID").ok(),
             credential_store: std::env::var("IMIFY_CREDENTIAL_STORE").ok(),
             config_dir: std::env::var_os("IMIFY_CONFIG_DIR").map(PathBuf::from),
+            cargo_home: std::env::var_os("CARGO_HOME"),
+            installer_ghe_base_url: std::env::var("IMIFY_CLI_INSTALLER_GHE_BASE_URL").ok(),
         }
     }
 

@@ -28,7 +28,9 @@
             "server",
             "rate_limited",
             "cancelled",
-            "interrupted"
+            "interrupted",
+            "self_update_unsupported",
+            "self_update_failed"
           ]
         },
         "message": {

@@ -40,12 +40,17 @@ pub enum ErrorCode {
     Cancelled,
     /// The user stopped the command with an interrupt signal.
     Interrupted,
+    /// The running binary was not installed by the imify installer and cannot update itself.
+    SelfUpdateUnsupported,
+    /// `imify self update` did not complete: unreadable install receipt, no installer in the
+    /// release, or a failing installer.
+    SelfUpdateFailed,
 }
 
 impl ErrorCode {
     /// Every error code, in documentation order.
     #[cfg(test)]
-    pub const ALL: [Self; 15] = [
+    pub const ALL: [Self; 17] = [
         Self::Internal,
         Self::InvalidArgument,
         Self::AuthRequired,
@@ -61,13 +66,15 @@ impl ErrorCode {
         Self::RateLimited,
         Self::Cancelled,
         Self::Interrupted,
+        Self::SelfUpdateUnsupported,
+        Self::SelfUpdateFailed,
     ];
 
     /// The process exit code for this error.
     pub fn exit_code(self) -> u8 {
         match self {
-            Self::Internal => 1,
-            Self::InvalidArgument => 2,
+            Self::Internal | Self::SelfUpdateFailed => 1,
+            Self::InvalidArgument | Self::SelfUpdateUnsupported => 2,
             Self::AuthRequired
             | Self::AuthRejected
             | Self::AuthExpired
@@ -152,6 +159,9 @@ const NO_BROWSER_HINT: &str = "Run `imify auth login --no-browser`.";
 /// The hint for a pasted URL that is not the redirect URL.
 pub const PASTE_HINT: &str = "Paste the full URL from the browser's address bar.";
 
+/// The hint for a failing installer.
+const SELF_UPDATE_FAILED_HINT: &str = "Run `imify self update -v` to see the installer output.";
+
 /// The hint for a keychain that refuses access.
 const LOCKED_KEYCHAIN_HINT: &str = "Unlock your keyring, or set `IMIFY_CREDENTIAL_STORE=file`.";
 
@@ -185,6 +195,15 @@ impl From<imify::Error> for CliError {
             imify::Error::Network { .. } => Self::new(ErrorCode::Network, message),
             imify::Error::Config { .. } => Self::new(ErrorCode::InvalidArgument, message),
             imify::Error::Login { reason, .. } => login_error(reason, message),
+            imify::Error::SelfUpdate {
+                installer_output, ..
+            } => {
+                let error = Self::new(ErrorCode::SelfUpdateFailed, message);
+                match installer_output {
+                    Some(_) => error.with_hint(SELF_UPDATE_FAILED_HINT),
+                    None => error,
+                }
+            }
             imify::Error::CredentialStore { source } if source.is::<PrivateFileError>() => {
                 Self::new(ErrorCode::Internal, message)
             }
@@ -250,6 +269,8 @@ mod tests {
                 (ErrorCode::RateLimited, 7),
                 (ErrorCode::Cancelled, 8),
                 (ErrorCode::Interrupted, 130),
+                (ErrorCode::SelfUpdateUnsupported, 2),
+                (ErrorCode::SelfUpdateFailed, 1),
             ]
         );
     }
@@ -279,6 +300,8 @@ mod tests {
                 "rate_limited",
                 "cancelled",
                 "interrupted",
+                "self_update_unsupported",
+                "self_update_failed",
             ]
         );
     }
@@ -541,6 +564,36 @@ mod tests {
                 ErrorCode::InvalidArgument,
                 Some("Paste the full URL from the browser's address bar.")
             )
+        );
+    }
+
+    fn self_update_error(installer_output: Option<&str>) -> CliError {
+        CliError::from(imify::Error::SelfUpdate {
+            message: "the installer exited with exit status: 1".into(),
+            installer_output: installer_output.map(str::to_owned),
+        })
+    }
+
+    #[test]
+    fn a_failed_installer_maps_to_self_update_failed_with_the_verbose_hint() {
+        let error = self_update_error(Some("ERROR: no prebuilt binaries"));
+
+        assert_eq!(
+            (error.code, error.hint.as_deref()),
+            (
+                ErrorCode::SelfUpdateFailed,
+                Some("Run `imify self update -v` to see the installer output.")
+            )
+        );
+    }
+
+    #[test]
+    fn a_self_update_error_without_installer_output_has_no_hint() {
+        let error = self_update_error(None);
+
+        assert_eq!(
+            (error.code, error.hint),
+            (ErrorCode::SelfUpdateFailed, None)
         );
     }
 
