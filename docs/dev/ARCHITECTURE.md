@@ -50,7 +50,7 @@ crates/imify-cli/src/
   commands/         one module per noun: datasets, auth, config, doctor
   credentials/      where a login is stored: OS keychain, file; selection by IMIFY_CREDENTIAL_STORE
   browser.rs        opens the sign-in URL in the system browser
-  config/           settings and their sources: --api-url, environment, config.toml, defaults
+  config/           settings and their sources: --api-url, environment, profiles in config.toml, defaults
   dirs.rs           the configuration and upload journal directories (XDG layout)
   private_file.rs   files only the user can change: mode checks, atomic writes
   output/           Renderer (human, json), error envelope, exit codes

@@ -1,0 +1,5 @@
+---
+source: crates/imify-cli/tests/config.rs
+expression: config.stdout(&output)
+---
+{"key":"api-url","path":"<config_dir>/config.toml","profile":"staging","value":"https://staging.example.com"}

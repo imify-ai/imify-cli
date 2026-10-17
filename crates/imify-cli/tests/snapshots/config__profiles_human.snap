@@ -1,0 +1,9 @@
+---
+source: crates/imify-cli/tests/config.rs
+expression: text(&human.stdout)
+---
+ACTIVE  NAME     API-URL
+        default  https://top.example.com
+        empty    https://top.example.com
+        local    http://localhost:8000
+*       staging  https://staging.example.com

@@ -3,15 +3,20 @@
   "title": "imify config unset result",
   "description": "Written to stdout by `imify config unset <key> --json`.",
   "type": "object",
-  "required": ["key", "removed", "path"],
+  "required": ["key", "removed", "profile", "path"],
   "properties": {
     "key": {
       "description": "The setting, as named on the command line.",
       "enum": ["api-url"]
     },
     "removed": {
-      "description": "Whether the config file set the key.",
+      "description": "Whether the profile in the config file set the key.",
       "type": "boolean"
+    },
+    "profile": {
+      "description": "The profile removed from, `default` for the top-level keys.",
+      "type": "string",
+      "minLength": 1
     },
     "path": {
       "description": "The config file.",

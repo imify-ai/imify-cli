@@ -78,6 +78,7 @@ A missing login fails with the error code `auth_required`, a rejected token with
 imify config set api-url https://api.example.com        # store the host in ~/.config/imify/config.toml
 imify auth login --api-url https://api.example.com      # or pass it to one command
 export IMIFY_API_URL=https://api.example.com            # or set it for the shell
+imify datasets ls --profile staging                     # or use the [profiles.staging] table of the config file
 ```
 
 Without configuration, `imify` uses `https://platform.imify.ai`. `--api-url` takes precedence over `IMIFY_API_URL`, which takes precedence over the config file. The URL must use `https`, except for `localhost`, `127.0.0.1` and `::1`. Each host keeps its own login.
