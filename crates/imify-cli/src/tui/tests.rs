@@ -45,23 +45,40 @@ pub fn buffer_text(buffer: &Buffer) -> String {
 
 /// A `TestBackend` the test keeps a handle to after the live view takes ownership.
 #[derive(Clone)]
-struct SharedBackend(Rc<RefCell<TestBackend>>);
+struct SharedBackend {
+    terminal: Rc<RefCell<TestBackend>>,
+    /// The number of cursor-position queries still answered; `None` answers every query.
+    cursor_answers: Rc<std::cell::Cell<Option<usize>>>,
+}
+
+/// The error of a terminal that does not answer the cursor-position query.
+const NO_CURSOR_REPORT: &str = "the terminal did not report the cursor position within 250 ms";
 
 impl SharedBackend {
     fn new(width: u16, height: u16) -> Self {
-        Self(Rc::new(RefCell::new(TestBackend::new(width, height))))
+        Self {
+            terminal: Rc::new(RefCell::new(TestBackend::new(width, height))),
+            cursor_answers: Rc::default(),
+        }
+    }
+
+    /// A backend that answers `answers` cursor-position queries, then fails every query.
+    fn answering_cursor_queries(answers: usize, width: u16, height: u16) -> Self {
+        let backend = Self::new(width, height);
+        backend.cursor_answers.set(Some(answers));
+        backend
     }
 
     fn text(&self) -> String {
-        buffer_text(self.0.borrow().buffer())
+        buffer_text(self.terminal.borrow().buffer())
     }
 
     fn cursor_visible(&self) -> bool {
-        self.0.borrow().cursor_visible()
+        self.terminal.borrow().cursor_visible()
     }
 
     fn cursor_position(&self) -> Position {
-        self.0.borrow().cursor_position()
+        self.terminal.borrow().cursor_position()
     }
 }
 
@@ -76,56 +93,64 @@ impl Backend for SharedBackend {
     where
         I: Iterator<Item = (u16, u16, &'a Cell)>,
     {
-        self.0.borrow_mut().draw(content).map_err(infallible)
+        self.terminal.borrow_mut().draw(content).map_err(infallible)
     }
 
     fn append_lines(&mut self, n: u16) -> io::Result<()> {
-        self.0.borrow_mut().append_lines(n).map_err(infallible)
+        self.terminal
+            .borrow_mut()
+            .append_lines(n)
+            .map_err(infallible)
     }
 
     fn hide_cursor(&mut self) -> io::Result<()> {
-        self.0.borrow_mut().hide_cursor().map_err(infallible)
+        self.terminal.borrow_mut().hide_cursor().map_err(infallible)
     }
 
     fn show_cursor(&mut self) -> io::Result<()> {
-        self.0.borrow_mut().show_cursor().map_err(infallible)
+        self.terminal.borrow_mut().show_cursor().map_err(infallible)
     }
 
     fn get_cursor_position(&mut self) -> io::Result<Position> {
-        self.0
+        match self.cursor_answers.get() {
+            Some(0) => return Err(io::Error::new(io::ErrorKind::TimedOut, NO_CURSOR_REPORT)),
+            Some(answers) => self.cursor_answers.set(Some(answers - 1)),
+            None => {}
+        }
+        self.terminal
             .borrow_mut()
             .get_cursor_position()
             .map_err(infallible)
     }
 
     fn set_cursor_position<P: Into<Position>>(&mut self, position: P) -> io::Result<()> {
-        self.0
+        self.terminal
             .borrow_mut()
             .set_cursor_position(position)
             .map_err(infallible)
     }
 
     fn clear(&mut self) -> io::Result<()> {
-        self.0.borrow_mut().clear().map_err(infallible)
+        self.terminal.borrow_mut().clear().map_err(infallible)
     }
 
     fn clear_region(&mut self, clear_type: ClearType) -> io::Result<()> {
-        self.0
+        self.terminal
             .borrow_mut()
             .clear_region(clear_type)
             .map_err(infallible)
     }
 
     fn size(&self) -> io::Result<Size> {
-        self.0.borrow().size().map_err(infallible)
+        self.terminal.borrow().size().map_err(infallible)
     }
 
     fn window_size(&mut self) -> io::Result<WindowSize> {
-        self.0.borrow_mut().window_size().map_err(infallible)
+        self.terminal.borrow_mut().window_size().map_err(infallible)
     }
 
     fn flush(&mut self) -> io::Result<()> {
-        Backend::flush(&mut *self.0.borrow_mut()).map_err(infallible)
+        Backend::flush(&mut *self.terminal.borrow_mut()).map_err(infallible)
     }
 }
 
@@ -484,10 +509,11 @@ async fn an_interrupt_in_live_mode_writes_the_summary_and_shows_the_cursor() {
     assert!(backend.cursor_visible());
 }
 
-/// Records the events written through it as their human-readable lines.
+/// Records the events written through it as their human-readable lines, and the warnings.
 #[derive(Debug, Default)]
 struct RecordingRenderer {
     lines: Vec<u8>,
+    warnings: Vec<String>,
 }
 
 impl Renderer for RecordingRenderer {
@@ -504,7 +530,8 @@ impl Renderer for RecordingRenderer {
     }
 
     fn warning(&mut self, message: &str) -> io::Result<()> {
-        writeln!(self.lines, "warning: {message}")
+        self.warnings.push(message.to_owned());
+        Ok(())
     }
 }
 
@@ -599,7 +626,11 @@ fn panic_hook_restore_sequence_shows_the_cursor_and_ends_on_the_line_below_the_v
 #[test]
 fn panic_hook_restores_below_the_inline_viewport_of_the_last_frame() {
     let backend = SharedBackend::new(40, 10);
-    backend.0.borrow_mut().set_cursor_position((0, 3)).unwrap();
+    backend
+        .terminal
+        .borrow_mut()
+        .set_cursor_position((0, 3))
+        .unwrap();
     let mut live = LiveView::new(backend, UploadFixture::new(3)).unwrap();
     live.register_for_panic_hook();
 
@@ -608,4 +639,91 @@ fn panic_hook_restores_below_the_inline_viewport_of_the_last_frame() {
     live.finish().unwrap();
 
     assert_eq!(viewport, Some(Rect::new(0, 3, 40, 4)));
+}
+
+// Fallback
+
+#[test]
+fn opening_on_a_backend_whose_cursor_query_fails_returns_no_live_view() {
+    let backend = SharedBackend::answering_cursor_queries(0, 60, 10);
+    let mut renderer = RecordingRenderer::default();
+
+    let live = live_or_warn(LiveView::new(backend, UploadFixture::new(3)), &mut renderer).unwrap();
+
+    assert!(live.is_none());
+}
+
+#[test]
+fn a_failed_open_writes_one_warning_naming_the_error() {
+    let backend = SharedBackend::answering_cursor_queries(0, 60, 10);
+    let mut renderer = RecordingRenderer::default();
+
+    live_or_warn(LiveView::new(backend, UploadFixture::new(3)), &mut renderer).unwrap();
+
+    assert_eq!(
+        renderer.warnings,
+        [format!(
+            "The live view cannot start: {NO_CURSOR_REPORT}. Progress is shown as lines."
+        )]
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn after_a_failed_open_the_operation_runs_and_each_event_goes_through_the_renderer() {
+    let backend = SharedBackend::answering_cursor_queries(0, 60, 10);
+    let mut renderer = RecordingRenderer::default();
+    let live = live_or_warn(LiveView::new(backend, UploadFixture::new(3)), &mut renderer).unwrap();
+    let (tx, rx) = mpsc::unbounded_channel();
+    let operation = async move {
+        tx.send(FileUploaded { path: PATHS[0] }).unwrap();
+        42
+    };
+
+    let outcome = run(
+        Progress::new(live, &mut renderer),
+        rx,
+        operation,
+        never_interrupted(),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        (outcome, String::from_utf8(renderer.lines).unwrap()),
+        (
+            Outcome::Finished(42),
+            "uploaded data/chunk-000/file-000.parquet\n".to_owned()
+        )
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_cursor_query_that_fails_on_resize_returns_the_error_and_shows_the_cursor() {
+    let backend = SharedBackend::answering_cursor_queries(1, 60, 10);
+    let mut renderer = RecordingRenderer::default();
+    let live = live_or_warn(
+        LiveView::new(backend.clone(), UploadFixture::new(3)),
+        &mut renderer,
+    )
+    .unwrap();
+    backend.terminal.borrow_mut().resize(80, 12);
+    let (_tx, rx) = mpsc::unbounded_channel();
+
+    let error = run(
+        Progress::new(live, &mut renderer),
+        rx,
+        std::future::pending::<()>(),
+        never_interrupted(),
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(
+        (
+            error.kind(),
+            backend.cursor_visible(),
+            renderer.warnings.len()
+        ),
+        (io::ErrorKind::TimedOut, true, 0)
+    );
 }

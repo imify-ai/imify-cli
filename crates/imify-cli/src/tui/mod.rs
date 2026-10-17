@@ -3,7 +3,12 @@
 //! [`run`] drives an operation and its progress events. With [`Progress::Live`], a [`View`]
 //! draws the events into an inline viewport at most 10 times per second and leaves its summary
 //! in the scrollback. With [`Progress::Lines`], each event goes through the [`Renderer`].
+//!
+//! A live view that cannot open, for example because the terminal does not report the cursor
+//! position within [`cursor::QUERY_TIMEOUT`], falls back to lines: [`live_or_warn`] writes one
+//! warning and [`Progress::new`] selects [`Progress::Lines`].
 
+pub mod cursor;
 pub mod format;
 pub mod live;
 pub mod theme;
@@ -43,6 +48,41 @@ impl<B: Backend<Error = io::Error>, V: View> std::fmt::Debug for Progress<'_, B,
         match self {
             Self::Live(live) => f.debug_tuple("Live").field(live).finish(),
             Self::Lines(_) => f.debug_tuple("Lines").finish_non_exhaustive(),
+        }
+    }
+}
+
+impl<'r, B: Backend<Error = io::Error>, V: View> Progress<'r, B, V> {
+    /// [`Progress::Live`] for `Some`, [`Progress::Lines`] through `renderer` for `None`.
+    pub fn new(live: Option<LiveView<B, V>>, renderer: &'r mut dyn Renderer) -> Self {
+        match live {
+            Some(live) => Self::Live(live),
+            None => Self::Lines(renderer),
+        }
+    }
+}
+
+/// Returns the opened live view, or writes one warning naming `error` through `renderer` and
+/// returns `None`, so that the progress is shown as lines.
+///
+/// ```text
+/// warning: The live view cannot start: the terminal did not report the cursor position within 250 ms. Progress is shown as lines.
+/// ```
+///
+/// # Errors
+///
+/// Returns the error of writing the warning.
+pub fn live_or_warn<B: Backend<Error = io::Error>, V: View>(
+    opened: io::Result<LiveView<B, V>>,
+    renderer: &mut dyn Renderer,
+) -> io::Result<Option<LiveView<B, V>>> {
+    match opened {
+        Ok(live) => Ok(Some(live)),
+        Err(error) => {
+            renderer.warning(&format!(
+                "The live view cannot start: {error}. Progress is shown as lines."
+            ))?;
+            Ok(None)
         }
     }
 }

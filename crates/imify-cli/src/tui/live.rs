@@ -5,17 +5,94 @@ use std::panic;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard, Once, PoisonError, TryLockError};
 
-use ratatui::backend::{Backend, CrosstermBackend};
-use ratatui::crossterm::{cursor, queue, style::Print};
-use ratatui::layout::Rect;
+use ratatui::backend::{Backend, ClearType, CrosstermBackend, WindowSize};
+use ratatui::buffer::Cell;
+use ratatui::crossterm::cursor::{MoveTo, Show};
+use ratatui::crossterm::{queue, style::Print};
+use ratatui::layout::{Position, Rect, Size};
 use ratatui::text::Text;
 use ratatui::widgets::Widget;
 use ratatui::{Terminal, TerminalOptions, Viewport};
 
+use super::cursor::{self, DevTty};
 use super::view::View;
 
 /// The backend of a live view on the process's stderr.
-pub type StderrBackend = CrosstermBackend<BufWriter<Stderr>>;
+///
+/// Writes through crossterm. The cursor position is queried on the controlling terminal
+/// with [`cursor::query_position`] and [`cursor::QUERY_TIMEOUT`], so the query never writes to
+/// stdout and fails with `TimedOut` when the terminal does not answer.
+pub struct StderrBackend {
+    inner: CrosstermBackend<BufWriter<Stderr>>,
+}
+
+impl std::fmt::Debug for StderrBackend {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StderrBackend").finish_non_exhaustive()
+    }
+}
+
+impl StderrBackend {
+    fn new() -> Self {
+        Self {
+            inner: CrosstermBackend::new(BufWriter::new(io::stderr())),
+        }
+    }
+}
+
+impl Backend for StderrBackend {
+    type Error = io::Error;
+
+    fn draw<'a, I>(&mut self, content: I) -> io::Result<()>
+    where
+        I: Iterator<Item = (u16, u16, &'a Cell)>,
+    {
+        self.inner.draw(content)
+    }
+
+    fn append_lines(&mut self, n: u16) -> io::Result<()> {
+        self.inner.append_lines(n)
+    }
+
+    fn hide_cursor(&mut self) -> io::Result<()> {
+        self.inner.hide_cursor()
+    }
+
+    fn show_cursor(&mut self) -> io::Result<()> {
+        self.inner.show_cursor()
+    }
+
+    fn get_cursor_position(&mut self) -> io::Result<Position> {
+        // The terminal reports the position after it processed the output written before.
+        Backend::flush(&mut self.inner)?;
+        let mut tty = DevTty::open()?;
+        cursor::query_position(&mut tty, cursor::QUERY_TIMEOUT)
+    }
+
+    fn set_cursor_position<P: Into<Position>>(&mut self, position: P) -> io::Result<()> {
+        self.inner.set_cursor_position(position)
+    }
+
+    fn clear(&mut self) -> io::Result<()> {
+        self.inner.clear()
+    }
+
+    fn clear_region(&mut self, clear_type: ClearType) -> io::Result<()> {
+        self.inner.clear_region(clear_type)
+    }
+
+    fn size(&self) -> io::Result<Size> {
+        self.inner.size()
+    }
+
+    fn window_size(&mut self) -> io::Result<WindowSize> {
+        self.inner.window_size()
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Backend::flush(&mut self.inner)
+    }
+}
 
 /// A view drawn into an inline viewport on `B`.
 ///
@@ -44,10 +121,11 @@ impl<V: View> LiveView<StderrBackend, V> {
     ///
     /// # Errors
     ///
-    /// Returns the error of querying or writing the terminal.
+    /// Returns the error of querying or writing the terminal: `TimedOut` when the terminal does
+    /// not report the cursor position within [`cursor::QUERY_TIMEOUT`].
     pub fn stderr(view: V) -> io::Result<Self> {
         install_panic_hook();
-        let mut live = Self::new(CrosstermBackend::new(BufWriter::new(io::stderr())), view)?;
+        let mut live = Self::new(StderrBackend::new(), view)?;
         live.register_for_panic_hook();
         Ok(live)
     }
@@ -251,8 +329,8 @@ fn install_panic_hook() {
 pub fn write_restore(w: &mut impl Write, viewport: Rect) -> io::Result<()> {
     queue!(
         w,
-        cursor::Show,
-        cursor::MoveTo(0, viewport.bottom().saturating_sub(1)),
+        Show,
+        MoveTo(0, viewport.bottom().saturating_sub(1)),
         Print("\r\n")
     )?;
     w.flush()
