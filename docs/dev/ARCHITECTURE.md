@@ -85,7 +85,7 @@ Tests never contact a real server.
 | SDK integration | `wiremock` | HTTP contract and failure modes |
 | CLI end-to-end | `assert_cmd`, `insta` | the `imify` binary against a mock server: output, exit codes, TUI frames |
 
-Mock fixtures are validated against the vendored OpenAPI document, so a mock cannot describe a response the API does not have. Datasets used in tests come from `DatasetBuilder` in `imify-test-support`:
+Mock fixtures are built from the types generated from the vendored OpenAPI document, so a mock cannot describe a response the API does not have. Datasets used in tests come from `DatasetBuilder` in `imify-test-support`:
 
 ```rust
 use imify_test_support::{DatasetBuilder, Defect, Format};

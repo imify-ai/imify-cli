@@ -12,12 +12,13 @@ One file per decision, numbered in order. A decision is changed by a new ADR tha
 | [0006](0006-upload-transport.md) | Streaming PUT upload with a local resume journal |
 | [0007](0007-server-derived-dataset-identity.md) | Dataset identity is derived by the server |
 | [0008](0008-inline-tui.md) | Inline TUI only in the first release |
-| [0009](0009-sdk-types-and-api-contract.md) | Hand-written SDK types, contract-tested against OpenAPI |
+| [0009](0009-sdk-types-and-api-contract.md) | Hand-written SDK types, contract-tested against OpenAPI (superseded by 0015) |
 | [0010](0010-mock-only-testing.md) | Tests run against mocks only |
 | [0011](0011-no-telemetry.md) | No telemetry |
 | [0012](0012-distribution.md) | Distribution with dist and release-plz |
 | [0013](0013-contribution-policy.md) | Contribution policy |
 | [0014](0014-ci-gates-and-guarded-paths.md) | CI gates and guarded paths |
+| [0015](0015-generated-sdk-api-layer.md) | SDK API layer generated from the vendored OpenAPI document |
 
 ## Template
 
