@@ -706,7 +706,10 @@ Options:
           Disable color [env: NO_COLOR]
 
       --api-url <URL>
-          API host [env: IMIFY_API_URL] [default: config file, then https://platform.imify.ai]
+          API host [env: IMIFY_API_URL] [default: profile, then https://platform.imify.ai]
+
+      --profile <NAME>
+          Settings profile in the config file [env: IMIFY_PROFILE] [default: default]
 
   -h, --help
           Print help
@@ -741,7 +744,10 @@ Options:
           Disable color [env: NO_COLOR]
 
       --api-url <URL>
-          API host [env: IMIFY_API_URL] [default: config file, then https://platform.imify.ai]
+          API host [env: IMIFY_API_URL] [default: profile, then https://platform.imify.ai]
+
+      --profile <NAME>
+          Settings profile in the config file [env: IMIFY_PROFILE] [default: default]
 
   -h, --help
           Print help (see a summary with '-h')

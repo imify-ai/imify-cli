@@ -4,7 +4,7 @@
 .SH NAME
 imify\-self\-update \- Update imify to the latest release
 .SH SYNOPSIS
-\fBimify self update\fR [\fB\-\-json\fR] [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-\-yes\fR] [\fB\-\-no\-color\fR] [\fB\-\-api\-url\fR] [\fB\-h\fR|\fB\-\-help\fR] 
+\fBimify self update\fR [\fB\-\-json\fR] [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-\-yes\fR] [\fB\-\-no\-color\fR] [\fB\-\-api\-url\fR] [\fB\-\-profile\fR] [\fB\-h\fR|\fB\-\-help\fR] 
 .SH DESCRIPTION
 Update imify to the latest release.
 .PP
@@ -27,7 +27,10 @@ Confirm without prompting
 Disable color [env: NO_COLOR]
 .TP
 \fB\-\-api\-url\fR \fI<URL>\fR
-API host [env: IMIFY_API_URL] [default: config file, then https://platform.imify.ai]
+API host [env: IMIFY_API_URL] [default: profile, then https://platform.imify.ai]
+.TP
+\fB\-\-profile\fR \fI<NAME>\fR
+Settings profile in the config file [env: IMIFY_PROFILE] [default: default]
 .TP
 \fB\-h\fR, \fB\-\-help\fR
 Print help (see a summary with \*(Aq\-h\*(Aq)
