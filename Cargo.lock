@@ -1467,6 +1467,7 @@ dependencies = [
  "parquet",
  "reqwest",
  "rustix",
+ "semver",
  "serde",
  "serde_json",
  "sha2",

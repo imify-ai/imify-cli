@@ -28,6 +28,8 @@ mod health;
 pub mod ingest;
 mod local_file;
 mod retry;
+#[cfg(feature = "self-update")]
+pub mod update;
 pub mod validate;
 
 pub use account::User;

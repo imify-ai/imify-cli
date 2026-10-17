@@ -404,7 +404,7 @@ fn policy_following(may_follow: fn(StatusCode, &Url, &Url) -> bool) -> redirect:
 }
 
 /// Like [`redirect_policy`], and only to the origin of the first request.
-fn same_origin_redirect_policy() -> redirect::Policy {
+pub(crate) fn same_origin_redirect_policy() -> redirect::Policy {
     redirect::Policy::custom(|attempt| {
         let previous = attempt.previous();
         let same_origin = previous
@@ -662,13 +662,13 @@ pub(crate) fn require_secure(url: Url, name: &str) -> Result<Url, Error> {
 }
 
 /// Returns `true` for the hosts `localhost`, `127.0.0.1` and `::1`.
-fn is_loopback(url: &Url) -> bool {
+pub(crate) fn is_loopback(url: &Url) -> bool {
     url.host_str().is_some_and(|host| {
         host.eq_ignore_ascii_case("localhost") || host == "127.0.0.1" || host == "[::1]"
     })
 }
 
-fn parse_base_url(raw: &str) -> Result<Url, Error> {
+pub(crate) fn parse_base_url(raw: &str) -> Result<Url, Error> {
     let invalid = |reason: &str| Error::Config {
         message: format!("invalid base URL {raw:?}: {reason}"),
     };
