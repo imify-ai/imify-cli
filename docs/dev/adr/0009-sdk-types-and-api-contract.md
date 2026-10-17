@@ -1,6 +1,6 @@
 # 0009. Hand-written SDK types, contract-tested against OpenAPI
 
-Status: Accepted
+Status: Superseded by 0015
 Date: 2026-10-16
 
 ## Context
