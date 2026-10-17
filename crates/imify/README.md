@@ -51,4 +51,26 @@ let session = Uploader::new(client)
 
 `upload` creates an ingest session, sends `meta/info.json`, sends the files under `meta/`, `data/` and `videos/` 4 at a time, and completes the session. Files are streamed from disk. Request starts are at least 100 ms apart; a rate-limited response holds all starts for the requested delay. `UploadOptions` changes the concurrency and the interval.
 
+## Update a program installed by its installer
+
+```toml
+imify = { version = "0.1", features = ["self-update"] }
+```
+
+```rust
+use imify::update::{Installation, ReleaseClient, ReleaseSource, Version};
+
+let source = ReleaseSource::imify_cli();
+let receipt = source.receipt_path(&config_home); // $XDG_CONFIG_HOME or ~/.config
+if let Some(installation) = Installation::from_receipt(&receipt, &std::env::current_exe()?, &source)? {
+    let client = ReleaseClient::builder(source).build()?;
+    let latest = client.latest().await?;
+    if latest.version > Version::parse(env!("CARGO_PKG_VERSION"))? {
+        client.install(&installation, &latest).await?;
+    }
+}
+```
+
+The `self-update` feature adds `imify::update`. `Installation::from_receipt` reads the install receipt of the dist shell installer and returns the install when it contains the executable. `latest` sends `GET /repos/<owner>/<repo>/releases/latest` to the GitHub API. `install` downloads `<app>-installer.sh` of that release from `https://github.com` and runs it with `/bin/sh` for the receipt's install prefix. The module reads no environment variables; the caller passes the configuration directory and, for GitHub Enterprise Server, the API and download URLs.
+
 This crate is in early development. Its public API is not stable before 1.0.
