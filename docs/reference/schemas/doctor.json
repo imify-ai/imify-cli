@@ -14,6 +14,10 @@
     "token_source",
     "token_expires_at",
     "user",
+    "credential_store",
+    "config_dir",
+    "login",
+    "oidc",
     "checks"
   ],
   "properties": {
@@ -62,7 +66,7 @@
       "enum": ["env", "stored", null]
     },
     "token_expires_at": {
-      "description": "The `exp` claim of the access token, RFC 3339 in UTC.",
+      "description": "The `exp` claim of the access token, RFC 3339 in UTC. For a stored login, the expiry of the stored ID token.",
       "type": ["string", "null"],
       "format": "date-time"
     },
@@ -76,6 +80,33 @@
         "role": {"type": "string"}
       }
     },
+    "credential_store": {
+      "description": "The credential store `IMIFY_CREDENTIAL_STORE` selects; null when its value is unsupported.",
+      "enum": ["auto", "keychain", "file", null]
+    },
+    "config_dir": {
+      "description": "The directory of `config.toml` and `credentials.json`; null when it cannot be located.",
+      "type": ["string", "null"]
+    },
+    "login": {
+      "description": "The stored login the token comes from; null unless `token_source` is `stored`.",
+      "type": ["object", "null"],
+      "required": ["storage", "has_refresh_token"],
+      "properties": {
+        "storage": {"description": "Where the login is stored, as in `imify auth login --json`.", "enum": ["keychain", "file"]},
+        "has_refresh_token": {"description": "`true` when the login can be refreshed.", "type": "boolean"}
+      }
+    },
+    "oidc": {
+      "description": "The identity provider settings `imify auth login` uses.",
+      "type": ["object", "null"],
+      "required": ["issuer", "client_id", "issuer_https"],
+      "properties": {
+        "issuer": {"description": "The OIDC issuer URL.", "type": "string"},
+        "client_id": {"description": "The OAuth client id.", "type": "string"},
+        "issuer_https": {"description": "`true` when the issuer's scheme is `https`.", "type": "boolean"}
+      }
+    },
     "checks": {
       "description": "The checks in the order they are reported.",
       "type": "array",
@@ -85,7 +116,7 @@
         "properties": {
           "name": {
             "description": "Further names can be added.",
-            "enum": ["api_url", "health", "readiness", "clock", "token", "token_expiry", "account"]
+            "enum": ["api_url", "health", "readiness", "clock", "token", "token_expiry", "account", "oidc"]
           },
           "status": {"enum": ["ok", "warn", "fail", "skip"]},
           "message": {"type": "string"},

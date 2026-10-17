@@ -8,7 +8,8 @@ ok    api_url       http://127.0.0.1:<port> (IMIFY_API_URL)
 ok    health        Reachable in <n> ms.
 ok    readiness     Database ok, storage ok.
 ok    clock         The local clock is within 60 s of the server.
-fail  token         IMIFY_TOKEN is not set.
+fail  token         IMIFY_TOKEN is not set, and no login for http://127.0.0.1:<port> is stored in <config dir>/credentials.json.
                     hint: Run `imify auth login`, or set `IMIFY_TOKEN` to a token.
 skip  token_expiry  Skipped because token did not pass.
 skip  account       Skipped because token did not pass.
+ok    oidc          Issuer https://login.example.com, client client-1.

@@ -49,6 +49,7 @@ const CASES: &[(&str, &[&str])] = &[
         &[
             "cli__doctor_ok_json.snap",
             "cli__doctor_invalid_api_url_json.snap",
+            "auth__doctor_stored_login_json.snap",
         ],
     ),
     ("auth-login.json", &["login_json.snap"]),

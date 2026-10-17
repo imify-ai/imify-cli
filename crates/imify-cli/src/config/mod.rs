@@ -190,7 +190,7 @@ pub fn check_api_url(raw: &str, origin: &str, hint: &str) -> Result<Url, CliErro
 }
 
 /// Returns `true` for the hosts `localhost`, `127.0.0.1` and `::1`.
-fn is_loopback(url: &Url) -> bool {
+pub fn is_loopback(url: &Url) -> bool {
     url.host_str().is_some_and(|host| {
         host.eq_ignore_ascii_case("localhost") || host == "127.0.0.1" || host == "[::1]"
     })

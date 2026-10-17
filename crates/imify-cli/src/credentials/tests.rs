@@ -466,3 +466,95 @@ fn concurrent_saves_of_two_hosts_keep_both_entries() {
         );
     }
 }
+
+/// Where `store` reports the login, `None` when it holds none.
+fn found_in(store: &HostStore) -> Option<Location> {
+    store
+        .load_reporting()
+        .unwrap()
+        .map(|(_, location)| location)
+}
+
+#[test]
+fn auto_reports_a_login_in_the_keychain_as_found_in_the_keychain() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = host_store(None, Keychain::in_memory(), dir.path());
+    store.save(&credentials("id-keychain")).unwrap();
+
+    assert_eq!(found_in(&store), Some(Location::Keychain));
+}
+
+#[test]
+fn auto_reports_a_login_in_the_file_with_its_path_when_the_keychain_holds_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    FileStore::new(dir.path(), HOST)
+        .save(&credentials("id-file"))
+        .unwrap();
+    let store = host_store(None, Keychain::in_memory(), dir.path());
+
+    assert_eq!(
+        found_in(&store),
+        Some(Location::File(credentials_file(dir.path())))
+    );
+}
+
+#[test]
+fn auto_reports_a_login_in_the_file_when_no_keychain_is_available() {
+    let dir = tempfile::tempdir().unwrap();
+    FileStore::new(dir.path(), HOST)
+        .save(&credentials("id-file"))
+        .unwrap();
+    let store = host_store(None, Keychain::unavailable(), dir.path());
+
+    assert_eq!(
+        found_in(&store),
+        Some(Location::File(credentials_file(dir.path())))
+    );
+}
+
+#[test]
+fn file_choice_reports_the_login_as_found_in_the_file_with_its_path() {
+    let dir = tempfile::tempdir().unwrap();
+    FileStore::new(dir.path(), HOST)
+        .save(&credentials("id-file"))
+        .unwrap();
+    let store = host_store(Some("file"), Keychain::unavailable(), dir.path());
+
+    assert_eq!(
+        found_in(&store),
+        Some(Location::File(credentials_file(dir.path())))
+    );
+}
+
+#[test]
+fn load_reporting_without_a_login_returns_none() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = host_store(None, Keychain::in_memory(), dir.path());
+
+    assert_eq!(found_in(&store), None);
+}
+
+#[test]
+fn auto_searches_the_keychain_then_the_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = host_store(None, Keychain::in_memory(), dir.path());
+
+    assert_eq!(
+        store.locations(),
+        [
+            Location::Keychain,
+            Location::File(credentials_file(dir.path()))
+        ]
+    );
+}
+
+#[test]
+fn location_names_the_keychain_or_the_file_path() {
+    assert_eq!(
+        [
+            Location::Keychain.to_string(),
+            Location::File("/home/robot/.config/imify/credentials.json".into()).to_string()
+        ],
+        ["the keychain", "/home/robot/.config/imify/credentials.json"]
+    );
+}

@@ -11,3 +11,4 @@ ok    clock         The local clock is within 60 s of the server.
 ok    token         IMIFY_TOKEN is set.
 ok    token_expiry  Expires at 2100-01-01T00:00:00Z.
 ok    account       Ada Lovelace (admin).
+ok    oidc          Issuer https://login.example.com, client client-1.

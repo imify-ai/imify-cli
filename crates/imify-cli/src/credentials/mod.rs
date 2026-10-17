@@ -6,6 +6,7 @@
 mod file;
 mod keychain;
 
+use std::fmt;
 use std::path::PathBuf;
 
 use imify::Error;
@@ -62,6 +63,16 @@ impl StoreChoice {
             ))),
         }
     }
+
+    /// The value of `IMIFY_CREDENTIAL_STORE` that selects this store: `auto`, `keychain` or
+    /// `file`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Keychain => "keychain",
+            Self::File => "file",
+        }
+    }
 }
 
 /// Where [`HostStore::save_reporting`] stored the credentials.
@@ -92,6 +103,34 @@ impl Saved {
         match self {
             Self::Keychain => "keychain",
             Self::File(_) | Self::FileFallback { .. } => "file",
+        }
+    }
+}
+
+/// Where a login is kept: the keychain, or the file at a path.
+///
+/// Displays as `the keychain` or the file's path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Location {
+    Keychain,
+    File(PathBuf),
+}
+
+impl Location {
+    /// The `storage` value of `imify auth login --json`: `keychain` or `file`.
+    pub fn storage(&self) -> &'static str {
+        match self {
+            Self::Keychain => "keychain",
+            Self::File(_) => "file",
+        }
+    }
+}
+
+impl fmt::Display for Location {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Keychain => f.write_str("the keychain"),
+            Self::File(path) => write!(f, "{}", path.display()),
         }
     }
 }
@@ -129,6 +168,40 @@ impl HostStore {
             StoreChoice::Keychain => Self::Keychain(KeychainStore::new(keychain, host_key)),
             StoreChoice::File => Self::File(file()?),
         })
+    }
+
+    /// Loads the credentials as [`CredentialStore::load`] does and reports where they were
+    /// found. `None` when the store holds none.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::CredentialStore`] when the selected store fails.
+    pub fn load_reporting(&self) -> Result<Option<(Credentials, Location)>, Error> {
+        let in_file = |file: &FileStore| {
+            let location = Location::File(file.path().to_path_buf());
+            Ok(file.load()?.map(|credentials| (credentials, location)))
+        };
+        match self {
+            Self::Auto { keychain, file } => match keychain.try_load() {
+                Ok(Some(credentials)) => Ok(Some((credentials, Location::Keychain))),
+                Ok(None) | Err(KeychainError::Unavailable(_)) => in_file(file),
+                Err(error) => Err(error.into()),
+            },
+            Self::Keychain(keychain) => Ok(keychain
+                .try_load()?
+                .map(|credentials| (credentials, Location::Keychain))),
+            Self::File(file) => in_file(file),
+        }
+    }
+
+    /// The places [`HostStore::load_reporting`] searches, in order.
+    pub fn locations(&self) -> Vec<Location> {
+        let file = |file: &FileStore| Location::File(file.path().to_path_buf());
+        match self {
+            Self::Auto { file: store, .. } => vec![Location::Keychain, file(store)],
+            Self::Keychain(_) => vec![Location::Keychain],
+            Self::File(store) => vec![file(store)],
+        }
     }
 
     /// Saves `credentials` and reports where.
@@ -170,15 +243,9 @@ impl HostStore {
 
 impl CredentialStore for HostStore {
     fn load(&self) -> Result<Option<Credentials>, Error> {
-        match self {
-            Self::Auto { keychain, file } => match keychain.try_load() {
-                Ok(Some(credentials)) => Ok(Some(credentials)),
-                Ok(None) | Err(KeychainError::Unavailable(_)) => file.load(),
-                Err(error) => Err(error.into()),
-            },
-            Self::Keychain(keychain) => Ok(keychain.try_load()?),
-            Self::File(file) => file.load(),
-        }
+        Ok(self
+            .load_reporting()?
+            .map(|(credentials, _location)| credentials))
     }
 
     fn save(&self, credentials: &Credentials) -> Result<(), Error> {

@@ -351,7 +351,12 @@ fn unauthenticated_client(api_url: &Url) -> Result<imify::Client, CliError> {
 
 /// The identity provider settings: the overrides, completed from the host's `config.json`
 /// when one of them is unset.
-async fn oidc_settings(
+///
+/// # Errors
+///
+/// Returns `invalid_argument` when the host publishes no settings in `config.json` and the
+/// overrides are unset, and the mapped SDK error when the request fails.
+pub async fn oidc_settings(
     env: &Environment,
     client: &imify::Client,
     host: &str,
@@ -492,7 +497,12 @@ async fn save(store: HostStore, credentials: Credentials) -> Result<SaveReport, 
     on_blocking_thread(move || store.save_reporting(&credentials)).await
 }
 
-async fn on_blocking_thread<T: Send + 'static>(
+/// Runs a credential store operation on a blocking thread.
+///
+/// # Errors
+///
+/// Returns the operation's error, and `internal` when the thread stops.
+pub async fn on_blocking_thread<T: Send + 'static>(
     operation: impl FnOnce() -> Result<T, imify::Error> + Send + 'static,
 ) -> Result<T, CliError> {
     tokio::task::spawn_blocking(operation)
