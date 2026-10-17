@@ -1,5 +1,5 @@
-//! The directories of imify below the user's home: configuration, upload journals and the
-//! installer's receipt directory. All follow the XDG base directory layout on every platform.
+//! The directories of imify below the user's home: configuration, upload journals, the
+//! update check's state file and the installer's receipt directory. All follow the XDG base directory layout on every platform.
 
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
@@ -55,6 +55,19 @@ pub fn journal_dir(env: &Environment) -> Result<PathBuf, CliError> {
     .ok_or_else(|| {
         unknown_home("upload journal directory").with_hint("Set `HOME` to your home directory.")
     })
+}
+
+/// The file that records the time of the last update check:
+/// `$XDG_STATE_HOME/imify/update-check.json`, otherwise
+/// `$HOME/.local/state/imify/update-check.json`. `None` when neither `XDG_STATE_HOME` nor
+/// `HOME` is an absolute path.
+pub fn update_check_file(env: &Environment) -> Option<PathBuf> {
+    base_dir(
+        env.state_home.as_deref(),
+        env.home.as_deref(),
+        ".local/state",
+    )
+    .map(|base| base.join("imify/update-check.json"))
 }
 
 /// The user's configuration base directory, where the imify installer writes its install
@@ -245,6 +258,41 @@ mod tests {
             journal_dir(&env).unwrap(),
             PathBuf::from("/home/robot/.local/state/imify/uploads")
         );
+    }
+
+    #[test]
+    fn update_check_file_is_below_xdg_state_home() {
+        let env = Environment {
+            state_home: Some("/state".into()),
+            ..home_robot()
+        };
+
+        assert_eq!(
+            update_check_file(&env),
+            Some(PathBuf::from("/state/imify/update-check.json"))
+        );
+    }
+
+    #[test]
+    fn update_check_file_falls_back_to_local_state_in_home() {
+        assert_eq!(
+            update_check_file(&home_robot()),
+            Some(PathBuf::from(
+                "/home/robot/.local/state/imify/update-check.json"
+            ))
+        );
+    }
+
+    #[test]
+    fn update_check_file_without_an_absolute_home_is_none() {
+        let files = unusable_homes().map(|home| {
+            update_check_file(&Environment {
+                home,
+                ..Environment::default()
+            })
+        });
+
+        assert_eq!(files, [None, None, None]);
     }
 
     #[test]

@@ -38,6 +38,38 @@ An install without a receipt cannot update itself. The command fails with `self_
 
 The installer and `cargo install` both use `~/.cargo/bin`. When the installer wrote a receipt for the binary, `imify self update` uses it.
 
+## Update hint
+
+```console
+$ imify config list
+...
+imify 0.2.0 is available (installed: 0.1.0). Run `imify self update`.
+```
+
+After a successful command, `imify` writes this line to stderr when a newer release exists. The command in the line follows the install method: `imify self update` for an install with a receipt, otherwise the hint from the [table above](#other-install-methods).
+
+The check sends the same request as `imify self update`: `GET https://api.github.com/repos/imify-ai/imify-cli/releases/latest`, without credentials. It sends at most one request per 24 hours. Before the request, it writes the time to `$XDG_STATE_HOME/imify/update-check.json`, or `~/.local/state/imify/update-check.json`, with mode `0600`. The file holds the time in seconds since the Unix epoch and nothing else:
+
+```json
+{"checked_at":1792238400}
+```
+
+The check runs while the command runs. After the command, `imify` waits for it until at most 1 s after the check started. A failed command shows no hint and does not wait. A failed check writes nothing and leaves the exit code unchanged; `-v` logs the failure.
+
+The check runs only when all of these hold:
+
+- The output is human: no `--json` and no `IMIFY_OUTPUT=json`.
+- `--quiet` is not set.
+- stderr is a terminal.
+- `IMIFY_NO_UPDATE_CHECK`, `CI`, `BUILD_NUMBER` and `RUN_ID` are unset or empty.
+- The command is neither `imify self update` nor `imify doctor`.
+
+Bare `imify`, `--help`, `--version` and usage errors never check. To turn the check off:
+
+```sh
+export IMIFY_NO_UPDATE_CHECK=1
+```
+
 ## Errors
 
 | Code | Exit | When |
@@ -53,4 +85,4 @@ The installer and `cargo install` both use `~/.cargo/bin`. When the installer wr
 IMIFY_CLI_INSTALLER_GHE_BASE_URL=https://ghe.example.com imify self update
 ```
 
-With `IMIFY_CLI_INSTALLER_GHE_BASE_URL` set, the release lookup goes to `<base>/api/v3` and the downloads go to `<base>`, for both `imify self update` and the installer. The URL must use `https`, except for `localhost`, `127.0.0.1` and `::1`.
+With `IMIFY_CLI_INSTALLER_GHE_BASE_URL` set, the release lookup goes to `<base>/api/v3` and the downloads go to `<base>`, for `imify self update`, the update hint and the installer. The URL must use `https`, except for `localhost`, `127.0.0.1` and `::1`.

@@ -74,13 +74,21 @@ pub struct Environment {
     pub cargo_home: Option<OsString>,
     /// `IMIFY_CLI_INSTALLER_GHE_BASE_URL`; `None` when unset or not valid UTF-8.
     pub installer_ghe_base_url: Option<String>,
+    /// `IMIFY_NO_UPDATE_CHECK`, `CI`, `BUILD_NUMBER` and `RUN_ID`, in that order; each `None`
+    /// when unset. Any of them set and not empty turns the update check off.
+    pub update_check_opt_outs: [Option<OsString>; 4],
 }
+
+/// The variables that turn the update check off when set and not empty: the documented
+/// opt-out and the variables CI services set.
+pub const UPDATE_CHECK_OPT_OUT_VARIABLES: [&str; 4] =
+    ["IMIFY_NO_UPDATE_CHECK", "CI", "BUILD_NUMBER", "RUN_ID"];
 
 impl Environment {
     /// Reads `IMIFY_OUTPUT`, `NO_COLOR`, `IMIFY_API_URL`, `IMIFY_PROFILE`, `TERM`, `HOME`, `XDG_CONFIG_HOME`,
     /// `XDG_STATE_HOME`, `IMIFY_OIDC_ISSUER`, `IMIFY_OIDC_CLIENT_ID`, `IMIFY_CREDENTIAL_STORE`,
-    /// `IMIFY_CONFIG_DIR`, `CARGO_HOME`, `IMIFY_CLI_INSTALLER_GHE_BASE_URL` and whether stdin
-    /// and stderr are terminals.
+    /// `IMIFY_CONFIG_DIR`, `CARGO_HOME`, `IMIFY_CLI_INSTALLER_GHE_BASE_URL`, the update check
+    /// opt-outs and whether stdin and stderr are terminals.
     pub fn capture() -> Self {
         Self {
             api_url_flag: None,
@@ -101,7 +109,16 @@ impl Environment {
             config_dir: std::env::var_os("IMIFY_CONFIG_DIR").map(PathBuf::from),
             cargo_home: std::env::var_os("CARGO_HOME"),
             installer_ghe_base_url: std::env::var("IMIFY_CLI_INSTALLER_GHE_BASE_URL").ok(),
+            update_check_opt_outs: UPDATE_CHECK_OPT_OUT_VARIABLES.map(std::env::var_os),
         }
+    }
+
+    /// Whether a variable that turns the update check off is set and not empty.
+    pub fn update_check_opted_out(&self) -> bool {
+        self.update_check_opt_outs
+            .iter()
+            .flatten()
+            .any(|value| !value.is_empty())
     }
 
     fn dumb_terminal(&self) -> bool {
