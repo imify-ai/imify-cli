@@ -23,7 +23,7 @@ use crate::dirs::journal_dir;
 use crate::output::renderer::{RESULT_EVENT, Render, Renderer};
 use crate::output::sanitize::printable;
 use crate::output::{CliError, Environment, ErrorCode, Settings};
-use crate::tui::live::LiveView;
+use crate::tui::live::{LiveView, StderrBackend};
 use crate::tui::theme::Theme;
 use crate::tui::upload::UploadView;
 use crate::tui::{self, Outcome, Progress, format};
@@ -75,7 +75,8 @@ pub async fn upload(
     let plan = UploadPlan::from_dir(&args.path).map_err(dataset_root_error)?;
     // The live view shows the totals; its scrollback keeps the findings, the skipped symbolic
     // links and the summary only.
-    if !settings.live_view || skipped_links(&plan).next().is_some() {
+    let links_skipped = skipped_links(&plan).next().is_some();
+    if planned_before_open(settings.live_view, links_skipped) {
         write_event(renderer, &Planned(&plan))?;
     }
     let mut result = UploadResult {
@@ -90,8 +91,23 @@ pub async fn upload(
         return write_event(renderer, &result);
     };
 
+    let live = if settings.live_view {
+        let view = UploadView::new(
+            name.as_str(),
+            plan.files().len(),
+            plan.total_bytes(),
+            Theme::new(settings.color),
+        );
+        tui::live_or_warn(LiveView::stderr(view), renderer)
+            .map_err(|error| progress_error(&error))?
+    } else {
+        None
+    };
+    if planned_after_open(settings.live_view, links_skipped, live.is_some()) {
+        write_event(renderer, &Planned(&plan))?;
+    }
     let new_session = NewSession::new(name.as_str()).task_description(args.task.as_str());
-    let sent = send(target, settings, &plan, &new_session, renderer)
+    let sent = send(target, live, &plan, &new_session, renderer)
         .await
         .map_err(|error| origin.adjust(error))?;
     result.session = Some(&sent.session);
@@ -147,20 +163,20 @@ fn session_name(path: &Path) -> Result<String, CliError> {
         })
 }
 
-/// Uploads `plan` into a new or a journaled session and reports the progress in a live view or
-/// as event lines.
+/// Uploads `plan` into a new or a journaled session and reports the progress in `live`, or as
+/// event lines without it.
 async fn send(
     target: Target,
-    settings: &Settings,
+    live: Option<LiveView<StderrBackend, UploadView>>,
     plan: &UploadPlan,
     new_session: &NewSession,
     renderer: &mut dyn Renderer,
 ) -> Result<Sent, CliError> {
     let start = Instant::now();
     let (events, received) = mpsc::unbounded_channel();
-    let live = settings.live_view;
+    let live_in_use = live.is_some();
     let resumed = Arc::new(AtomicBool::new(false));
-    let forward = forwarder(events.clone(), start, live);
+    let forward = forwarder(events.clone(), start, live_in_use);
     let resumed_flag = Arc::clone(&resumed);
     let uploader = Uploader::new(target.client)
         .journal(target.journal_dir, target.policy)
@@ -172,7 +188,7 @@ async fn send(
         });
     let operation = async {
         let result = uploader.upload(plan, new_session).await;
-        if live {
+        if live_in_use {
             let step = if result.is_ok() {
                 UploadStep::Finished
             } else {
@@ -183,20 +199,14 @@ async fn send(
         result
     };
 
-    let progress = if live {
-        let view = UploadView::new(
-            new_session.name.as_str(),
-            plan.files().len(),
-            plan.total_bytes(),
-            Theme::new(settings.color),
-        );
-        Progress::Live(LiveView::stderr(view).map_err(|error| progress_error(&error))?)
-    } else {
-        Progress::Lines(renderer)
-    };
-    match tui::run(progress, received, operation, tui::ctrl_c())
-        .await
-        .map_err(|error| progress_error(&error))?
+    match tui::run(
+        Progress::new(live, renderer),
+        received,
+        operation,
+        tui::ctrl_c(),
+    )
+    .await
+    .map_err(|error| progress_error(&error))?
     {
         Outcome::Finished(result) => result.map_err(upload_error).map(|session| Sent {
             session,
@@ -370,6 +380,18 @@ impl Render for Planned<'_> {
         }
         Ok(())
     }
+}
+
+/// Whether the `planned` event is written before the live view opens: without the live view,
+/// and when links are skipped, so that the scrollback names them.
+fn planned_before_open(live_view: bool, links_skipped: bool) -> bool {
+    !live_view || links_skipped
+}
+
+/// Whether the `planned` event is written after the live view was opened or failed to open:
+/// when the progress falls back to lines and the event was not written before.
+fn planned_after_open(live_view: bool, links_skipped: bool, opened: bool) -> bool {
+    !opened && !planned_before_open(live_view, links_skipped)
 }
 
 /// The symbolic links the plan leaves out.
@@ -883,6 +905,27 @@ mod tests {
             forwarded_step(&UploadEvent::Completing, false),
             Some(UploadStep::Completing)
         );
+    }
+
+    /// How often an upload writes the `planned` event.
+    fn planned_writes(live_view: bool, links_skipped: bool, opened: bool) -> usize {
+        usize::from(planned_before_open(live_view, links_skipped))
+            + usize::from(planned_after_open(live_view, links_skipped, opened))
+    }
+
+    #[test]
+    fn planned_is_written_when_the_live_view_falls_back_to_lines() {
+        assert_eq!(planned_writes(true, false, false), 1);
+    }
+
+    #[test]
+    fn planned_is_not_written_when_the_live_view_opens_and_no_link_is_skipped() {
+        assert_eq!(planned_writes(true, false, true), 0);
+    }
+
+    #[test]
+    fn planned_is_written_once_when_links_are_skipped_and_the_live_view_falls_back() {
+        assert_eq!(planned_writes(true, true, false), 1);
     }
 
     #[test]

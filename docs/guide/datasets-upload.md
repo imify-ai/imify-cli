@@ -56,7 +56,7 @@ The first row shows the phase: `Creating session`, `Uploading`, `Paused (rate li
 | Ctrl-C | `Interrupted after 5 of 12 files. Ingest session 3f2c9a stays open.` |
 | Error | `Failed after 5 of 12 files.` |
 
-With `--json`, `--quiet`, `-v`, `TERM=dumb` or stderr not on a terminal, the live view is off. Plain lines on stderr report the same steps instead, one line per event, and `--quiet` turns them off.
+With `--json`, `--quiet`, `-v`, `TERM=dumb` or stderr not on a terminal, the live view is off. Plain lines on stderr report the same steps instead, one line per event, and `--quiet` turns them off. When the terminal does not report the cursor position within 250 ms, the command writes one `warning:` line on stderr and reports the steps as plain lines.
 
 ## JSON output
 
