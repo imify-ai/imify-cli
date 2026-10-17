@@ -4,7 +4,7 @@
 .SH NAME
 imify\-datasets\-ls \- List the datasets visible to the access token\*(Aqs user
 .SH SYNOPSIS
-\fBimify datasets ls\fR [\fB\-\-json\fR] [\fB\-\-task\fR] [\fB\-\-format\fR] [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-\-embodiment\fR] [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-\-sort\fR] [\fB\-\-yes\fR] [\fB\-\-no\-color\fR] [\fB\-\-reverse\fR] [\fB\-\-api\-url\fR] [\fB\-h\fR|\fB\-\-help\fR] 
+\fBimify datasets ls\fR [\fB\-\-json\fR] [\fB\-\-task\fR] [\fB\-\-format\fR] [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-\-embodiment\fR] [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-\-sort\fR] [\fB\-\-yes\fR] [\fB\-\-no\-color\fR] [\fB\-\-reverse\fR] [\fB\-\-api\-url\fR] [\fB\-\-profile\fR] [\fB\-h\fR|\fB\-\-help\fR] 
 .SH DESCRIPTION
 List the datasets visible to the access token\*(Aqs user
 .SH OPTIONS
@@ -58,7 +58,10 @@ Disable color [env: NO_COLOR]
 Reverse the order
 .TP
 \fB\-\-api\-url\fR \fI<URL>\fR
-API host [env: IMIFY_API_URL] [default: config file, then https://platform.imify.ai]
+API host [env: IMIFY_API_URL] [default: profile, then https://platform.imify.ai]
+.TP
+\fB\-\-profile\fR \fI<NAME>\fR
+Settings profile in the config file [env: IMIFY_PROFILE] [default: default]
 .TP
 \fB\-h\fR, \fB\-\-help\fR
 Print help

@@ -51,9 +51,17 @@ pub struct GlobalArgs {
         global = true,
         value_name = "URL",
         value_parser = not_blank,
-        help = "API host [env: IMIFY_API_URL] [default: config file, then https://platform.imify.ai]"
+        help = "API host [env: IMIFY_API_URL] [default: profile, then https://platform.imify.ai]"
     )]
     pub api_url: Option<String>,
+    #[arg(
+        long,
+        global = true,
+        value_name = "NAME",
+        value_parser = not_blank,
+        help = "Settings profile in the config file [env: IMIFY_PROFILE] [default: default]"
+    )]
+    pub profile: Option<String>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -139,6 +147,9 @@ pub enum ConfigCommand {
     /// Print every setting with its value and where it comes from
     #[command(after_help = "Example:\n  imify config list --json")]
     List,
+    /// List the profiles in the config file with the API URL of each
+    #[command(after_help = "Example:\n  imify config profiles")]
+    Profiles,
 }
 
 #[derive(Debug, Subcommand)]

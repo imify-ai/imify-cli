@@ -36,18 +36,22 @@ pub enum OutputMode {
     Json,
 }
 
-/// The environment values the CLI reads, captured once at startup, and the `--api-url` flag,
-/// which takes precedence over `IMIFY_API_URL`.
+/// The environment values the CLI reads, captured once at startup, and the `--api-url` and
+/// `--profile` flags, which take precedence over `IMIFY_API_URL` and `IMIFY_PROFILE`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Environment {
     /// `--api-url`; `None` when the flag is absent. Set after parsing the command line.
     pub api_url_flag: Option<String>,
+    /// `--profile`; `None` when the flag is absent. Set after parsing the command line.
+    pub profile_flag: Option<String>,
     /// `IMIFY_OUTPUT`; `None` when unset or not valid UTF-8.
     pub imify_output: Option<String>,
     /// `NO_COLOR`; `None` when unset.
     pub no_color: Option<OsString>,
     /// `IMIFY_API_URL`; `None` when unset or not valid UTF-8.
     pub api_url: Option<String>,
+    /// `IMIFY_PROFILE`; `None` when unset or not valid UTF-8.
+    pub profile: Option<String>,
     pub stdin_is_tty: bool,
     pub stderr_is_tty: bool,
     /// `TERM`; `None` when unset or not valid UTF-8.
@@ -69,15 +73,17 @@ pub struct Environment {
 }
 
 impl Environment {
-    /// Reads `IMIFY_OUTPUT`, `NO_COLOR`, `IMIFY_API_URL`, `TERM`, `HOME`, `XDG_CONFIG_HOME`,
+    /// Reads `IMIFY_OUTPUT`, `NO_COLOR`, `IMIFY_API_URL`, `IMIFY_PROFILE`, `TERM`, `HOME`, `XDG_CONFIG_HOME`,
     /// `XDG_STATE_HOME`, `IMIFY_OIDC_ISSUER`, `IMIFY_OIDC_CLIENT_ID`, `IMIFY_CREDENTIAL_STORE`,
     /// `IMIFY_CONFIG_DIR` and whether stdin and stderr are terminals.
     pub fn capture() -> Self {
         Self {
             api_url_flag: None,
+            profile_flag: None,
             imify_output: std::env::var("IMIFY_OUTPUT").ok(),
             no_color: std::env::var_os("NO_COLOR"),
             api_url: std::env::var("IMIFY_API_URL").ok(),
+            profile: std::env::var("IMIFY_PROFILE").ok(),
             stdin_is_tty: io::stdin().is_terminal(),
             stderr_is_tty: io::stderr().is_terminal(),
             term: std::env::var("TERM").ok(),

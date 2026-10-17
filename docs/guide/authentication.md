@@ -8,7 +8,7 @@ Logged in to https://api.example.com as Ada Lovelace (admin).
 Credentials stored in the keychain.
 ```
 
-`imify auth login` signs in to the API host and stores the login for that host. Every other command then uses it. One login is stored per host. The host is `https://platform.imify.ai` unless `--api-url`, `IMIFY_API_URL` or the config file selects another; see [Configuration](configuration.md).
+`imify auth login` signs in to the API host and stores the login for that host. Every other command then uses it. One login is stored per host. The host is `https://platform.imify.ai` unless `--api-url`, `IMIFY_API_URL` or the config file selects another; see [Configuration](configuration.md). Profiles with the same host share one login.
 
 > **Log in only to an API URL you trust.** The API host names the identity provider you sign in at, and every command sends your token to that host. Before you sign in, check both hosts in the first line of `imify auth login`.
 
@@ -114,6 +114,7 @@ Writers take a lock on `credentials.json.lock` in the same directory.
 | Variable | Effect |
 |---|---|
 | `IMIFY_API_URL` | The API host. `--api-url` takes precedence over it. Must use `https`, except for `localhost`, `127.0.0.1` and `::1`. A user name, password, query or fragment is refused. |
+| `IMIFY_PROFILE` | The settings profile in the config file. `--profile` takes precedence over it. See [Profiles](configuration.md#profiles). |
 | `IMIFY_TOKEN` | A token that takes precedence over the stored login. |
 | `IMIFY_CREDENTIAL_STORE` | `auto`, `keychain` or `file`. |
 | `IMIFY_CONFIG_DIR` | The directory of `credentials.json` and `config.toml`. |

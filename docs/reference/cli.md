@@ -31,7 +31,10 @@ Options:
           Disable color [env: NO_COLOR]
 
       --api-url <URL>
-          API host [env: IMIFY_API_URL] [default: config file, then https://platform.imify.ai]
+          API host [env: IMIFY_API_URL] [default: profile, then https://platform.imify.ai]
+
+      --profile <NAME>
+          Settings profile in the config file [env: IMIFY_PROFILE] [default: default]
 
   -h, --help
           Print help
@@ -66,7 +69,10 @@ Options:
           Disable color [env: NO_COLOR]
 
       --api-url <URL>
-          API host [env: IMIFY_API_URL] [default: config file, then https://platform.imify.ai]
+          API host [env: IMIFY_API_URL] [default: profile, then https://platform.imify.ai]
+
+      --profile <NAME>
+          Settings profile in the config file [env: IMIFY_PROFILE] [default: default]
 
   -h, --help
           Print help (see a summary with '-h')
@@ -105,7 +111,10 @@ Options:
           Disable color [env: NO_COLOR]
 
       --api-url <URL>
-          API host [env: IMIFY_API_URL] [default: config file, then https://platform.imify.ai]
+          API host [env: IMIFY_API_URL] [default: profile, then https://platform.imify.ai]
+
+      --profile <NAME>
+          Settings profile in the config file [env: IMIFY_PROFILE] [default: default]
 
   -h, --help
           Print help
@@ -145,7 +154,10 @@ Options:
           Disable color [env: NO_COLOR]
 
       --api-url <URL>
-          API host [env: IMIFY_API_URL] [default: config file, then https://platform.imify.ai]
+          API host [env: IMIFY_API_URL] [default: profile, then https://platform.imify.ai]
+
+      --profile <NAME>
+          Settings profile in the config file [env: IMIFY_PROFILE] [default: default]
 
   -h, --help
           Print help (see a summary with '-h')
@@ -180,7 +192,10 @@ Options:
           Disable color [env: NO_COLOR]
 
       --api-url <URL>
-          API host [env: IMIFY_API_URL] [default: config file, then https://platform.imify.ai]
+          API host [env: IMIFY_API_URL] [default: profile, then https://platform.imify.ai]
+
+      --profile <NAME>
+          Settings profile in the config file [env: IMIFY_PROFILE] [default: default]
 
   -h, --help
           Print help
@@ -213,7 +228,10 @@ Options:
           Disable color [env: NO_COLOR]
 
       --api-url <URL>
-          API host [env: IMIFY_API_URL] [default: config file, then https://platform.imify.ai]
+          API host [env: IMIFY_API_URL] [default: profile, then https://platform.imify.ai]
+
+      --profile <NAME>
+          Settings profile in the config file [env: IMIFY_PROFILE] [default: default]
 
   -h, --help
           Print help
@@ -230,11 +248,12 @@ Read and change the settings in the config file
 Usage: imify config [OPTIONS] <COMMAND>
 
 Commands:
-  get    Print a setting's value and where it comes from: flag, env, config or default
-  set    Check a value and store it in the config file
-  unset  Remove a setting from the config file
-  list   Print every setting with its value and where it comes from
-  help   Print this message or the help of the given subcommand(s)
+  get       Print a setting's value and where it comes from: flag, env, config or default
+  set       Check a value and store it in the config file
+  unset     Remove a setting from the config file
+  list      Print every setting with its value and where it comes from
+  profiles  List the profiles in the config file with the API URL of each
+  help      Print this message or the help of the given subcommand(s)
 
 Options:
       --json
@@ -253,7 +272,10 @@ Options:
           Disable color [env: NO_COLOR]
 
       --api-url <URL>
-          API host [env: IMIFY_API_URL] [default: config file, then https://platform.imify.ai]
+          API host [env: IMIFY_API_URL] [default: profile, then https://platform.imify.ai]
+
+      --profile <NAME>
+          Settings profile in the config file [env: IMIFY_PROFILE] [default: default]
 
   -h, --help
           Print help
@@ -290,7 +312,10 @@ Options:
           Disable color [env: NO_COLOR]
 
       --api-url <URL>
-          API host [env: IMIFY_API_URL] [default: config file, then https://platform.imify.ai]
+          API host [env: IMIFY_API_URL] [default: profile, then https://platform.imify.ai]
+
+      --profile <NAME>
+          Settings profile in the config file [env: IMIFY_PROFILE] [default: default]
 
   -h, --help
           Print help (see a summary with '-h')
@@ -333,7 +358,10 @@ Options:
           Disable color [env: NO_COLOR]
 
       --api-url <URL>
-          API host [env: IMIFY_API_URL] [default: config file, then https://platform.imify.ai]
+          API host [env: IMIFY_API_URL] [default: profile, then https://platform.imify.ai]
+
+      --profile <NAME>
+          Settings profile in the config file [env: IMIFY_PROFILE] [default: default]
 
   -h, --help
           Print help (see a summary with '-h')
@@ -373,7 +401,10 @@ Options:
           Disable color [env: NO_COLOR]
 
       --api-url <URL>
-          API host [env: IMIFY_API_URL] [default: config file, then https://platform.imify.ai]
+          API host [env: IMIFY_API_URL] [default: profile, then https://platform.imify.ai]
+
+      --profile <NAME>
+          Settings profile in the config file [env: IMIFY_PROFILE] [default: default]
 
   -h, --help
           Print help (see a summary with '-h')
@@ -406,13 +437,52 @@ Options:
           Disable color [env: NO_COLOR]
 
       --api-url <URL>
-          API host [env: IMIFY_API_URL] [default: config file, then https://platform.imify.ai]
+          API host [env: IMIFY_API_URL] [default: profile, then https://platform.imify.ai]
+
+      --profile <NAME>
+          Settings profile in the config file [env: IMIFY_PROFILE] [default: default]
 
   -h, --help
           Print help
 
 Example:
   imify config list --json
+```
+
+## imify config profiles
+
+```text
+List the profiles in the config file with the API URL of each
+
+Usage: imify config profiles [OPTIONS]
+
+Options:
+      --json
+          Write JSON instead of text [env: IMIFY_OUTPUT=json]
+
+  -q, --quiet
+          Write the result only
+
+  -v, --verbose...
+          Log more detail to stderr: -v for debug, -vv for trace
+
+      --yes
+          Confirm without prompting
+
+      --no-color
+          Disable color [env: NO_COLOR]
+
+      --api-url <URL>
+          API host [env: IMIFY_API_URL] [default: profile, then https://platform.imify.ai]
+
+      --profile <NAME>
+          Settings profile in the config file [env: IMIFY_PROFILE] [default: default]
+
+  -h, --help
+          Print help
+
+Example:
+  imify config profiles
 ```
 
 ## imify datasets
@@ -445,7 +515,10 @@ Options:
           Disable color [env: NO_COLOR]
 
       --api-url <URL>
-          API host [env: IMIFY_API_URL] [default: config file, then https://platform.imify.ai]
+          API host [env: IMIFY_API_URL] [default: profile, then https://platform.imify.ai]
+
+      --profile <NAME>
+          Settings profile in the config file [env: IMIFY_PROFILE] [default: default]
 
   -h, --help
           Print help
@@ -492,7 +565,10 @@ Options:
           Reverse the order
 
       --api-url <URL>
-          API host [env: IMIFY_API_URL] [default: config file, then https://platform.imify.ai]
+          API host [env: IMIFY_API_URL] [default: profile, then https://platform.imify.ai]
+
+      --profile <NAME>
+          Settings profile in the config file [env: IMIFY_PROFILE] [default: default]
 
   -h, --help
           Print help
@@ -533,7 +609,10 @@ Options:
           Disable color [env: NO_COLOR]
 
       --api-url <URL>
-          API host [env: IMIFY_API_URL] [default: config file, then https://platform.imify.ai]
+          API host [env: IMIFY_API_URL] [default: profile, then https://platform.imify.ai]
+
+      --profile <NAME>
+          Settings profile in the config file [env: IMIFY_PROFILE] [default: default]
 
   -h, --help
           Print help (see a summary with '-h')
@@ -584,7 +663,10 @@ Options:
           Disable color [env: NO_COLOR]
 
       --api-url <URL>
-          API host [env: IMIFY_API_URL] [default: config file, then https://platform.imify.ai]
+          API host [env: IMIFY_API_URL] [default: profile, then https://platform.imify.ai]
+
+      --profile <NAME>
+          Settings profile in the config file [env: IMIFY_PROFILE] [default: default]
 
   -h, --help
           Print help (see a summary with '-h')

@@ -3,7 +3,7 @@
   "title": "imify config set result",
   "description": "Written to stdout by `imify config set <key> <value> --json`: the stored value and the config file.",
   "type": "object",
-  "required": ["key", "value", "path"],
+  "required": ["key", "value", "profile", "path"],
   "properties": {
     "key": {
       "description": "The setting, as named on the command line.",
@@ -11,6 +11,11 @@
     },
     "value": {
       "description": "The stored value. An API URL is stored without a trailing slash.",
+      "type": "string",
+      "minLength": 1
+    },
+    "profile": {
+      "description": "The profile written to, `default` for the top-level keys.",
       "type": "string",
       "minLength": 1
     },
