@@ -52,11 +52,24 @@ struct Login {
     id_token: String,
     /// Unix seconds.
     expires_at: u64,
+    refresh_token: Option<&'static str>,
 }
 
 impl Login {
     /// A login whose ID token expires `lifetime` seconds from now.
     async fn stored(lifetime: u64) -> std::io::Result<Self> {
+        Self::stored_with(lifetime, Some(REFRESH_TOKEN)).await
+    }
+
+    /// A login without a refresh token whose ID token expires `lifetime` seconds from now.
+    async fn stored_without_refresh_token(lifetime: u64) -> std::io::Result<Self> {
+        Self::stored_with(lifetime, None).await
+    }
+
+    async fn stored_with(
+        lifetime: u64,
+        refresh_token: Option<&'static str>,
+    ) -> std::io::Result<Self> {
         let api = MockServer::start().await;
         let provider = MockServer::start().await;
         let config_dir = tempfile::tempdir()?;
@@ -67,6 +80,7 @@ impl Login {
             config_dir,
             id_token,
             expires_at: unix_now() + lifetime,
+            refresh_token,
         };
         login.write_credentials()?;
         Ok(login)
@@ -83,7 +97,7 @@ impl Login {
                 "revocation_endpoint": format!("{issuer}/oauth2/revoke"),
                 "id_token": self.id_token,
                 "id_token_expires_at": self.expires_at,
-                "refresh_token": REFRESH_TOKEN,
+                "refresh_token": self.refresh_token,
             }
         });
         let path = self.credentials_file();
@@ -735,4 +749,196 @@ async fn logout_removes_a_login_it_cannot_read_and_does_not_revoke() {
         0
     );
     assert!(!login.credentials_file().exists());
+}
+
+impl Login {
+    /// Mounts the requests doctor sends besides `/api/v1/me`: health, readiness and a
+    /// `config.json` that names an `https` identity provider.
+    async fn answer_doctor(&self) {
+        for (route, body) in [
+            ("/api/health", json!({"status": "ok"})),
+            (
+                "/api/health/ready",
+                json!({"status": "ok", "db": "ok", "storage": "ok"}),
+            ),
+            (
+                "/config.json",
+                json!({"authority": "https://login.example.com", "clientId": CLIENT_ID}),
+            ),
+        ] {
+            Mock::given(method("GET"))
+                .and(path(route))
+                .respond_with(ResponseTemplate::new(200).set_body_json(body))
+                .mount(&self.api)
+                .await;
+        }
+    }
+
+    /// `imify doctor --json` and its report; `null` when stdout is not JSON.
+    fn doctor(&self, env: &[(&str, &str)]) -> (Output, Value) {
+        let output = self.run(&["doctor", "--json"], env);
+        let report = serde_json::from_slice(&output.stdout).unwrap_or(Value::Null);
+        (output, report)
+    }
+
+    /// The report with the values that vary between runs and machines replaced.
+    fn normalize_report(&self, report: &Value) -> String {
+        let mut report = report.clone();
+        report["latency_ms"] = json!(0);
+        report["clock_skew_ms"] = json!(0);
+        report["cli_version"] = json!("<version>");
+        report["platform"] = json!({"os": "<os>", "arch": "<arch>"});
+        let expires_at = report["token_expires_at"]
+            .as_str()
+            .unwrap_or("<none>")
+            .to_owned();
+        let mut normalized = self
+            .redact(&report.to_string())
+            .replace(&expires_at, "<expires at>")
+            .replace(
+                &self.config_dir.path().display().to_string(),
+                "<config dir>",
+            );
+        let label = "Reachable in ";
+        if let Some(start) = normalized.find(label).map(|index| index + label.len()) {
+            let digits = normalized[start..]
+                .chars()
+                .take_while(char::is_ascii_digit)
+                .count();
+            normalized.replace_range(start..start + digits, "<n>");
+        }
+        normalized
+    }
+}
+
+/// The check named `name` in a doctor report; `null` when it is missing.
+fn check<'a>(report: &'a Value, name: &str) -> &'a Value {
+    report["checks"]
+        .as_array()
+        .and_then(|checks| checks.iter().find(|check| check["name"] == name))
+        .unwrap_or(&Value::Null)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn doctor_reports_a_stored_login_in_the_file_store() {
+    let login = Login::stored(3600).await.unwrap();
+    login.answer_doctor().await;
+    login.answer_me().await;
+
+    let (output, report) = login.doctor(&[]);
+
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    assert_eq!(
+        (
+            &report["token_source"],
+            &report["credential_store"],
+            &report["config_dir"],
+            &report["login"]
+        ),
+        (
+            &json!("stored"),
+            &json!("file"),
+            &json!(login.config_dir.path().display().to_string()),
+            &json!({"storage": "file", "has_refresh_token": true})
+        )
+    );
+    insta::assert_snapshot!("doctor_stored_login_json", login.normalize_report(&report));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn doctor_reports_a_stored_login_without_a_refresh_token() {
+    let login = Login::stored_without_refresh_token(3600).await.unwrap();
+    login.answer_doctor().await;
+    login.answer_me().await;
+
+    let (_, report) = login.doctor(&[]);
+
+    assert_eq!(report["login"]["has_refresh_token"], false);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn doctor_reports_the_stored_expiry_and_refreshes_only_for_the_account_check() {
+    let login = Login::stored(30).await.unwrap();
+    login.answer_doctor().await;
+    login.answer_me().await;
+    login
+        .answer_token(ResponseTemplate::new(200).set_body_json(json!({
+            "id_token": id_token(&login.provider.uri(), "stored", 3600),
+            "refresh_token": NEW_REFRESH_TOKEN,
+            "token_type": "Bearer",
+        })))
+        .await;
+
+    let (output, report) = login.doctor(&[]);
+
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    let message = check(&report, "token_expiry")["message"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(
+        message.ends_with("in less than 5 min. The refresh token renews it."),
+        "{message}"
+    );
+    assert_eq!(login.requests_to(&login.provider, "/oauth2/token").await, 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn doctor_with_a_revoked_refresh_token_fails_the_account_check_with_auth_expired() {
+    let login = Login::stored(30).await.unwrap();
+    login.answer_doctor().await;
+    login.answer_me().await;
+    login
+        .answer_token(ResponseTemplate::new(400).set_body_json(json!({
+            "error": "invalid_grant",
+            "error_description": "Refresh Token has been revoked",
+        })))
+        .await;
+
+    let (output, report) = login.doctor(&[]);
+
+    assert_eq!(output.status.code(), Some(3));
+    assert_eq!(
+        (
+            &check(&report, "token")["status"],
+            &check(&report, "account")["status"],
+            &check(&report, "account")["code"]
+        ),
+        (&json!("ok"), &json!("fail"), &json!("auth_expired"))
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn doctor_with_a_stored_login_the_api_rejects_hints_at_imify_login() {
+    let login = Login::stored(3600).await.unwrap();
+    login.answer_doctor().await;
+    reject_every_token(&login.api).await;
+
+    let (_, report) = login.doctor(&[]);
+
+    assert_eq!(
+        (
+            &check(&report, "account")["code"],
+            &check(&report, "account")["hint"]
+        ),
+        (&json!("auth_rejected"), &json!("Run `imify auth login`."))
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn doctor_with_imify_token_does_not_read_the_credentials_file() {
+    let login = Login::stored(3600).await.unwrap();
+    login.answer_doctor().await;
+    login.answer_me().await;
+    std::fs::set_permissions(
+        login.credentials_file(),
+        std::fs::Permissions::from_mode(0o644),
+    )
+    .unwrap();
+
+    let (_, report) = login.doctor(&[("IMIFY_TOKEN", ENV_TOKEN)]);
+
+    assert_eq!(
+        (&check(&report, "token")["status"], &report["login"]),
+        (&json!("ok"), &Value::Null)
+    );
 }

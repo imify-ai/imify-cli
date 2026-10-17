@@ -22,10 +22,7 @@ fn imify_command() -> Command {
         .env_remove("IMIFY_OIDC_ISSUER")
         .env_remove("IMIFY_OIDC_CLIENT_ID")
         .env("IMIFY_CREDENTIAL_STORE", "file")
-        .env(
-            "IMIFY_CONFIG_DIR",
-            PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("no-login"),
-        );
+        .env("IMIFY_CONFIG_DIR", no_login_dir());
     command
 }
 
@@ -1351,7 +1348,15 @@ fn me_ok() -> ResponseTemplate {
     ResponseTemplate::new(200).set_body_json(user_body())
 }
 
-/// An API that answers the three requests doctor sends.
+/// The `config.json` of a host whose identity provider is `https://login.example.com`.
+fn config_json_ok() -> ResponseTemplate {
+    ResponseTemplate::new(200).set_body_json(json!({
+        "authority": "https://login.example.com",
+        "clientId": "client-1",
+    }))
+}
+
+/// An API that answers the four requests doctor sends.
 async fn doctor_api(
     health: ResponseTemplate,
     readiness: ResponseTemplate,
@@ -1362,6 +1367,7 @@ async fn doctor_api(
         ("/api/health", health),
         ("/api/health/ready", readiness),
         ("/api/v1/me", me),
+        ("/config.json", config_json_ok()),
     ] {
         Mock::given(method("GET"))
             .and(path(route))
@@ -1389,13 +1395,20 @@ fn doctor(api_url: Option<&str>, token: Option<&str>, extra_args: &[&str]) -> Ou
     imify(&args, &env)
 }
 
+/// The configuration directory of [`imify_command`].
+fn no_login_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("no-login")
+}
+
 /// Replaces the parts of a doctor report that vary between runs, machines and releases: the
-/// mock server's port, the latency, the platform and the CLI version.
+/// mock server's port, the configuration directory, the latency, the platform and the CLI
+/// version.
 fn normalize_doctor_text(text: &str, server_uri: &str) -> String {
     let platform = format!("({} {})", std::env::consts::OS, std::env::consts::ARCH);
     let version = format!("imify-cli {} (", env!("CARGO_PKG_VERSION"));
     let mut normalized = text
         .replace(server_uri, "http://127.0.0.1:<port>")
+        .replace(&no_login_dir().display().to_string(), "<config dir>")
         .replace(&version, "imify-cli <version> (")
         .replace(&platform, "(<os> <arch>)");
     let label = "Reachable in ";
@@ -1489,6 +1502,7 @@ fn doctor_with_an_invalid_api_url_skips_the_api_checks_and_fails_with_invalid_ar
             ("token", "ok"),
             ("token_expiry", "ok"),
             ("account", "skip"),
+            ("oidc", "skip"),
         ])
     );
     insta::assert_snapshot!(
@@ -1523,6 +1537,7 @@ fn doctor_against_a_host_that_is_not_listening_fails_with_network() {
             ("token", "ok"),
             ("token_expiry", "skip"),
             ("account", "skip"),
+            ("oidc", "skip"),
         ])
     );
 }
@@ -1772,6 +1787,126 @@ async fn doctor_with_an_expired_imify_token_and_no_stored_login_hints_at_a_valid
         check_hint(&output.stdout, "token_expiry"),
         json!("Set `IMIFY_TOKEN` to a valid, unexpired token.")
     );
+}
+
+/// The check named `name` in a JSON report; `null` when it is missing.
+fn check_named(stdout: &[u8], name: &str) -> serde_json::Value {
+    let report: serde_json::Value = serde_json::from_slice(stdout).unwrap_or_default();
+    report["checks"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|check| check["name"] == name)
+        .cloned()
+        .unwrap_or_default()
+}
+
+async fn requests_to(server: &MockServer, request_path: &str) -> usize {
+    server
+        .received_requests()
+        .await
+        .unwrap_or_default()
+        .iter()
+        .filter(|request| request.url.path() == request_path)
+        .count()
+}
+
+#[test]
+fn doctor_with_an_http_api_url_on_a_remote_host_fails_api_url_with_invalid_argument() {
+    let output = doctor(Some("http://api.example.com"), Some(VALID_JWT), &["--json"]);
+
+    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(
+        (
+            &check_named(&output.stdout, "api_url")["status"],
+            &check_named(&output.stdout, "api_url")["code"]
+        ),
+        (&json!("fail"), &json!("invalid_argument"))
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn doctor_reports_the_https_issuer_the_host_publishes_and_passes_oidc() {
+    let server = healthy_api().await;
+
+    let output = doctor(Some(&server.uri()), Some(VALID_JWT), &["--json"]);
+
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        (
+            &check_named(&output.stdout, "oidc")["status"],
+            &report["oidc"]
+        ),
+        (
+            &json!("ok"),
+            &json!({
+                "issuer": "https://login.example.com",
+                "client_id": "client-1",
+                "issuer_https": true,
+            })
+        )
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn doctor_with_both_oidc_overrides_reports_them_without_requesting_config_json() {
+    let server = healthy_api().await;
+
+    let output = imify(
+        &["doctor", "--json"],
+        &[
+            ("IMIFY_API_URL", &server.uri()),
+            ("IMIFY_TOKEN", VALID_JWT),
+            ("IMIFY_OIDC_ISSUER", "https://sso.example.org"),
+            ("IMIFY_OIDC_CLIENT_ID", "client-override"),
+        ],
+    );
+
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        (&report["oidc"]["issuer"], &report["oidc"]["client_id"]),
+        (&json!("https://sso.example.org"), &json!("client-override"))
+    );
+    assert_eq!(requests_to(&server, "/config.json").await, 0);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn doctor_against_a_host_without_config_json_warns_on_oidc_and_exits_0() {
+    let server = MockServer::start().await;
+    for (route, response) in [
+        ("/api/health", health_ok()),
+        ("/api/health/ready", ready(200, "ok")),
+        ("/api/v1/me", me_ok()),
+    ] {
+        Mock::given(method("GET"))
+            .and(path(route))
+            .respond_with(response)
+            .mount(&server)
+            .await;
+    }
+
+    let output = doctor(Some(&server.uri()), Some(VALID_JWT), &["--json"]);
+
+    assert_eq!(output.status.code(), Some(0), "{}", text(&output.stderr));
+    let oidc = check_named(&output.stdout, "oidc");
+    assert_eq!(
+        (&oidc["status"], &oidc["code"], &oidc["hint"]),
+        (
+            &json!("warn"),
+            &json!(null),
+            &json!("Set `IMIFY_OIDC_ISSUER` and `IMIFY_OIDC_CLIENT_ID`.")
+        )
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn doctor_with_failing_health_skips_oidc_without_requesting_config_json() {
+    let server = doctor_api(ResponseTemplate::new(503), ready(200, "ok"), me_ok()).await;
+
+    let output = doctor(Some(&server.uri()), Some(VALID_JWT), &["--json"]);
+
+    assert_eq!(check_named(&output.stdout, "oidc")["status"], "skip");
+    assert_eq!(requests_to(&server, "/config.json").await, 0);
 }
 
 #[test]

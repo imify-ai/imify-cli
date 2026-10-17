@@ -1,18 +1,26 @@
-//! `imify doctor`: checks the CLI configuration, the API and the access token.
+//! `imify doctor`: checks the CLI configuration, the API, the access token and the identity
+//! provider settings.
 
 use std::io::{self, Write};
+use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
-use imify::auth::TokenSource;
-use imify::{Client, ClientBuilder, Readiness, RetryPolicy, User};
+use imify::auth::{CredentialStore, StoredLogin, TokenSource};
+use imify::{Client, ClientBuilder, OidcSettings, Readiness, RetryPolicy, User};
+use url::Url;
 
-use super::auth::{LoginLookup, TokenOrigin};
+use super::auth::{AuthSource, LoginLookup, TokenOrigin, oidc_settings, on_blocking_thread};
 use super::write_result;
-use crate::config::{ResolvedApiUrl, Source, resolve_api_url};
+use crate::config::{ResolvedApiUrl, Source, is_loopback, resolve_api_url};
+use crate::credentials::{HostStore, Keychain, Location, StoreChoice, host_key};
+use crate::dirs::config_dir;
 use crate::output::renderer::{Render, Renderer};
 use crate::output::sanitize::printable;
 use crate::output::time::rfc3339;
-use crate::output::{AUTH_REJECTED_HINT, AUTH_REQUIRED_HINT, CliError, Environment, ErrorCode};
+use crate::output::{
+    AUTH_REJECTED_HINT, AUTH_REQUIRED_HINT, CliError, Environment, ErrorCode, LOGIN_HINT,
+};
 
 /// Connect and read timeout of every request doctor sends.
 const TIMEOUT: Duration = Duration::from_secs(10);
@@ -20,8 +28,6 @@ const TIMEOUT: Duration = Duration::from_secs(10);
 const CLOCK_SKEW_LIMIT_MS: i64 = 60_000;
 /// A token that expires within this time gets a warning.
 const EXPIRY_WARNING: Duration = Duration::from_secs(5 * 60);
-/// Hosts that `http` may address without a warning.
-const LOOPBACK_HOSTS: [&str; 3] = ["localhost", "127.0.0.1", "::1"];
 
 /// `imify doctor`: runs every check and prints the report.
 ///
@@ -111,46 +117,17 @@ impl Check {
     fn skip_after(name: &'static str, dependency: &str) -> Self {
         Self::skip(name, format!("Skipped because {dependency} did not pass."))
     }
-}
 
-/// The `api_url` check of a URL the SDK accepted: `warn` for `http` to a host other than
-/// the loopback host. The message names the URL's source.
-fn api_url_check(url: &str, source: Source) -> Check {
-    if sends_plain_http_off_host(url) {
-        Check::warn(
-            "api_url",
-            format!(
-                "{url} ({}) uses plain http to a host other than localhost.",
-                source.api_url_label()
-            ),
-            "Use an `https` API URL.",
-        )
-    } else {
-        Check::ok("api_url", format!("{url} ({})", source.api_url_label()))
+    /// A `warn` with the message and hint of `error`.
+    fn warn_of(name: &'static str, error: CliError) -> Self {
+        Self {
+            name,
+            status: Status::Warn,
+            message: error.message,
+            code: None,
+            hint: error.hint,
+        }
     }
-}
-
-/// Returns `true` when `url` is an `http` URL whose host is not a loopback host.
-fn sends_plain_http_off_host(url: &str) -> bool {
-    let scheme = "http://";
-    if !url
-        .get(..scheme.len())
-        .is_some_and(|prefix| prefix.eq_ignore_ascii_case(scheme))
-    {
-        return false;
-    }
-    let authority = url[scheme.len()..]
-        .split(['/', '?', '#'])
-        .next()
-        .unwrap_or_default();
-    let host_and_port = authority.rsplit('@').next().unwrap_or_default();
-    let host = match host_and_port.strip_prefix('[') {
-        Some(bracketed) => bracketed.split(']').next().unwrap_or_default(),
-        None => host_and_port.split(':').next().unwrap_or_default(),
-    };
-    !LOOPBACK_HOSTS
-        .iter()
-        .any(|loopback| host.eq_ignore_ascii_case(loopback))
 }
 
 /// The `clock` check of `skew_ms`, the server time minus the local time.
@@ -189,6 +166,67 @@ fn expiry_check(expires_at: SystemTime, now: SystemTime) -> Check {
             )
             .with_hint(AUTH_REJECTED_HINT),
         ),
+    }
+}
+
+/// The `token_expiry` check of a stored login whose ID token expires at `expires_at`,
+/// evaluated at `now`. With a refresh token, an ID token that expires soon or has expired
+/// passes, because the refresh token renews it.
+fn login_expiry_check(expires_at: SystemTime, has_refresh_token: bool, now: SystemTime) -> Check {
+    let timestamp = rfc3339(expires_at);
+    let remaining = expires_at
+        .duration_since(now)
+        .ok()
+        .filter(|remaining| !remaining.is_zero());
+    match (remaining, has_refresh_token) {
+        (Some(remaining), _) if remaining > EXPIRY_WARNING => {
+            Check::ok("token_expiry", format!("Expires at {timestamp}."))
+        }
+        (Some(_), true) => Check::ok(
+            "token_expiry",
+            format!("Expires at {timestamp}, in less than 5 min. The refresh token renews it."),
+        ),
+        (Some(_), false) => Check::warn(
+            "token_expiry",
+            format!(
+                "Expires at {timestamp}, in less than 5 min, and the login has no refresh token."
+            ),
+            LOGIN_HINT,
+        ),
+        (None, true) => Check::ok(
+            "token_expiry",
+            format!("Expired at {timestamp}. The refresh token renews it."),
+        ),
+        (None, false) => Check::fail(
+            "token_expiry",
+            CliError::new(
+                ErrorCode::AuthExpired,
+                format!("The login expired at {timestamp} and has no refresh token."),
+            )
+            .with_hint(LOGIN_HINT),
+        ),
+    }
+}
+
+/// Returns `true` when `issuer` is an `https` URL.
+fn issuer_https(issuer: &str) -> bool {
+    Url::parse(issuer).is_ok_and(|url| url.scheme() == "https")
+}
+
+/// The `oidc` check of the identity provider settings: `warn` when the issuer is neither
+/// `https` nor `http` on `localhost`, `127.0.0.1` or `::1`.
+fn oidc_check(settings: &OidcSettings) -> Check {
+    let message = format!("Issuer {}, client {}.", settings.issuer, settings.client_id);
+    let secure = Url::parse(&settings.issuer)
+        .is_ok_and(|url| url.scheme() == "https" || (url.scheme() == "http" && is_loopback(&url)));
+    if secure {
+        Check::ok("oidc", message)
+    } else {
+        Check::warn(
+            "oidc",
+            format!("{message} The issuer does not use https."),
+            "Set `IMIFY_OIDC_ISSUER` to an `https` issuer.",
+        )
     }
 }
 
@@ -242,7 +280,18 @@ struct Report {
     token_source: Option<&'static str>,
     token_expires_at: Option<SystemTime>,
     user: Option<User>,
+    credential_store: Option<StoreChoice>,
+    config_dir: Option<PathBuf>,
+    login: Option<LoginReport>,
+    oidc: Option<OidcSettings>,
     checks: Vec<Check>,
+}
+
+/// The stored login the `token` check found.
+#[derive(Debug)]
+struct LoginReport {
+    location: Location,
+    has_refresh_token: bool,
 }
 
 impl Report {
@@ -261,7 +310,11 @@ struct Reachable {
 }
 
 async fn diagnose(env: &Environment) -> Report {
-    let mut report = Report::default();
+    let mut report = Report {
+        credential_store: StoreChoice::parse(env.credential_store.as_deref()).ok(),
+        config_dir: config_dir(env).ok(),
+        ..Report::default()
+    };
 
     let api = check_api_url(env, &mut report);
     let reachable = if let Some((_, client)) = &api {
@@ -276,16 +329,50 @@ async fn diagnose(env: &Environment) -> Report {
     }
     check_clock(reachable.as_ref(), &mut report);
 
-    let host = api.as_ref().map(|(api_url, _)| api_url.to_string());
+    let host = api.as_ref().map(|(api_url, _)| host_key(&api_url.url));
     let token_source = check_token(env, host.as_deref(), &mut report).await;
-    match (&api, token_source) {
-        (_, None) => report.push(Check::skip_after("account", "token")),
-        (Some((api_url, _)), Some((source, origin))) if reachable.is_some() => {
-            check_account(env, api_url, source, origin, &mut report).await;
+    match (&api, &host, token_source) {
+        (_, _, None) => report.push(Check::skip_after("account", "token")),
+        (Some((api_url, _)), Some(host), Some((source, origin))) if reachable.is_some() => {
+            check_account(env, api_url, host, source, origin, &mut report).await;
         }
         _ => report.push(Check::skip_after("account", "health")),
     }
+
+    match (&api, &host) {
+        (Some((_, client)), Some(host)) if reachable.is_some() || oidc_overrides_set(env) => {
+            check_oidc(env, client, host, &mut report).await;
+        }
+        (Some(_), _) => report.push(Check::skip_after("oidc", "health")),
+        (None, _) => report.push(Check::skip_after("oidc", "api_url")),
+    }
     report
+}
+
+/// Returns `true` when `IMIFY_OIDC_ISSUER` and `IMIFY_OIDC_CLIENT_ID` are both set and not
+/// blank, so the `oidc` check sends no request.
+fn oidc_overrides_set(env: &Environment) -> bool {
+    [&env.oidc_issuer, &env.oidc_client_id]
+        .into_iter()
+        .all(|value| {
+            value
+                .as_deref()
+                .is_some_and(|value| !value.trim().is_empty())
+        })
+}
+
+/// Runs the `oidc` check on the settings `imify auth login` would use. Every problem is a
+/// warning: it affects `imify auth login` only, not the token in use.
+async fn check_oidc(env: &Environment, client: &Client, host: &str, report: &mut Report) {
+    let check = match oidc_settings(env, client, host).await {
+        Ok(settings) => {
+            let check = oidc_check(&settings);
+            report.oidc = Some(settings);
+            check
+        }
+        Err(error) => Check::warn_of("oidc", error),
+    };
+    report.push(check);
 }
 
 /// Runs the `api_url` check and returns the URL with a client without a token source.
@@ -299,7 +386,10 @@ fn check_api_url(env: &Environment, report: &mut Report) -> Option<(ResolvedApiU
     match checked {
         Ok((api_url, client)) => {
             let url = api_url.to_string();
-            report.push(api_url_check(&url, api_url.source));
+            report.push(Check::ok(
+                "api_url",
+                format!("{url} ({})", api_url.source.api_url_label()),
+            ));
             report.api_url = Some(url);
             report.api_url_source = Some(api_url.source);
             Some((api_url, client))
@@ -391,55 +481,48 @@ fn check_clock(reachable: Option<&Reachable>, report: &mut Report) {
 }
 
 /// Runs the `token` and `token_expiry` checks and returns the token source with its origin
-/// when it supplies a token.
+/// when it supplies a token. `host` is the host key of the API URL; without it, only
+/// `IMIFY_TOKEN` is checked. A stored login is read from the store and never refreshed here.
 async fn check_token(
     env: &Environment,
     host: Option<&str>,
     report: &mut Report,
-) -> Option<(impl TokenSource + 'static, TokenOrigin)> {
-    let variable = imify::auth::EnvToken::VARIABLE;
-    let resolved = match host {
-        Some(host) => super::auth::token_source(env, &host_key_of(host)).await,
-        None => super::auth::env_token_source(),
-    };
-    let (source, origin) = match resolved {
-        Ok(Some((source, origin))) => (Ok(source), origin),
-        Ok(None) => (
-            Err(
-                CliError::new(ErrorCode::AuthRequired, format!("{variable} is not set."))
-                    .with_hint(AUTH_REQUIRED_HINT),
-            ),
-            TokenOrigin::Env,
-        ),
-        Err(error) => (Err(error), TokenOrigin::Env),
-    };
-    let token = match source {
-        Ok(source) => source
-            .token()
-            .await
-            .map(|token| (source, token))
-            .map_err(CliError::from),
+) -> Option<(AuthSource, TokenOrigin)> {
+    let found = match super::auth::env_token_source() {
+        Ok(Some((source, _))) => check_env_token(env, host, source, report).await,
+        Ok(None) => match host {
+            Some(host) => check_stored_login(env, host, report).await,
+            None => Err(CliError::new(
+                ErrorCode::AuthRequired,
+                format!("{} is not set.", imify::auth::EnvToken::VARIABLE),
+            )
+            .with_hint(AUTH_REQUIRED_HINT)),
+        },
         Err(error) => Err(error),
     };
-    let (source, token) = match token {
-        Ok(found) => found,
+    match found {
+        Ok(found) => Some(found),
         Err(error) => {
             report.push(Check::fail("token", error));
             report.push(Check::skip_after("token_expiry", "token"));
-            return None;
+            None
         }
-    };
+    }
+}
+
+/// The `token` and `token_expiry` checks of the token in `IMIFY_TOKEN`.
+async fn check_env_token(
+    env: &Environment,
+    host: Option<&str>,
+    source: AuthSource,
+    report: &mut Report,
+) -> Result<(AuthSource, TokenOrigin), CliError> {
+    let token = source.token().await?;
     report.push(Check::ok(
         "token",
-        match origin {
-            TokenOrigin::Env => format!("{variable} is set."),
-            TokenOrigin::Login => "A login is stored for the host.".to_owned(),
-        },
+        format!("{} is set.", imify::auth::EnvToken::VARIABLE),
     ));
-    report.token_source = Some(match origin {
-        TokenOrigin::Env => "env",
-        TokenOrigin::Login => "stored",
-    });
+    report.token_source = Some("env");
     let expiry = match token.expires_at() {
         Some(expires_at) => {
             report.token_expires_at = Some(expires_at);
@@ -451,45 +534,92 @@ async fn check_token(
         ),
     };
     let expiry = match host {
-        Some(host) => with_env_token_hint(expiry, origin, env, host).await,
+        Some(host) => with_origin_hint(expiry, TokenOrigin::Env, env, host).await,
         None => expiry,
     };
     report.push(expiry);
-    Some((source, origin))
+    Ok((source, TokenOrigin::Env))
 }
 
-/// Sets the hint of an `auth_rejected` failure of a token from `IMIFY_TOKEN` as in
-/// [`LoginLookup::env_token_hint`] for the host of `api_url`. Other checks are unchanged.
-async fn with_env_token_hint(
+/// The `token` and `token_expiry` checks of the stored login of `host`.
+async fn check_stored_login(
+    env: &Environment,
+    host: &str,
+    report: &mut Report,
+) -> Result<(AuthSource, TokenOrigin), CliError> {
+    let store = Arc::new(HostStore::open(env, host, Keychain::system())?);
+    let loading = Arc::clone(&store);
+    let found = on_blocking_thread(move || loading.load_reporting()).await?;
+    let not_logged_in = || not_logged_in(host, &store.locations());
+    let (credentials, location) = found.ok_or_else(not_logged_in)?;
+    let source = StoredLogin::load(Arc::clone(&store) as Arc<dyn CredentialStore>)
+        .await?
+        .ok_or_else(not_logged_in)?;
+    let has_refresh_token = credentials.has_refresh_token();
+    report.push(Check::ok(
+        "token",
+        stored_login_message(host, &location, has_refresh_token),
+    ));
+    report.token_source = Some("stored");
+    let expires_at = credentials.expires_at();
+    report.token_expires_at = Some(expires_at);
+    report.push(login_expiry_check(
+        expires_at,
+        has_refresh_token,
+        SystemTime::now(),
+    ));
+    report.login = Some(LoginReport {
+        location,
+        has_refresh_token,
+    });
+    Ok((AuthSource::Stored(Box::new(source)), TokenOrigin::Login))
+}
+
+/// The `auth_required` error when neither `IMIFY_TOKEN` nor a login for `host` exists. The
+/// message names the places that were searched.
+fn not_logged_in(host: &str, searched: &[Location]) -> CliError {
+    let searched: Vec<String> = searched.iter().map(Location::to_string).collect();
+    CliError::new(
+        ErrorCode::AuthRequired,
+        format!(
+            "{} is not set, and no login for {host} is stored in {}.",
+            imify::auth::EnvToken::VARIABLE,
+            searched.join(" or ")
+        ),
+    )
+    .with_hint(AUTH_REQUIRED_HINT)
+}
+
+/// The message of a passing `token` check for a stored login.
+fn stored_login_message(host: &str, location: &Location, has_refresh_token: bool) -> String {
+    let refresh = if has_refresh_token { "with" } else { "without" };
+    format!("A login for {host} is stored in {location}, {refresh} a refresh token.")
+}
+
+/// Sets the hint of an `auth_rejected` failure as [`TokenOrigin::adjust`] does for the
+/// login of `host`. Other checks are unchanged.
+async fn with_origin_hint(
     check: Check,
     origin: TokenOrigin,
     env: &Environment,
-    api_url: &str,
+    host: &str,
 ) -> Check {
-    if origin != TokenOrigin::Env || check.code != Some(ErrorCode::AuthRejected) {
+    if check.code != Some(ErrorCode::AuthRejected) {
         return check;
     }
-    let hint = LoginLookup::new(env, &host_key_of(api_url))
-        .env_token_hint()
-        .await;
+    let error = CliError::new(ErrorCode::AuthRejected, check.message.clone());
+    let adjusted = origin.adjust(error, LoginLookup::new(env, host)).await;
     Check {
-        hint: Some(hint.to_owned()),
+        hint: adjusted.hint,
         ..check
     }
-}
-
-/// The host key of an `api_url` the `api_url` check accepted.
-fn host_key_of(api_url: &str) -> String {
-    url::Url::parse(api_url).map_or_else(
-        |_| api_url.to_owned(),
-        |url| crate::credentials::host_key(&url),
-    )
 }
 
 async fn check_account(
     env: &Environment,
     api_url: &ResolvedApiUrl,
-    source: impl TokenSource + 'static,
+    host: &str,
+    source: AuthSource,
     origin: TokenOrigin,
     report: &mut Report,
 ) {
@@ -508,11 +638,12 @@ async fn check_account(
         }
         Err(error) => {
             let check = Check::fail("account", error);
-            with_env_token_hint(check, origin, env, &api_url.to_string()).await
+            with_origin_hint(check, origin, env, host).await
         }
     };
     report.push(check);
 }
+
 impl Render for Report {
     fn kind(&self) -> &'static str {
         "doctor_report"
@@ -550,6 +681,17 @@ impl Render for Report {
                 "subject": user.subject,
                 "name": user.name,
                 "role": user.role,
+            })),
+            "credential_store": self.credential_store.map(StoreChoice::as_str),
+            "config_dir": self.config_dir.as_ref().map(|dir| dir.to_string_lossy()),
+            "login": self.login.as_ref().map(|login| serde_json::json!({
+                "storage": login.location.storage(),
+                "has_refresh_token": login.has_refresh_token,
+            })),
+            "oidc": self.oidc.as_ref().map(|settings| serde_json::json!({
+                "issuer": settings.issuer,
+                "client_id": settings.client_id,
+                "issuer_https": issuer_https(&settings.issuer),
             })),
             "checks": checks,
         })
@@ -591,39 +733,119 @@ mod tests {
     }
 
     #[test]
-    fn https_api_url_is_ok() {
+    fn expired_stored_login_without_a_refresh_token_fails_with_auth_expired_and_the_login_hint() {
+        let check = login_expiry_check(at(1_792_152_000), false, at(1_792_152_001));
+
         assert_eq!(
-            api_url_check("https://api.example.com", Source::Env).status,
-            Status::Ok
+            (
+                check.status,
+                check.code,
+                check.message.as_str(),
+                check.hint.as_deref()
+            ),
+            (
+                Status::Fail,
+                Some(ErrorCode::AuthExpired),
+                "The login expired at 2026-10-16T12:00:00Z and has no refresh token.",
+                Some(LOGIN_HINT)
+            )
         );
     }
 
     #[test]
-    fn http_api_url_on_a_loopback_host_is_ok() {
-        for url in [
-            "http://localhost:8000",
-            "http://127.0.0.1:8000/api",
-            "http://[::1]:8000",
-            "HTTP://LOCALHOST",
+    fn expired_stored_login_with_a_refresh_token_passes() {
+        let check = login_expiry_check(at(1_792_152_000), true, at(1_792_152_001));
+
+        assert_eq!(
+            (check.status, check.message.as_str()),
+            (
+                Status::Ok,
+                "Expired at 2026-10-16T12:00:00Z. The refresh token renews it."
+            )
+        );
+    }
+
+    #[test]
+    fn stored_login_expiring_within_5_min_without_a_refresh_token_warns_with_the_login_hint() {
+        let check = login_expiry_check(at(1_792_152_300), false, at(1_792_152_000));
+
+        assert_eq!(
+            (check.status, check.hint.as_deref()),
+            (Status::Warn, Some(LOGIN_HINT))
+        );
+    }
+
+    #[test]
+    fn stored_login_expiring_within_5_min_with_a_refresh_token_passes() {
+        let check = login_expiry_check(at(1_792_152_300), true, at(1_792_152_000));
+
+        assert_eq!(
+            (check.status, check.message.as_str()),
+            (
+                Status::Ok,
+                "Expires at 2026-10-16T12:05:00Z, in less than 5 min. The refresh token renews it."
+            )
+        );
+    }
+
+    #[test]
+    fn stored_login_expiring_later_than_5_min_passes() {
+        let check = login_expiry_check(at(1_792_152_301), false, at(1_792_152_000));
+
+        assert_eq!(
+            (check.status, check.message.as_str()),
+            (Status::Ok, "Expires at 2026-10-16T12:05:01Z.")
+        );
+    }
+
+    #[test]
+    fn https_issuer_passes_oidc() {
+        let check = oidc_check(&OidcSettings::new("https://login.example.com", "client-1"));
+
+        assert_eq!(
+            (check.status, check.message.as_str()),
+            (
+                Status::Ok,
+                "Issuer https://login.example.com, client client-1."
+            )
+        );
+    }
+
+    #[test]
+    fn http_issuer_on_a_loopback_host_passes_oidc() {
+        for issuer in [
+            "http://localhost:8080",
+            "http://127.0.0.1:8080/realms/imify",
+            "http://[::1]:8080",
         ] {
-            assert_eq!(api_url_check(url, Source::Env).status, Status::Ok, "{url}");
+            let check = oidc_check(&OidcSettings::new(issuer, "client-1"));
+
+            assert_eq!(check.status, Status::Ok, "{issuer}");
         }
     }
 
     #[test]
-    fn http_api_url_on_another_host_is_a_warning_with_a_hint() {
-        let check = api_url_check("http://api.example.com", Source::Env);
+    fn http_issuer_on_another_host_warns_on_oidc() {
+        let check = oidc_check(&OidcSettings::new("http://login.example.com", "client-1"));
 
-        assert_eq!(check.status, Status::Warn);
-        assert!(check.hint.is_some());
+        assert_eq!(
+            (check.status, check.code, check.hint.as_deref()),
+            (
+                Status::Warn,
+                None,
+                Some("Set `IMIFY_OIDC_ISSUER` to an `https` issuer.")
+            )
+        );
     }
 
     #[test]
-    fn http_api_url_with_a_loopback_name_in_the_user_info_is_a_warning() {
-        assert_eq!(
-            api_url_check("http://localhost@api.example.com", Source::Env).status,
-            Status::Warn
-        );
+    fn http_issuer_with_a_loopback_name_in_the_user_info_warns_on_oidc() {
+        let check = oidc_check(&OidcSettings::new(
+            "http://localhost@login.example.com",
+            "client-1",
+        ));
+
+        assert_eq!(check.status, Status::Warn);
     }
 
     #[test]
