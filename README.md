@@ -12,6 +12,8 @@ imify doctor                                    # check the configuration, the A
 
 Every command accepts `--json` for machine-readable output on stdout and returns a [documented exit code](docs/dev/adr/0003-output-contract.md). Set `IMIFY_OUTPUT=json` to make it the default, for example in an agent's environment.
 
+The [CLI reference](docs/reference/cli.md) lists the `--help` text of every command. In a clone of the repository, `man ./docs/man/imify.1` opens the man page.
+
 ## Install
 
 On macOS and Linux:

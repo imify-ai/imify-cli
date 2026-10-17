@@ -6,6 +6,8 @@ mod credentials;
 mod dirs;
 mod output;
 mod private_file;
+#[cfg(test)]
+mod reference;
 mod tui;
 
 use std::ffi::OsString;
