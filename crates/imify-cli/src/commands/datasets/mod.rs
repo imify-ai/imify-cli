@@ -27,12 +27,10 @@ pub async fn ls(
     renderer: &mut dyn Renderer,
 ) -> Result<(), CliError> {
     let api = client(env).await?;
-    let datasets = api
-        .client
-        .datasets()
-        .list()
-        .await
-        .map_err(|error| api.error(error))?;
+    let datasets = match api.client.datasets().list().await {
+        Ok(datasets) => datasets,
+        Err(error) => return Err(api.error(error).await),
+    };
     write_result(renderer, &DatasetList(select(datasets, args)))
 }
 

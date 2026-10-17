@@ -19,7 +19,9 @@ use crate::browser::{Browser, SystemBrowser};
 use crate::credentials::{HostStore, Keychain, SaveReport, Saved, host_key};
 use crate::output::renderer::{Render, Renderer};
 use crate::output::sanitize::printable;
-use crate::output::{CliError, Environment, ErrorCode, LOGIN_HINT, PASTE_HINT};
+use crate::output::{
+    AUTH_REJECTED_HINT, CliError, Environment, ErrorCode, LOGIN_HINT, PASTE_HINT, UNSET_TOKEN_HINT,
+};
 
 /// How long `imify auth login` waits for the browser to return to the CLI.
 const LOGIN_TIMEOUT: Duration = Duration::from_secs(300);
@@ -37,12 +39,70 @@ pub enum TokenOrigin {
 }
 
 impl TokenOrigin {
-    /// Replaces the hint of an `auth_rejected` error when the token comes from a login.
-    pub fn adjust(self, error: CliError) -> CliError {
-        if self == Self::Login && error.code == ErrorCode::AuthRejected {
-            error.with_hint(LOGIN_HINT)
+    /// Replaces the hint of an `auth_rejected` error: [`LOGIN_HINT`] when the token comes from
+    /// the stored login, the hint of [`LoginLookup::env_token_hint`] when it comes from
+    /// `IMIFY_TOKEN`. Reads the credential store only for an `auth_rejected` error with a token
+    /// from `IMIFY_TOKEN`. Other errors keep their hint.
+    pub async fn adjust(self, error: CliError, lookup: LoginLookup) -> CliError {
+        if error.code != ErrorCode::AuthRejected {
+            return error;
+        }
+        match self {
+            Self::Login => error.with_hint(LOGIN_HINT),
+            Self::Env => error.with_hint(lookup.env_token_hint().await),
+        }
+    }
+}
+
+/// The stored login of one host, read only when [`LoginLookup::exists`] runs.
+#[derive(Debug)]
+pub struct LoginLookup {
+    env: Environment,
+    host: String,
+}
+
+impl LoginLookup {
+    /// The lookup for the login of `host`, a host key. Reads nothing.
+    pub fn new(env: &Environment, host: &str) -> Self {
+        Self {
+            env: env.clone(),
+            host: host.to_owned(),
+        }
+    }
+
+    /// `true` when a login is stored for the host. A store that cannot be opened or read,
+    /// including an unsupported `IMIFY_CREDENTIAL_STORE`, is `false`; its error is logged at
+    /// debug level.
+    pub async fn exists(self) -> bool {
+        let store = match HostStore::open(&self.env, &self.host, Keychain::system()) {
+            Ok(store) => store,
+            Err(error) => {
+                tracing::debug!(
+                    message = %error.message,
+                    "cannot open the credential store to look for a stored login"
+                );
+                return false;
+            }
+        };
+        match on_blocking_thread(move || store.load()).await {
+            Ok(login) => login.is_some(),
+            Err(error) => {
+                tracing::debug!(
+                    message = %error.message,
+                    "cannot read the credential store to look for a stored login"
+                );
+                false
+            }
+        }
+    }
+
+    /// The hint for an `auth_rejected` error with a token from `IMIFY_TOKEN`:
+    /// [`UNSET_TOKEN_HINT`] when a login is stored for the host, else [`AUTH_REJECTED_HINT`].
+    pub async fn env_token_hint(self) -> &'static str {
+        if self.exists().await {
+            UNSET_TOKEN_HINT
         } else {
-            error
+            AUTH_REJECTED_HINT
         }
     }
 }
@@ -98,7 +158,10 @@ pub fn env_token_source() -> Result<Option<(AuthSource, TokenOrigin)>, CliError>
 /// Returns the error of building the client, of the API request, or of writing the result.
 pub async fn whoami(env: &Environment, renderer: &mut dyn Renderer) -> Result<(), CliError> {
     let api = client(env).await?;
-    let user = api.client.me().await.map_err(|error| api.error(error))?;
+    let user = match api.client.me().await {
+        Ok(user) => user,
+        Err(error) => return Err(api.error(error).await),
+    };
     write_result(renderer, &Whoami(user))
 }
 

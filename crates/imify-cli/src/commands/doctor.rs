@@ -6,7 +6,7 @@ use std::time::{Duration, Instant, SystemTime};
 use imify::auth::TokenSource;
 use imify::{Client, ClientBuilder, Readiness, RetryPolicy, User};
 
-use super::auth::TokenOrigin;
+use super::auth::{LoginLookup, TokenOrigin};
 use super::write_result;
 use crate::config::{ResolvedApiUrl, Source, resolve_api_url};
 use crate::output::renderer::{Render, Renderer};
@@ -280,8 +280,8 @@ async fn diagnose(env: &Environment) -> Report {
     let token_source = check_token(env, host.as_deref(), &mut report).await;
     match (&api, token_source) {
         (_, None) => report.push(Check::skip_after("account", "token")),
-        (Some((api_url, _)), Some(source)) if reachable.is_some() => {
-            check_account(api_url, source, &mut report).await;
+        (Some((api_url, _)), Some((source, origin))) if reachable.is_some() => {
+            check_account(env, api_url, source, origin, &mut report).await;
         }
         _ => report.push(Check::skip_after("account", "health")),
     }
@@ -390,13 +390,13 @@ fn check_clock(reachable: Option<&Reachable>, report: &mut Report) {
     report.push(check);
 }
 
-/// Runs the `token` and `token_expiry` checks and returns the token source when it
-/// supplies a token.
+/// Runs the `token` and `token_expiry` checks and returns the token source with its origin
+/// when it supplies a token.
 async fn check_token(
     env: &Environment,
     host: Option<&str>,
     report: &mut Report,
-) -> Option<impl TokenSource + 'static> {
+) -> Option<(impl TokenSource + 'static, TokenOrigin)> {
     let variable = imify::auth::EnvToken::VARIABLE;
     let resolved = match host {
         Some(host) => super::auth::token_source(env, &host_key_of(host)).await,
@@ -450,8 +450,32 @@ async fn check_token(
             "Skipped because the token has no readable expiry.",
         ),
     };
+    let expiry = match host {
+        Some(host) => with_env_token_hint(expiry, origin, env, host).await,
+        None => expiry,
+    };
     report.push(expiry);
-    Some(source)
+    Some((source, origin))
+}
+
+/// Sets the hint of an `auth_rejected` failure of a token from `IMIFY_TOKEN` as in
+/// [`LoginLookup::env_token_hint`] for the host of `api_url`. Other checks are unchanged.
+async fn with_env_token_hint(
+    check: Check,
+    origin: TokenOrigin,
+    env: &Environment,
+    api_url: &str,
+) -> Check {
+    if origin != TokenOrigin::Env || check.code != Some(ErrorCode::AuthRejected) {
+        return check;
+    }
+    let hint = LoginLookup::new(env, &host_key_of(api_url))
+        .env_token_hint()
+        .await;
+    Check {
+        hint: Some(hint.to_owned()),
+        ..check
+    }
 }
 
 /// The host key of an `api_url` the `api_url` check accepted.
@@ -463,8 +487,10 @@ fn host_key_of(api_url: &str) -> String {
 }
 
 async fn check_account(
+    env: &Environment,
     api_url: &ResolvedApiUrl,
     source: impl TokenSource + 'static,
+    origin: TokenOrigin,
     report: &mut Report,
 ) {
     let result = match client_builder(&api_url.to_string())
@@ -480,7 +506,10 @@ async fn check_account(
             report.user = Some(user);
             check
         }
-        Err(error) => Check::fail("account", error),
+        Err(error) => {
+            let check = Check::fail("account", error);
+            with_env_token_hint(check, origin, env, &api_url.to_string()).await
+        }
     };
     report.push(check);
 }
