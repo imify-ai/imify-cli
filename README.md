@@ -30,6 +30,14 @@ curl --proto '=https' --tlsv1.2 -LsSf https://github.com/imify-ai/imify-cli/rele
 
 Release archives exist for macOS (Apple silicon and Intel) and Linux (x86_64 and aarch64). Windows is not supported.
 
+macOS binaries are not notarized. A binary from an archive that a browser downloaded is blocked by Gatekeeper; remove the quarantine attribute before the first run:
+
+```sh
+xattr -d com.apple.quarantine ./imify
+```
+
+The shell installer and `cargo install` are not affected.
+
 From source, with Rust installed: `cargo install --locked --git https://github.com/imify-ai/imify-cli imify-cli`.
 
 ### Verify a download
