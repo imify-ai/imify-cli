@@ -54,13 +54,24 @@ pub trait Renderer {
     ///
     /// Returns the error of the underlying writer.
     fn warning(&mut self, message: &str) -> io::Result<()>;
+    /// Writes `message` as one line to stderr, without a prefix. With `--quiet`, nothing is
+    /// written.
+    ///
+    /// # Errors
+    ///
+    /// Returns the error of the underlying writer.
+    fn notice(&mut self, message: &str) -> io::Result<()>;
 }
 
 fn write_warning(stderr: &mut dyn Write, quiet: bool, message: &str) -> io::Result<()> {
+    write_notice(stderr, quiet, &format!("warning: {message}"))
+}
+
+fn write_notice(stderr: &mut dyn Write, quiet: bool, message: &str) -> io::Result<()> {
     if quiet {
         return Ok(());
     }
-    writeln!(stderr, "warning: {}", printable(message))?;
+    writeln!(stderr, "{}", printable(message))?;
     stderr.flush()
 }
 
@@ -125,6 +136,10 @@ impl Renderer for HumanRenderer {
     fn warning(&mut self, message: &str) -> io::Result<()> {
         write_warning(&mut self.stderr, self.quiet, message)
     }
+
+    fn notice(&mut self, message: &str) -> io::Result<()> {
+        write_notice(&mut self.stderr, self.quiet, message)
+    }
 }
 
 /// Writes JSON for scripts: one document per result, one line per event, the error envelope on
@@ -187,6 +202,10 @@ impl Renderer for JsonRenderer {
 
     fn warning(&mut self, message: &str) -> io::Result<()> {
         write_warning(&mut self.stderr, self.quiet, message)
+    }
+
+    fn notice(&mut self, message: &str) -> io::Result<()> {
+        write_notice(&mut self.stderr, self.quiet, message)
     }
 }
 
@@ -471,6 +490,42 @@ mod tests {
             human_streams.stdout.text() + &json_streams.stdout.text(),
             ""
         );
+    }
+
+    #[test]
+    fn notices_go_to_stderr_without_a_prefix_in_both_modes() {
+        let (mut human, human_streams) = human_renderer(false);
+        let (mut json, json_streams) = json_renderer(false);
+
+        human.notice("imify 0.2.0 is available.").unwrap();
+        json.notice("imify 0.2.0 is available.").unwrap();
+
+        assert_eq!(
+            [human_streams.stderr.text(), json_streams.stderr.text()],
+            ["imify 0.2.0 is available.\n", "imify 0.2.0 is available.\n"]
+        );
+        assert_eq!(
+            human_streams.stdout.text() + &json_streams.stdout.text(),
+            ""
+        );
+    }
+
+    #[test]
+    fn notices_escape_control_characters() {
+        let (mut renderer, streams) = human_renderer(false);
+
+        renderer.notice("imify \u{1b}[31m0.2.0\n").unwrap();
+
+        assert_eq!(streams.stderr.text(), "imify \\u{1b}[31m0.2.0\\u{a}\n");
+    }
+
+    #[test]
+    fn quiet_drops_notices() {
+        let (mut renderer, streams) = human_renderer(true);
+
+        renderer.notice("imify 0.2.0 is available.").unwrap();
+
+        assert_eq!(streams.stderr.text(), "");
     }
 
     #[test]

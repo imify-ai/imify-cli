@@ -59,7 +59,8 @@ crates/imify-cli/src/
   private_file.rs   files only the user can change: mode checks, atomic writes
   output/           Renderer (human, json), error envelope, exit codes
   tui/              inline viewport, theme, terminal restore
-  update/           install method of the running binary and its update command
+  update/           release lookup settings, install method of the running binary and its
+                    update command, the update hint after a command
 ```
 
 ## Seams

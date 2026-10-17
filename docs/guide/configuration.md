@@ -152,6 +152,14 @@ The top level and each `[profiles.<name>]` table hold these keys only. A profile
 
 A refused file or directory fails with `internal` and exit code 1; the message says how to fix the mode.
 
+## Update check
+
+```sh
+export IMIFY_NO_UPDATE_CHECK=1
+```
+
+`IMIFY_NO_UPDATE_CHECK` with any value except the empty string turns off the [update hint](self-update.md#update-hint) and its request to GitHub. `CI`, `BUILD_NUMBER` and `RUN_ID` turn it off the same way.
+
 ## Errors
 
 | Code | Exit | Cause |

@@ -17,6 +17,7 @@ use std::process::ExitCode;
 use cli::{AuthCommand, Command, ConfigCommand, DatasetsCommand, SelfCommand};
 use output::renderer::Renderer;
 use output::{CliError, Environment, ErrorCode, Settings};
+use update::check::PendingCheck;
 
 fn main() -> ExitCode {
     let args: Vec<OsString> = std::env::args_os().collect();
@@ -37,8 +38,14 @@ fn main() -> ExitCode {
     env.profile_flag.clone_from(&cli.global.profile);
 
     let mut renderer = settings.renderer();
+    let update_check = PendingCheck::start(cli.command.as_ref(), &settings, &env);
     match run(cli.command.as_ref(), &env, &settings, renderer.as_mut()) {
-        Ok(()) => ExitCode::SUCCESS,
+        Ok(()) => {
+            if let Some(update_check) = update_check {
+                update_check.finish(renderer.as_mut());
+            }
+            ExitCode::SUCCESS
+        }
         Err(error) => report(renderer.as_mut(), &error),
     }
 }

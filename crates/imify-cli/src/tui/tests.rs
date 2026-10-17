@@ -533,6 +533,10 @@ impl Renderer for RecordingRenderer {
         self.warnings.push(message.to_owned());
         Ok(())
     }
+
+    fn notice(&mut self, message: &str) -> io::Result<()> {
+        writeln!(self.lines, "{message}")
+    }
 }
 
 #[tokio::test(start_paused = true)]

@@ -1,9 +1,8 @@
-//! `imify self update` with a copy of the binary in a temporary install prefix, a fake install
+//! `imify self update` with a hard link to the binary in a temporary install prefix, a fake install
 //! receipt, a release server on wiremock and a fake installer script.
 #![cfg(unix)]
 
 use std::io;
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Output;
 
@@ -28,7 +27,7 @@ struct Machine {
 impl Machine {
     async fn new() -> io::Result<Self> {
         Ok(Self {
-            home: tempfile::tempdir()?,
+            home: tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR"))?,
             server: MockServer::start().await,
         })
     }
@@ -37,14 +36,18 @@ impl Machine {
         self.home.path().join(relative)
     }
 
-    /// Copies the `imify` binary to `relative` below the home directory.
+    /// Hard-links the `imify` binary to `relative` below the home directory.
+    ///
+    /// A copy is open for writing until `copy` returns. A test thread that forks in that
+    /// window keeps the file open, and running the copy then fails with `ETXTBSY` on Linux.
+    /// A hard link opens no file. The home directory is below the target directory so that
+    /// both are on one file system.
     fn install_binary(&self, relative: &str) -> io::Result<PathBuf> {
         let target = self.path(relative);
         if let Some(parent) = target.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        std::fs::copy(env!("CARGO_BIN_EXE_imify"), &target)?;
-        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o755))?;
+        std::fs::hard_link(env!("CARGO_BIN_EXE_imify"), &target)?;
         Ok(target)
     }
 
