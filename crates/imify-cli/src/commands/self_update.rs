@@ -3,7 +3,7 @@
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
-use imify::update::{Installation, ReleaseClient, ReleaseSource, Version};
+use imify::update::{Installation, Release, ReleaseClient, ReleaseSource, Version};
 use serde_json::json;
 
 use super::write_result;
@@ -41,43 +41,46 @@ pub async fn update(env: &Environment, renderer: &mut dyn Renderer) -> Result<()
     let client = release_client(env, source)?;
     let current = running_version()?;
     let latest = client.latest().await?;
-    if latest.version <= current {
-        return write_result(
-            renderer,
-            &Outcome {
-                updated: false,
-                previous_version: current.clone(),
-                version: current,
-                latest: latest.version,
-                bin_dir: installation.bin_dir(),
-                install_prefix: installation.install_prefix().to_owned(),
-            },
-        );
+    let updated = latest.version > current;
+    if updated {
+        install(&client, &installation, &latest).await?;
     }
-    match client.install(&installation, &latest).await {
-        Ok(output) => tracing::debug!("installer output:\n{output}"),
-        Err(error) => {
-            if let imify::Error::SelfUpdate {
-                installer_output: Some(output),
-                ..
-            } = &error
-            {
-                tracing::debug!("installer output:\n{output}");
-            }
-            return Err(error.into());
-        }
-    }
+    let version = if updated {
+        latest.version.clone()
+    } else {
+        current.clone()
+    };
     write_result(
         renderer,
         &Outcome {
-            updated: true,
+            updated,
             previous_version: current,
-            version: latest.version.clone(),
+            version,
             latest: latest.version,
             bin_dir: installation.bin_dir(),
             install_prefix: installation.install_prefix().to_owned(),
         },
     )
+}
+
+/// Runs the installer of `release` and logs its output at debug level, also when it fails.
+async fn install(
+    client: &ReleaseClient,
+    installation: &Installation,
+    release: &Release,
+) -> Result<(), CliError> {
+    let result = client.install(installation, release).await;
+    let output = match &result {
+        Ok(output) => Some(output.as_str()),
+        Err(imify::Error::SelfUpdate {
+            installer_output, ..
+        }) => installer_output.as_deref(),
+        Err(_) => None,
+    };
+    if let Some(output) = output {
+        tracing::debug!("installer output:\n{output}");
+    }
+    result.map(drop).map_err(CliError::from)
 }
 
 /// The install from the installer's receipt that contains `executable`; `None` without a

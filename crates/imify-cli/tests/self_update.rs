@@ -2,6 +2,7 @@
 //! receipt, a release server on wiremock and a fake installer script.
 #![cfg(unix)]
 
+use std::io;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Output;
@@ -25,11 +26,11 @@ struct Machine {
 }
 
 impl Machine {
-    async fn new() -> Self {
-        Self {
-            home: tempfile::tempdir().unwrap(),
+    async fn new() -> io::Result<Self> {
+        Ok(Self {
+            home: tempfile::tempdir()?,
             server: MockServer::start().await,
-        }
+        })
     }
 
     fn path(&self, relative: &str) -> PathBuf {
@@ -37,18 +38,20 @@ impl Machine {
     }
 
     /// Copies the `imify` binary to `relative` below the home directory.
-    fn install_binary(&self, relative: &str) -> PathBuf {
+    fn install_binary(&self, relative: &str) -> io::Result<PathBuf> {
         let target = self.path(relative);
-        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
-        std::fs::copy(env!("CARGO_BIN_EXE_imify"), &target).unwrap();
-        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o755)).unwrap();
-        target
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::copy(env!("CARGO_BIN_EXE_imify"), &target)?;
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o755))?;
+        Ok(target)
     }
 
     /// Copies the binary to `prefix/bin/imify` and writes the receipt of an installer install
     /// into `prefix`, as the 0.1.0 installer writes it.
-    fn installer_install(&self) -> PathBuf {
-        let executable = self.install_binary("prefix/bin/imify");
+    fn installer_install(&self) -> io::Result<PathBuf> {
+        let executable = self.install_binary("prefix/bin/imify")?;
         let receipt = json!({
             "binaries": ["imify"],
             "binary_aliases": {},
@@ -67,9 +70,9 @@ impl Machine {
             "version": "0.1.0"
         });
         let dir = self.path("config/imify-cli");
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("imify-cli-receipt.json"), receipt.to_string()).unwrap();
-        executable
+        std::fs::create_dir_all(&dir)?;
+        std::fs::write(dir.join("imify-cli-receipt.json"), receipt.to_string())?;
+        Ok(executable)
     }
 
     async fn latest_release(&self, response: ResponseTemplate) {
@@ -127,7 +130,8 @@ impl Machine {
     /// `text` with the home directory replaced by `<home>` and the running version by
     /// `<version>`.
     fn redact(&self, text: &[u8]) -> String {
-        let home = std::fs::canonicalize(self.home.path()).unwrap();
+        let home =
+            std::fs::canonicalize(self.home.path()).unwrap_or_else(|_| self.home.path().to_owned());
         String::from_utf8_lossy(text)
             .replace(&home.display().to_string(), "<home>")
             .replace(&self.home.path().display().to_string(), "<home>")
@@ -135,7 +139,11 @@ impl Machine {
     }
 
     async fn requests(&self) -> usize {
-        self.server.received_requests().await.unwrap().len()
+        self.server
+            .received_requests()
+            .await
+            .unwrap_or_default()
+            .len()
     }
 }
 
@@ -145,8 +153,8 @@ fn json_of(bytes: &[u8]) -> serde_json::Value {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn update_to_a_newer_release_runs_its_installer_for_the_receipts_prefix() {
-    let machine = Machine::new().await;
-    let imify = machine.installer_install();
+    let machine = Machine::new().await.unwrap();
+    let imify = machine.installer_install().unwrap();
     machine.latest_tag(NEWER_TAG).await;
     machine.installer(0).await;
 
@@ -169,8 +177,8 @@ async fn update_to_a_newer_release_runs_its_installer_for_the_receipts_prefix() 
 
 #[tokio::test(flavor = "multi_thread")]
 async fn update_to_a_newer_release_reports_both_versions_as_json() {
-    let machine = Machine::new().await;
-    let imify = machine.installer_install();
+    let machine = Machine::new().await.unwrap();
+    let imify = machine.installer_install().unwrap();
     machine.latest_tag(NEWER_TAG).await;
     machine.installer(0).await;
 
@@ -182,8 +190,8 @@ async fn update_to_a_newer_release_reports_both_versions_as_json() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn update_on_the_latest_release_downloads_no_installer() {
-    let machine = Machine::new().await;
-    let imify = machine.installer_install();
+    let machine = Machine::new().await.unwrap();
+    let imify = machine.installer_install().unwrap();
     machine.latest_tag(&format!("v{VERSION}")).await;
     machine.installer(0).await;
 
@@ -196,8 +204,8 @@ async fn update_on_the_latest_release_downloads_no_installer() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn update_on_the_latest_release_says_so() {
-    let machine = Machine::new().await;
-    let imify = machine.installer_install();
+    let machine = Machine::new().await.unwrap();
+    let imify = machine.installer_install().unwrap();
     machine.latest_tag(&format!("v{VERSION}")).await;
 
     let output = machine.run(&imify, &["self", "update"]);
@@ -210,8 +218,8 @@ async fn update_on_the_latest_release_says_so() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn update_without_a_receipt_is_unsupported_and_sends_no_request() {
-    let machine = Machine::new().await;
-    let imify = machine.install_binary("bin/imify");
+    let machine = Machine::new().await.unwrap();
+    let imify = machine.install_binary("bin/imify").unwrap();
     machine.latest_tag(NEWER_TAG).await;
 
     let output = machine.run(&imify, &["self", "update", "--json"]);
@@ -226,8 +234,8 @@ async fn update_without_a_receipt_is_unsupported_and_sends_no_request() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn update_of_a_cargo_install_hints_at_cargo_install() {
-    let machine = Machine::new().await;
-    let imify = machine.install_binary("cargo/bin/imify");
+    let machine = Machine::new().await.unwrap();
+    let imify = machine.install_binary("cargo/bin/imify").unwrap();
     let crates = json!({"installs": {
         "imify-cli 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)": {"bins": ["imify"]}
     }});
@@ -246,8 +254,10 @@ async fn update_of_a_cargo_install_hints_at_cargo_install() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn update_of_a_homebrew_install_hints_at_brew_upgrade() {
-    let machine = Machine::new().await;
-    let imify = machine.install_binary("homebrew/Cellar/imify-cli/0.2.0/bin/imify");
+    let machine = Machine::new().await.unwrap();
+    let imify = machine
+        .install_binary("homebrew/Cellar/imify-cli/0.2.0/bin/imify")
+        .unwrap();
 
     let output = machine.run(&imify, &["self", "update", "--json"]);
 
@@ -267,8 +277,8 @@ async fn update_of_a_homebrew_install_hints_at_brew_upgrade() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn update_with_a_failing_installer_is_self_update_failed() {
-    let machine = Machine::new().await;
-    let imify = machine.installer_install();
+    let machine = Machine::new().await.unwrap();
+    let imify = machine.installer_install().unwrap();
     machine.latest_tag(NEWER_TAG).await;
     machine.installer(1).await;
 
@@ -280,8 +290,8 @@ async fn update_with_a_failing_installer_is_self_update_failed() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn update_with_a_failing_installer_logs_its_output_with_verbose() {
-    let machine = Machine::new().await;
-    let imify = machine.installer_install();
+    let machine = Machine::new().await.unwrap();
+    let imify = machine.installer_install().unwrap();
     machine.latest_tag(NEWER_TAG).await;
     machine.installer(1).await;
 
@@ -298,8 +308,8 @@ async fn update_with_a_failing_installer_logs_its_output_with_verbose() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn update_against_a_rate_limited_lookup_is_rate_limited_and_runs_no_installer() {
-    let machine = Machine::new().await;
-    let imify = machine.installer_install();
+    let machine = Machine::new().await.unwrap();
+    let imify = machine.installer_install().unwrap();
     machine
         .latest_release(
             ResponseTemplate::new(403).set_body_json(json!({"message": "API rate limit exceeded"})),
