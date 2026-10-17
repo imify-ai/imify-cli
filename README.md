@@ -28,6 +28,12 @@ The installer places `imify` in `$CARGO_HOME/bin` (default `~/.cargo/bin`) and a
 curl --proto '=https' --tlsv1.2 -LsSf https://github.com/imify-ai/imify-cli/releases/latest/download/imify-cli-installer.sh | IMIFY_CLI_NO_MODIFY_PATH=1 sh
 ```
 
+With Homebrew:
+
+```sh
+brew install imify-ai/tap/imify-cli
+```
+
 Release archives exist for macOS (Apple silicon and Intel) and Linux (x86_64 and aarch64). Windows is not supported.
 
 macOS binaries are not notarized. A binary from an archive that a browser downloaded is blocked by Gatekeeper; remove the quarantine attribute before the first run:
@@ -36,7 +42,7 @@ macOS binaries are not notarized. A binary from an archive that a browser downlo
 xattr -d com.apple.quarantine ./imify
 ```
 
-The shell installer and `cargo install` are not affected.
+The shell installer, Homebrew and `cargo install` are not affected.
 
 From source, with Rust installed: `cargo install --locked --git https://github.com/imify-ai/imify-cli imify-cli`.
 
@@ -46,7 +52,7 @@ From source, with Rust installed: `cargo install --locked --git https://github.c
 imify self update
 ```
 
-`imify self update` installs the latest release when the installer above installed `imify`. A `cargo install` updates with `cargo install --locked imify-cli`. See [Update imify](docs/guide/self-update.md).
+`imify self update` installs the latest release when the installer above installed `imify`. A Homebrew install updates with `brew upgrade imify-cli`, a `cargo install` with `cargo install --locked imify-cli`. See [Update imify](docs/guide/self-update.md).
 
 ### Verify a download
 
