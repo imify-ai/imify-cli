@@ -1911,14 +1911,13 @@ async fn doctor_with_failing_health_skips_oidc_without_requesting_config_json() 
 }
 
 #[test]
-fn doctor_help_shows_the_example() {
+fn doctor_help_shows_the_api_url_and_profile_examples() {
     let output = imify(&["doctor", "--help"], &[]);
 
     assert!(output.status.success());
-    assert!(
-        text(&output.stdout)
-            .contains("Example:\n  imify doctor --api-url https://api.example.com\n")
-    );
+    assert!(text(&output.stdout).contains(
+        "Examples:\n  imify doctor --api-url https://api.example.com\n  imify doctor --profile staging\n"
+    ));
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1944,6 +1943,212 @@ async fn doctor_reports_an_api_url_from_the_config_file_with_its_source() {
     assert_eq!(
         (&report["api_url"], &report["api_url_source"]),
         (&json!(server.uri()), &json!("config"))
+    );
+}
+
+/// A configuration directory whose `config.toml` sets the top-level `api_url` to `top` and
+/// the `api_url` of the profile `staging` to `staging`, and has the profile `empty` without
+/// keys.
+fn profiles_config_dir(top: &str, staging: &str) -> std::io::Result<tempfile::TempDir> {
+    let config_dir = tempfile::tempdir()?;
+    std::fs::write(
+        config_dir.path().join("config.toml"),
+        format!(
+            "api_url = \"{top}\"\n\n[profiles.staging]\napi_url = \"{staging}\"\n\n[profiles.empty]\n"
+        ),
+    )?;
+    Ok(config_dir)
+}
+
+/// `imify doctor` with `args`, a valid `IMIFY_TOKEN`, the config file in `config_dir` and the
+/// variables in `env`.
+fn doctor_in(config_dir: &tempfile::TempDir, args: &[&str], env: &[(&str, &str)]) -> Output {
+    let mut command_args = vec!["doctor"];
+    command_args.extend_from_slice(args);
+    let config_path = config_dir.path().to_str().unwrap_or_default();
+    let mut command_env = vec![
+        ("IMIFY_TOKEN", VALID_JWT),
+        ("IMIFY_CONFIG_DIR", config_path),
+    ];
+    command_env.extend_from_slice(env);
+    imify(&command_args, &command_env)
+}
+
+/// `active_profile`, `api_url_source` and `api_url_profile` of a JSON report.
+fn profile_fields(stdout: &[u8]) -> (serde_json::Value, serde_json::Value, serde_json::Value) {
+    let report: serde_json::Value = serde_json::from_slice(stdout).unwrap_or_default();
+    (
+        report["active_profile"].clone(),
+        report["api_url_source"].clone(),
+        report["api_url_profile"].clone(),
+    )
+}
+
+/// The JSON report normalized as in [`normalize_doctor_json`], with `config_dir` replaced by
+/// `<config dir>`.
+fn normalize_doctor_json_in(
+    stdout: &[u8],
+    config_dir: &tempfile::TempDir,
+    server_uri: &str,
+) -> String {
+    normalize_doctor_json(stdout, server_uri)
+        .replace(&config_dir.path().display().to_string(), "<config dir>")
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn doctor_without_a_profile_reports_default_as_the_active_and_the_supplying_profile() {
+    let server = healthy_api().await;
+    let config_dir = profiles_config_dir(&server.uri(), "https://staging.example.com").unwrap();
+
+    let output = doctor_in(&config_dir, &["--json"], &[]);
+
+    assert_eq!(output.status.code(), Some(0), "{}", text(&output.stderr));
+    assert_eq!(
+        profile_fields(&output.stdout),
+        (json!("default"), json!("config"), json!("default"))
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn doctor_with_the_profile_flag_reports_the_profile_that_supplies_the_api_url() {
+    let server = healthy_api().await;
+    let config_dir = profiles_config_dir("https://top.example.com", &server.uri()).unwrap();
+
+    let output = doctor_in(&config_dir, &["--json", "--profile", "staging"], &[]);
+
+    assert_eq!(output.status.code(), Some(0), "{}", text(&output.stderr));
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["api_url"], json!(server.uri()));
+    assert_eq!(
+        profile_fields(&output.stdout),
+        (json!("staging"), json!("config"), json!("staging"))
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn doctor_with_imify_profile_reports_the_profile_as_active() {
+    let server = healthy_api().await;
+    let config_dir = profiles_config_dir("https://top.example.com", &server.uri()).unwrap();
+
+    let output = doctor_in(&config_dir, &["--json"], &[("IMIFY_PROFILE", "staging")]);
+
+    assert_eq!(output.status.code(), Some(0), "{}", text(&output.stderr));
+    assert_eq!(profile_fields(&output.stdout).0, json!("staging"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn doctor_with_a_profile_without_api_url_reports_default_as_the_supplying_profile() {
+    let server = healthy_api().await;
+    let config_dir = profiles_config_dir(&server.uri(), "https://staging.example.com").unwrap();
+
+    let output = doctor_in(&config_dir, &["--json", "--profile", "empty"], &[]);
+
+    assert_eq!(output.status.code(), Some(0), "{}", text(&output.stderr));
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["api_url"], json!(server.uri()));
+    assert_eq!(
+        profile_fields(&output.stdout),
+        (json!("empty"), json!("config"), json!("default"))
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn doctor_with_a_profile_without_api_url_names_the_default_profile_in_the_api_url_check() {
+    let server = healthy_api().await;
+    let config_dir = profiles_config_dir(&server.uri(), "https://staging.example.com").unwrap();
+
+    let output = doctor_in(&config_dir, &["--json", "--profile", "empty"], &[]);
+
+    assert_eq!(
+        check_named(&output.stdout, "api_url")["message"],
+        json!(format!("{} (config.toml, profile default)", server.uri()))
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn doctor_with_imify_api_url_and_a_profile_reports_no_supplying_profile() {
+    let server = healthy_api().await;
+    let config_dir =
+        profiles_config_dir("https://top.example.com", "https://staging.example.com").unwrap();
+
+    let output = doctor_in(
+        &config_dir,
+        &["--json", "--profile", "staging"],
+        &[("IMIFY_API_URL", &server.uri())],
+    );
+
+    assert_eq!(output.status.code(), Some(0), "{}", text(&output.stderr));
+    assert_eq!(
+        profile_fields(&output.stdout),
+        (json!("staging"), json!("env"), json!(null))
+    );
+}
+
+#[test]
+fn doctor_with_an_unknown_profile_fails_api_url_naming_it_and_skips_health() {
+    let config_dir =
+        profiles_config_dir("https://top.example.com", "https://staging.example.com").unwrap();
+
+    let output = doctor_in(&config_dir, &["--json", "--profile", "nope"], &[]);
+
+    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(profile_fields(&output.stdout).0, json!("nope"));
+    let api_url = check_named(&output.stdout, "api_url");
+    assert_eq!(
+        (&api_url["status"], &api_url["code"]),
+        (&json!("fail"), &json!("invalid_argument"))
+    );
+    assert!(
+        api_url["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("'nope'"),
+        "{api_url}"
+    );
+    assert_eq!(check_named(&output.stdout, "health")["status"], "skip");
+}
+
+#[test]
+fn doctor_with_an_invalid_profile_name_reports_no_active_profile_and_fails_api_url() {
+    let config_dir =
+        profiles_config_dir("https://top.example.com", "https://staging.example.com").unwrap();
+
+    let output = doctor_in(&config_dir, &["--json", "--profile", "a.b"], &[]);
+
+    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(profile_fields(&output.stdout).0, json!(null));
+    let api_url = check_named(&output.stdout, "api_url");
+    assert_eq!(
+        (&api_url["status"], &api_url["code"]),
+        (&json!("fail"), &json!("invalid_argument"))
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn doctor_with_a_named_profile_prints_the_profile_line_and_the_supplying_profile() {
+    let server = healthy_api().await;
+    let config_dir = profiles_config_dir("https://top.example.com", &server.uri()).unwrap();
+
+    let output = doctor_in(&config_dir, &["--profile", "staging"], &[]);
+
+    assert_eq!(output.status.code(), Some(0), "{}", text(&output.stderr));
+    insta::assert_snapshot!(
+        "doctor_profile_human",
+        normalize_doctor_text(&text(&output.stdout), &server.uri())
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn doctor_json_with_a_named_profile_prints_one_document() {
+    let server = healthy_api().await;
+    let config_dir = profiles_config_dir("https://top.example.com", &server.uri()).unwrap();
+
+    let output = doctor_in(&config_dir, &["--json", "--profile", "staging"], &[]);
+
+    assert_eq!(output.status.code(), Some(0), "{}", text(&output.stderr));
+    insta::assert_snapshot!(
+        "doctor_profile_json",
+        normalize_doctor_json_in(&output.stdout, &config_dir, &server.uri())
     );
 }
 

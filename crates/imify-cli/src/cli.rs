@@ -71,8 +71,9 @@ pub enum Command {
         long_about = "Check the configuration, the API and the access token.
 
 Writes a report to stdout. Exits with the error code of the first failing check, or 0 when no check fails. Contacts only the API host.",
-        after_help = "Example:
-  imify doctor --api-url https://api.example.com"
+        after_help = "Examples:
+  imify doctor --api-url https://api.example.com
+  imify doctor --profile staging"
     )]
     Doctor,
     /// Sign in, sign out and show the signed-in user

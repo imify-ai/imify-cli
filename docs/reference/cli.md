@@ -78,8 +78,9 @@ Options:
   -h, --help
           Print help (see a summary with '-h')
 
-Example:
+Examples:
   imify doctor --api-url https://api.example.com
+  imify doctor --profile staging
 ```
 
 ## imify auth
