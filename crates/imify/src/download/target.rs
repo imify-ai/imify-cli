@@ -153,8 +153,8 @@ impl Target {
         Ok(())
     }
 
-    /// Creates the parent directories of the manifest file `relative` and opens
-    /// `<relative>.part`, empty, for writing.
+    /// Creates the parent directories of the manifest file `relative`, removes an existing
+    /// `<relative>.part` and creates it as a new, empty file.
     pub(crate) async fn create_part(&self, relative: &str) -> Result<PartFile, Error> {
         let target = self.clone();
         let relative = relative.to_owned();
@@ -183,23 +183,19 @@ impl Target {
         }
         let part_name = format!("{name}.part");
         let part_path = self.root.join(format!("{relative}.part"));
-        let flags = OFlags::CREATE
-            | OFlags::TRUNC
-            | OFlags::RDWR
-            | OFlags::NOFOLLOW
-            | OFlags::NONBLOCK
-            | OFlags::CLOEXEC;
+        // A new file, never an existing one: an existing `.part` may be a hard link to a
+        // file outside the target.
+        match rustix::fs::unlinkat(&dir, part_name.as_str(), AtFlags::empty()) {
+            Ok(()) | Err(Errno::NOENT) => {}
+            Err(errno) => return Err(io_error(part_path, errno.into())),
+        }
+        let flags =
+            OFlags::CREATE | OFlags::EXCL | OFlags::RDWR | OFlags::NOFOLLOW | OFlags::CLOEXEC;
         let mode = Mode::RUSR | Mode::WUSR | Mode::RGRP | Mode::ROTH;
         let file = File::from(
             rustix::fs::openat(&dir, part_name.as_str(), flags, mode)
                 .map_err(|errno| open_error(part_path.clone(), errno))?,
         );
-        let metadata = file
-            .metadata()
-            .map_err(|source| io_error(part_path.clone(), source))?;
-        if !metadata.is_file() {
-            return Err(foreign(part_path, NOT_FILE_OR_DIRECTORY.to_owned()));
-        }
         Ok(PartFile {
             dir,
             name: name.to_owned(),
@@ -223,11 +219,6 @@ pub(crate) struct PartFile {
 }
 
 impl PartFile {
-    /// The path of the manifest file this `.part` file becomes.
-    pub(crate) fn path(&self) -> &Path {
-        &self.path
-    }
-
     /// Appends `bytes`.
     pub(crate) async fn write(&mut self, bytes: &[u8]) -> Result<(), Error> {
         self.file
@@ -267,13 +258,15 @@ async fn blocking<T: Send + 'static>(
 }
 
 /// The error for a failed open below the target. `O_NOFOLLOW` reports a symbolic link as
-/// `ELOOP`, and `O_DIRECTORY` reports a link or a file as `ENOTDIR`.
+/// `ELOOP`, `O_DIRECTORY` reports a link or a file as `ENOTDIR`, and `O_EXCL` reports an
+/// entry created after the `.part` file was removed as `EEXIST`.
 fn open_error(path: PathBuf, errno: Errno) -> Error {
     match errno {
         Errno::LOOP | Errno::NOTDIR => foreign(
             path,
             "a symbolic link or a file in place of a directory or file".to_owned(),
         ),
+        Errno::EXIST => foreign(path, "an entry created during the download".to_owned()),
         other => io_error(path, other.into()),
     }
 }

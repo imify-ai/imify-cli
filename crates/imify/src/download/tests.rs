@@ -313,6 +313,32 @@ async fn a_second_rejection_of_the_same_file_fails_with_url_expired() {
 }
 
 #[tokio::test]
+async fn a_response_refused_before_its_body_leaves_no_part_file() {
+    let refusals = [
+        ResponseTemplate::new(403),
+        ResponseTemplate::new(404),
+        ResponseTemplate::new(200).set_body_bytes(vec![0_u8; 8192]),
+    ];
+    for response in refusals {
+        let server = MockServer::start().await;
+        mount_manifest(&server, &manifest_of(&server, &[("model.bin", WEIGHTS)])).await;
+        mount_storage(&server, "model.bin", response).await;
+        let target = tempfile::tempdir().unwrap();
+
+        let error = downloader(&server)
+            .download(&source(), target.path())
+            .await
+            .unwrap_err();
+
+        assert!(
+            files_below(target.path()).is_empty(),
+            "{error:?}: {:?}",
+            files_below(target.path())
+        );
+    }
+}
+
+#[tokio::test]
 async fn a_refreshed_manifest_with_another_size_fails_with_manifest_changed() {
     let server = MockServer::start().await;
     let uri = server.uri();

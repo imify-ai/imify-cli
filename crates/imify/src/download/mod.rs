@@ -35,7 +35,7 @@
 //! manifest file with another size, a symbolic link, or anything other than a regular
 //! file or directory. Files of the manifest that exist with the manifest size are not
 //! fetched again, so running the same download again completes an interrupted one.
-//! Existing `.part` files are replaced from their first byte.
+//! An existing `.part` file is removed and created anew when its file is fetched.
 //!
 //! # Failures
 //!

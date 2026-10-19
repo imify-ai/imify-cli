@@ -3,12 +3,13 @@
 
 use std::fs;
 use std::os::unix::fs::symlink;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
-use wiremock::MockServer;
+use wiremock::{MockServer, ResponseTemplate};
 
-use crate::download::DownloadEvent;
 use crate::download::test_support::*;
+use crate::download::{DownloadEvent, Downloader};
 use crate::{DownloadError, Error};
 
 const WEIGHTS: &[u8] = &[7_u8; 4096];
@@ -29,6 +30,11 @@ async fn download_into(server: &MockServer, target: &Path) -> Result<(), Error> 
         .download(&source(), target)
         .await
         .map(|_| ())
+}
+
+/// Downloads with a future that owns its arguments, so it can run on a spawned task.
+async fn download_owned(downloader: Downloader, target: PathBuf) -> Result<(), Error> {
+    downloader.download(&source(), target).await.map(|_| ())
 }
 
 fn assert_foreign(error: &Error) {
@@ -123,6 +129,62 @@ async fn a_symbolic_link_below_the_target_is_refused_and_its_target_unchanged() 
         );
         assert!(storage_requests(&server).await.is_empty(), "{link}");
     }
+}
+
+#[tokio::test]
+async fn a_part_file_hard_linked_outside_the_target_leaves_the_outside_file_unchanged() {
+    let server = policy_server().await;
+    let target = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    write(outside.path(), "victim", b"unchanged");
+    fs::hard_link(
+        outside.path().join("victim"),
+        target.path().join("model.bin.part"),
+    )
+    .unwrap();
+
+    download_into(&server, target.path()).await.unwrap();
+
+    assert_eq!(
+        fs::read(outside.path().join("victim")).unwrap(),
+        b"unchanged"
+    );
+    assert_eq!(fs::read(target.path().join("model.bin")).unwrap(), WEIGHTS);
+}
+
+#[tokio::test]
+async fn a_symbolic_link_placed_after_the_scan_is_refused_and_not_followed() {
+    let server = MockServer::start().await;
+    mount_manifest(
+        &server,
+        &manifest_of(
+            &server,
+            &[("a.bin", WEIGHTS), ("weights/head.bin", b"head")],
+        ),
+    )
+    .await;
+    let slow = ResponseTemplate::new(200)
+        .set_body_bytes(WEIGHTS)
+        .set_delay(Duration::from_millis(300));
+    mount_storage(&server, "a.bin", slow).await;
+    mount_file(&server, "weights/head.bin", b"head").await;
+    let target = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    let download = tokio::spawn(download_owned(
+        downloader(&server).options(concurrency(1)),
+        target.path().to_owned(),
+    ));
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while requests_to(&server, "/storage/a.bin").await.is_empty() {
+        assert!(Instant::now() < deadline, "a.bin was never requested");
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+
+    symlink(outside.path(), target.path().join("weights")).unwrap();
+    let error = download.await.unwrap().unwrap_err();
+
+    assert_foreign(&error);
+    assert!(fs::read_dir(outside.path()).unwrap().next().is_none());
 }
 
 #[tokio::test]

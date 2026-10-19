@@ -207,9 +207,13 @@ impl Downloader {
                 generation: 0,
             }),
         };
-        let mut transfers = stream::iter(remaining)
+        // Built before the stream, so the future of `download` is `Send` without a
+        // higher-ranked closure in the stream.
+        let files: Vec<_> = remaining
+            .into_iter()
             .map(|entry| self.download_file(&batch, entry))
-            .buffer_unordered(self.options.concurrency.get());
+            .collect();
+        let mut transfers = stream::iter(files).buffer_unordered(self.options.concurrency.get());
         while let Some(result) = transfers.next().await {
             result?;
         }
@@ -275,9 +279,10 @@ impl Downloader {
         self.client
             .retry(RetryMode::Idempotent, on_retry, || async move {
                 pacer.ready().await;
-                let mut part = batch.target.create_part(&entry.path).await?;
-                fetch(http, url, entry.size, &mut part, progress).await?;
-                part.finish().await
+                fetch(http, url, entry, &batch.target, progress)
+                    .await?
+                    .finish()
+                    .await
             })
             .await
     }

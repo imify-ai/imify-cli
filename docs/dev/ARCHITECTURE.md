@@ -86,9 +86,9 @@ Each seam is a trait with one production implementation and test doubles. They e
 
 ## Download flow
 
-1. The engine fetches the manifest of a policy or checkpoint: one presigned storage URL, relative path and size per file. It refuses unsafe or colliding paths and storage URLs other than `https` before it writes anything.
+1. The engine fetches the manifest of a policy or checkpoint: one presigned storage URL, relative path and size per file. It refuses unsafe or colliding paths and storage URLs other than `https`, or `http` on `localhost`, `127.0.0.1` or `::1`, before it writes anything.
 2. It opens the target directory and scans it without following links. An entry the download does not own stops it before any storage request. Files that exist with the manifest size are skipped.
-3. Remaining files download with bounded concurrency through an HTTP client that sends no `Authorization` header. Each file is written to `<path>.part` relative to directory file descriptors with `O_NOFOLLOW`, checked against the manifest size, synced and renamed into place.
+3. Remaining files download with bounded concurrency through an HTTP client that sends no `Authorization` header. Once storage accepts the request, each file is written to a newly created `<path>.part` relative to directory file descriptors with `O_NOFOLLOW` and `O_EXCL`, checked against the manifest size, synced and renamed into place.
 4. A 403 from storage fetches the manifest again, once for all files rejected with the same URLs. The new manifest must list the same paths and sizes.
 
 ## Testing

@@ -458,8 +458,8 @@ impl HttpSettings {
     }
 }
 
-/// The HTTP clients for identity provider requests. Each is built on first use, since
-/// building one loads the TLS root certificates.
+/// The HTTP clients for identity provider requests and storage downloads. Each is built on
+/// first use, since building one loads the TLS root certificates.
 #[derive(Debug)]
 struct ProviderHttp {
     settings: HttpSettings,
