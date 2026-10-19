@@ -22,6 +22,7 @@ use crate::output::renderer::{HumanRenderer, JsonRenderer};
 const CLIENT_ID: &str = "client-1";
 const CODE: &str = "code_4e1d-secret";
 const REFRESH_TOKEN: &str = "rt_8b2f-secret";
+const METADATA_PATH: &str = "/.well-known/oauth-protected-resource/api/v1";
 
 /// The redirect ports are fixed, so tests that listen on them run one at a time.
 static REDIRECT_PORTS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
@@ -398,6 +399,41 @@ async fn login_with_both_overrides_does_not_request_config_json() {
 
     let (output, _) =
         browser_login(&hosts, &env, Mode::Human, Keychain::unavailable(), false).await;
+
+    output.result.unwrap();
+    assert!(!hosts.requested(&hosts.api, "/config.json").await);
+}
+
+#[tokio::test]
+async fn login_with_both_overrides_does_not_request_protected_resource_metadata() {
+    let hosts = Hosts::start_without_config_json().await;
+    let env = Environment {
+        oidc_issuer: Some(hosts.provider.uri()),
+        oidc_client_id: Some(CLIENT_ID.to_owned()),
+        ..hosts.env()
+    };
+
+    let (output, _) =
+        browser_login(&hosts, &env, Mode::Human, Keychain::unavailable(), false).await;
+
+    output.result.unwrap();
+    assert!(!hosts.requested(&hosts.api, METADATA_PATH).await);
+}
+
+#[tokio::test]
+async fn login_uses_the_issuer_and_client_id_of_the_protected_resource_metadata() {
+    let hosts = Hosts::start_without_config_json().await;
+    Mock::given(method("GET"))
+        .and(path(METADATA_PATH))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "resource": format!("{}/api/v1", hosts.api.uri()),
+            "authorization_servers": [hosts.provider.uri()],
+            "imify_cli_client_id": CLIENT_ID,
+        })))
+        .mount(&hosts.api)
+        .await;
+
+    let output = login_to(&hosts, Mode::Human).await;
 
     output.result.unwrap();
     assert!(!hosts.requested(&hosts.api, "/config.json").await);

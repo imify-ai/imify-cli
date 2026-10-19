@@ -16,7 +16,7 @@ ok    account       Ada Lovelace (admin).
 ok    oidc          Issuer https://login.example.com, client client-1.
 ```
 
-`imify doctor` checks the CLI configuration, the API, the access token and the identity provider settings, then writes a report to stdout. It contacts the API host, which `--api-url`, `IMIFY_API_URL`, the config file or the default selects (see [Configuration](configuration.md)), and sends four requests: `GET /api/health` and `GET /api/health/ready` without a token, `GET /api/v1/me` with the token, then `GET /config.json` without a token. With both `IMIFY_OIDC_ISSUER` and `IMIFY_OIDC_CLIENT_ID` set, it does not request `config.json`. A stored login whose ID token expires within 60 s is refreshed before `GET /api/v1/me`, with one request to the identity provider's token endpoint. Requests are not retried and time out after 10 s without progress.
+`imify doctor` checks the CLI configuration, the API, the access token and the identity provider settings, then writes a report to stdout. It contacts the API host, which `--api-url`, `IMIFY_API_URL`, the config file or the default selects (see [Configuration](configuration.md)), and sends four or five requests: `GET /api/health` and `GET /api/health/ready` without a token, `GET /api/v1/me` with the token, then the identity provider settings without a token. These are `GET /.well-known/oauth-protected-resource/api/v1`, the host's protected resource metadata, and `GET /config.json` when the metadata request answers 404, or 403 without JSON. With both `IMIFY_OIDC_ISSUER` and `IMIFY_OIDC_CLIENT_ID` set, it requests neither. A stored login whose ID token expires within 60 s is refreshed before `GET /api/v1/me`, with one request to the identity provider's token endpoint. Requests are not retried and time out after 10 s without progress.
 
 The `profile` line names the selected [profile](configuration.md#profiles). With a profile other than `default` selected, the `api_url` line also names the profile that supplied the URL from the config file:
 
@@ -57,13 +57,13 @@ Each line is one check: status, name and message. A `fail` or `warn` line with a
 | `token` | Neither `IMIFY_TOKEN` nor a stored login for the host exists (`auth_required`; the message names the host and the store that was searched), `IMIFY_TOKEN` is not valid Unicode (`invalid_argument`), `IMIFY_CREDENTIAL_STORE` is unsupported (`invalid_argument`), or the credential store cannot be read (`internal`). | | |
 | `token_expiry` | `IMIFY_TOKEN`: the token's `exp` claim is in the past (`auth_rejected`). Stored login: the ID token has expired and the login has no refresh token (`auth_expired`). | The token expires within 5 min. For a stored login, only when it has no refresh token. | `token` failed, or `IMIFY_TOKEN` is not a JWT with a numeric `exp`. |
 | `account` | `GET /api/v1/me` fails (`auth_rejected`, `permission_denied`, `network`, ...), or the stored login cannot be refreshed (`auth_expired`). | | `token` or `health` did not pass. |
-| `oidc` | Never. | The host publishes no identity provider settings in `config.json` and the overrides are unset, the request fails, or the issuer is neither `https` nor `http` on `localhost`, `127.0.0.1` or `::1`. | `api_url` failed, or `health` did not pass and the two overrides are not both set. |
+| `oidc` | Never. | The host publishes neither protected resource metadata nor `config.json`, or unusable settings, and the overrides are unset, a request fails, or the issuer is neither `https` nor `http` on `localhost`, `127.0.0.1` or `::1`. | `api_url` failed, or `health` did not pass and the two overrides are not both set. |
 
 The `exp` claim is read without verifying the token's signature. The API decides whether it accepts the token; the `account` check reports that decision.
 
 For a stored login, `token` and `token_expiry` read the login from the credential store and do not refresh it. A stored login with a refresh token passes `token_expiry` even when its ID token has expired, because the refresh token renews it; the `account` check refreshes it as every other command does. The hint for a stored login that is rejected or expired is "Run `imify auth login`.".
 
-The `oidc` check reports the settings `imify auth login` uses: `IMIFY_OIDC_ISSUER` and `IMIFY_OIDC_CLIENT_ID`, completed from the host's `config.json` when one of them is unset. Its problems affect `imify auth login` only, so it never fails.
+The `oidc` check reports the settings `imify auth login` uses: `IMIFY_OIDC_ISSUER` and `IMIFY_OIDC_CLIENT_ID`, completed from the host's protected resource metadata, or its `config.json` without metadata, when one of them is unset. Its problems affect `imify auth login` only, so it never fails.
 
 ## Exit codes
 

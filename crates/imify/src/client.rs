@@ -35,8 +35,8 @@ const MAX_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
 /// other than `localhost`, `127.0.0.1` or `::1`. Other redirects fail with
 /// [`Error::UnexpectedResponse`]. A successful response body larger than 32 MiB fails with
 /// [`Error::UnexpectedResponse`]; an error body larger than 1 MiB is dropped. Requests
-/// to the identity provider differ: `config.json` and the discovery document follow
-/// redirects only within their origin, and token and revocation requests follow none.
+/// to the identity provider differ: the protected resource metadata, `config.json` and the
+/// discovery document follow redirects only within their origin, and token and revocation requests follow none.
 /// Cloning is cheap; clones share their connection pools.
 ///
 /// # Examples
@@ -123,13 +123,23 @@ impl Client {
     /// response as `T`, retrying failures the retry policy allows. Follows redirects only
     /// within the origin of `url`.
     pub(crate) async fn get_same_origin<T: DeserializeOwned>(&self, url: Url) -> Result<T, Error> {
+        self.get_same_origin_with(url, &decode_json).await
+    }
+
+    /// Like [`Client::get_same_origin`], and turns the response into `T` with `decode`.
+    /// `decode` receives every response except redirects, which fail with
+    /// [`Error::UnexpectedResponse`].
+    pub(crate) async fn get_same_origin_with<T, D>(&self, url: Url, decode: &D) -> Result<T, Error>
+    where
+        D: Fn(StatusCode, &HeaderMap, &[u8]) -> Result<T, Error>,
+    {
         let http = self.provider_http.same_origin()?;
         self.retry(
             RetryMode::Idempotent,
             |_, _, _| {},
             || async {
                 let response = http.get(url.clone()).send().await.map_err(network_error)?;
-                decode_with(response, BodySize::Small, &decode_json).await
+                decode_with(response, BodySize::Small, decode).await
             },
         )
         .await

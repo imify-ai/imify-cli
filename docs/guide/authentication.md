@@ -14,7 +14,7 @@ Credentials stored in the keychain.
 
 ## Log in
 
-`imify auth login` reads the host's identity provider from `<API URL>/config.json`. It writes the API host, the identity provider's host and the sign-in URL to stderr, then opens the URL in the browser. After the sign-in, the browser returns to `http://localhost:28753/callback`, or to port 28754 or 28755 when the first port is taken. The command waits up to 5 minutes. It then confirms the account with the API and stores the login.
+`imify auth login` reads the host's identity provider and the CLI's client id from the host's protected resource metadata, `/.well-known/oauth-protected-resource/api/v1` on the API origin. With an API URL that has a path, such as `https://example.com/platform`, the path follows the well-known segment: `/.well-known/oauth-protected-resource/platform/api/v1`. When the host answers 404, or 403 without JSON, the command reads `<API URL>/config.json` instead. It writes the API host, the identity provider's host and the sign-in URL to stderr, then opens the URL in the browser. After the sign-in, the browser returns to `http://localhost:28753/callback`, or to port 28754 or 28755 when the first port is taken. The command waits up to 5 minutes. It then confirms the account with the API and stores the login.
 
 When the browser does not open, open the URL from stderr by hand.
 
@@ -119,16 +119,16 @@ Writers take a lock on `credentials.json.lock` in the same directory.
 | `IMIFY_CREDENTIAL_STORE` | `auto`, `keychain` or `file`. |
 | `IMIFY_CONFIG_DIR` | The directory of `credentials.json` and `config.toml`. |
 | `XDG_CONFIG_HOME` | When `IMIFY_CONFIG_DIR` is unset and `XDG_CONFIG_HOME` is an absolute path, the files are in `$XDG_CONFIG_HOME/imify`. |
-| `IMIFY_OIDC_ISSUER` | The identity provider's issuer URL, replacing `authority` from `config.json`. Must use `https`, except on loopback hosts. |
-| `IMIFY_OIDC_CLIENT_ID` | The client id, replacing `clientId` from `config.json`. |
+| `IMIFY_OIDC_ISSUER` | The identity provider's issuer URL, replacing the one the host publishes. Must use `https`, except on loopback hosts. |
+| `IMIFY_OIDC_CLIENT_ID` | The client id, replacing the one the host publishes. |
 
-With both `IMIFY_OIDC_ISSUER` and `IMIFY_OIDC_CLIENT_ID` set, `imify auth login` does not read `config.json`.
+With both `IMIFY_OIDC_ISSUER` and `IMIFY_OIDC_CLIENT_ID` set, `imify auth login` reads neither the protected resource metadata nor `config.json`.
 
 ## Errors
 
 | Code | Exit | Cause |
 |---|---|---|
-| `invalid_argument` | 2 | The API URL or the issuer is not `https` on a remote host, or the API URL has a user name, password, query or fragment; the host publishes no `config.json` and the overrides are unset; `IMIFY_CREDENTIAL_STORE` is unsupported; the credentials file is needed and `HOME` is not an absolute path while `IMIFY_CONFIG_DIR` and `XDG_CONFIG_HOME` are unset; `--no-browser` without a terminal; the pasted text is not the redirect URL. |
+| `invalid_argument` | 2 | The API URL or the issuer is not `https` on a remote host, or the API URL has a user name, password, query or fragment; the host publishes neither protected resource metadata nor `config.json`, or settings without an issuer or client id, and the overrides are unset; the metadata names another API URL; `IMIFY_CREDENTIAL_STORE` is unsupported; the credentials file is needed and `HOME` is not an absolute path while `IMIFY_CONFIG_DIR` and `XDG_CONFIG_HOME` are unset; `--no-browser` without a terminal; the pasted text is not the redirect URL. |
 | `auth_required` | 3 | There is no login for the host, and `IMIFY_TOKEN` is not set. |
 | `auth_rejected` | 3 | The API rejected the token. |
 | `auth_expired` | 3 | The stored login has expired or was revoked. |
