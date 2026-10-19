@@ -349,13 +349,14 @@ fn unauthenticated_client(api_url: &Url) -> Result<imify::Client, CliError> {
     Ok(imify::Client::builder(api_url.as_str()).build()?)
 }
 
-/// The identity provider settings: the overrides, completed from the host's `config.json`
-/// when one of them is unset.
+/// The identity provider settings: the overrides, completed from the settings the host
+/// publishes, in its protected resource metadata or its `config.json`, when one of them is
+/// unset.
 ///
 /// # Errors
 ///
-/// Returns `invalid_argument` when the host publishes no settings in `config.json` and the
-/// overrides are unset, and the mapped SDK error when the request fails.
+/// Returns `invalid_argument` when the host publishes no settings or unusable ones and
+/// the overrides are unset, and the mapped SDK error when a request fails.
 pub async fn oidc_settings(
     env: &Environment,
     client: &imify::Client,
@@ -373,13 +374,17 @@ pub async fn oidc_settings(
     if let (Some(issuer), Some(client_id)) = (&issuer, &client_id) {
         return Ok(OidcSettings::new(issuer, client_id));
     }
-    let published = client.oidc_settings().await.map_err(|error| match error {
-        imify::Error::NotFound { .. } | imify::Error::UnexpectedResponse { .. } => CliError::new(
-            ErrorCode::InvalidArgument,
-            format!("{host} publishes no identity provider settings in config.json."),
-        )
-        .with_hint(format!(
+    let unusable = |message: String| {
+        CliError::new(ErrorCode::InvalidArgument, message).with_hint(format!(
             "Set `{ISSUER_VARIABLE}` and `{CLIENT_ID_VARIABLE}`."
+        ))
+    };
+    let published = client.oidc_settings().await.map_err(|error| match error {
+        imify::Error::NotFound { .. } => unusable(format!(
+            "{host} publishes no identity provider settings (no protected resource metadata, no config.json)."
+        )),
+        imify::Error::UnexpectedResponse { message, .. } => unusable(format!(
+            "{host} publishes unusable identity provider settings: {message}."
         )),
         other => other.into(),
     })?;

@@ -2,15 +2,17 @@
 
 Status: Accepted
 Date: 2026-10-16
+Amended: 2026-10-19
 
 ## Context
-`gh`, `glab` and `gcloud` share one model: browser sign-in for people, a long-lived token issued by the platform for machines, and one environment variable that overrides both. The imify identity provider offers no device-code flow, and the platform does not yet issue its own tokens. The API accepts the ID token of the host's web client as bearer token. That client is public and has no client secret.
+`gh`, `glab` and `gcloud` share one model: browser sign-in for people, a long-lived token issued by the platform for machines, and one environment variable that overrides both. The imify identity provider offers no device-code flow, and the platform does not yet issue its own tokens. Each host has a public identity provider client for the CLI, without a client secret, separate from the client of its web app. The API accepts ID tokens of both clients as bearer token. It checks `aud`, which the identity provider sets in ID tokens only.
 
 ## Decision
 - `imify auth login` uses the OpenID Connect authorization code flow with PKCE (`S256`), `state` and `nonce`, and the scopes `openid email profile`.
+- The CLI signs in with the CLI client the host names in its protected resource metadata (ADR 0005). On a host without the metadata, it signs in with the web client from `config.json`. A stored login keeps the client id it was made with and refreshes with it; a new login uses the client the host names.
 - The redirect URI is `http://localhost:<port>/callback` on the fixed ports 28753, 28754 and 28755, tried in order. The listener binds `127.0.0.1` and, when available, `::1`. The ports are registered with the identity provider client; changing them needs a release and a new registration.
 - `--no-browser` prints the URL and accepts the pasted redirect URL. It uses the redirect URI on port 28753 and binds nothing.
-- The bearer token is the ID token. Its expiry is the `exp` claim. The SDK checks `iss`, `aud` (contains the client id; with several entries, `azp` equals the client id), `exp` (60 s leeway, at most one day ahead), `sub` (unchanged by a refresh) and, on the code exchange, `nonce`. It does not verify the signature: the token comes directly from the token endpoint over TLS (OIDC Core 1.0, section 3.1.3.7). The API verifies it.
+- The bearer token is the ID token, also with the CLI client. Its expiry is the `exp` claim. The SDK checks `iss`, `aud` (contains the client id; with several entries, `azp` equals the client id), `exp` (60 s leeway, at most one day ahead), `sub` (unchanged by a refresh) and, on the code exchange, `nonce`. It does not verify the signature: the token comes directly from the token endpoint over TLS (OIDC Core 1.0, section 3.1.3.7). The API verifies it. Sending the access token instead is a separate decision.
 - The token source refreshes the ID token when less than 60 s remain before `exp`, and saves the result. A refresh that answers `invalid_grant` ends the login, unless another process has saved a fresh login in the meantime.
 - The API URL, the issuer and every endpoint from discovery use `https`. `http` is allowed only for the hosts `localhost`, `127.0.0.1` and `::1`.
 - Logout revokes the refresh token (RFC 7009) at the `revocation_endpoint` from discovery. Without one, it uses `/oauth2/revoke` on the token endpoint's origin, which already receives the refresh token. A 404 there means revocation is unsupported. Issued ID tokens stay valid until they expire.

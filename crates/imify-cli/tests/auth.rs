@@ -672,6 +672,60 @@ async fn login_without_config_json_and_overrides_hints_at_the_overrides() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn login_without_metadata_and_config_json_names_both_sources() {
+    let api = MockServer::start().await;
+    let config_dir = tempfile::tempdir().unwrap();
+
+    let output = run(
+        &api.uri(),
+        config_dir.path(),
+        &["auth", "login", "--json"],
+        &[],
+    );
+
+    let message = envelope(&output)["error"]["message"].clone();
+    assert!(
+        message
+            .as_str()
+            .unwrap()
+            .ends_with("publishes no identity provider settings (no protected resource metadata, no config.json)."),
+        "{message}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn login_with_metadata_without_an_authorization_server_is_a_usage_error() {
+    let api = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/.well-known/oauth-protected-resource/api/v1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "resource": format!("{}/api/v1", api.uri()),
+            "authorization_servers": [],
+            "imify_cli_client_id": "cli-client",
+        })))
+        .mount(&api)
+        .await;
+    let config_dir = tempfile::tempdir().unwrap();
+
+    let output = run(
+        &api.uri(),
+        config_dir.path(),
+        &["auth", "login", "--json"],
+        &[],
+    );
+
+    assert_eq!(output.status.code(), Some(2));
+    let message = envelope(&output)["error"]["message"].clone();
+    assert!(
+        message
+            .as_str()
+            .unwrap()
+            .contains("publishes unusable identity provider settings"),
+        "{message}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn login_without_browser_and_without_a_terminal_is_a_usage_error() {
     let api = MockServer::start().await;
     let config_dir = tempfile::tempdir().unwrap();
