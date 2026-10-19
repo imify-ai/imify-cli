@@ -37,6 +37,8 @@ const MAX_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
 /// [`Error::UnexpectedResponse`]; an error body larger than 1 MiB is dropped. Requests
 /// to the identity provider differ: the protected resource metadata, `config.json` and the
 /// discovery document follow redirects only within their origin, and token and revocation requests follow none.
+/// Storage requests of a [`Downloader`](crate::download::Downloader) carry no
+/// `Authorization` header and follow redirects only within the origin of the presigned URL.
 /// Cloning is cheap; clones share their connection pools.
 ///
 /// # Examples
@@ -203,6 +205,12 @@ impl Client {
     /// limits the time without progress to [`Client::read_timeout`].
     pub(crate) fn upload_http(&self) -> &reqwest::Client {
         &self.upload_http
+    }
+
+    /// The HTTP client for storage downloads. It sends no `Authorization` header, follows
+    /// redirects only within the origin of the request and applies the read timeout.
+    pub(crate) fn download_http(&self) -> Result<&reqwest::Client, Error> {
+        self.provider_http.same_origin()
     }
 
     /// The configured read timeout.

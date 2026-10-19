@@ -206,6 +206,87 @@ pub enum Error {
         /// stdout followed by stderr of the installer; `None` when it did not run.
         installer_output: Option<String>,
     },
+
+    /// A download cannot use a manifest entry, or cannot write or verify a file.
+    ///
+    /// ```
+    /// use imify::{DownloadError, Error};
+    ///
+    /// fn must_be_removed_by_hand(error: &Error) -> bool {
+    ///     matches!(error, Error::Download { reason: DownloadError::Foreign(_), .. })
+    /// }
+    ///
+    /// let error = Error::Download {
+    ///     path: "policies/pick-place/notes.txt".into(),
+    ///     reason: DownloadError::Foreign("a file not in the manifest".into()),
+    /// };
+    /// assert!(must_be_removed_by_hand(&error));
+    /// ```
+    #[error("download {}: {reason}", path.display())]
+    Download {
+        /// The file below the target directory, the target directory itself, or the
+        /// manifest's relative path when the manifest entry is refused.
+        path: PathBuf,
+        /// What failed.
+        #[source]
+        reason: DownloadError,
+    },
+}
+
+/// Why a download failed, reported in [`Error::Download`].
+///
+/// # Examples
+///
+/// ```
+/// use imify::DownloadError;
+///
+/// let error = DownloadError::SizeMismatch { expected: 1024, received: 2048 };
+/// assert_eq!(error.to_string(), "storage sent 2048 bytes, the manifest lists 1024");
+/// ```
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum DownloadError {
+    /// A relative path of the manifest is empty or absolute, has an empty, `.` or `..`
+    /// component, contains `\` or NUL, or collides with another entry: it is equal to
+    /// another entry, equal after lowercasing, a directory of another entry, or the
+    /// `.part` file of another entry.
+    #[error("unsafe path in the manifest: {0}")]
+    UnsafePath(String),
+    /// A presigned URL is not `https`, and not `http` on `localhost`, `127.0.0.1` or
+    /// `::1`. The message names scheme and host only.
+    #[error("unsafe storage URL: {0}")]
+    UnsafeUrl(String),
+    /// The target directory holds an entry the download does not own: a file not in the
+    /// manifest, a manifest file with another size, a symbolic link, or an entry other
+    /// than a regular file or directory. The entry is left unchanged.
+    #[error("the target holds {0}")]
+    Foreign(String),
+    /// Storage announced or sent another number of bytes than the manifest lists.
+    #[error("storage sent {received} bytes, the manifest lists {expected}")]
+    SizeMismatch {
+        /// Size in the manifest.
+        expected: u64,
+        /// Size announced in `Content-Length`, or the bytes received when the body
+        /// exceeds the manifest size.
+        received: u64,
+    },
+    /// Storage answered 403 again after the manifest was fetched again.
+    #[error("storage rejected the presigned URL of the fetched-again manifest")]
+    UrlExpired,
+    /// The fetched-again manifest lists other files or sizes.
+    #[error("the manifest changed during the download: {0}")]
+    ManifestChanged(String),
+    /// Storage answered with a status other than success, 403, 429 or 5xx, such as 404
+    /// or a redirect that is not followed.
+    #[error("storage answered {status}")]
+    Storage {
+        /// HTTP status of the response.
+        status: u16,
+    },
+    /// The target directory or a file below it cannot be created, written, synced or
+    /// renamed.
+    #[error("{0}")]
+    Io(#[source] std::io::Error),
 }
 
 /// Why the resume journal of an upload cannot be used, reported in [`Error::Journal`].
