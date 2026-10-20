@@ -28,6 +28,7 @@ mod error;
 mod health;
 pub mod ingest;
 mod local_file;
+pub mod policies;
 mod retry;
 #[cfg(feature = "self-update")]
 pub mod update;

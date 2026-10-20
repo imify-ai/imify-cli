@@ -17,7 +17,7 @@
                                        ▼
             ┌───────────────────────── imify ────────────────────────────┐
             │ Client ─▶ auth::TokenSource   datasets   ingest::Transport  │ ─▶ imify API
-            │           error::Error        validate (offline)           │
+            │           error::Error        policies   validate (offline)│
             └────────────────────────────────────────────────────────────┘
 ```
 
@@ -47,6 +47,7 @@ crates/imify/src/
   download/         download engine for training checkpoints: manifest checks, target
                     directory scan and writes relative to directory file descriptors,
                     storage GET, manifest refresh, progress events
+  policies/         policy endpoints and models: state, lineage, checkpoints, training log
   validate/         offline structural checks of LeRobot v3 and v2.1 datasets
   update.rs,        feature `self-update`: latest GitHub release, install receipt of the
   update/           dist shell installer, download and run of the release's installer
