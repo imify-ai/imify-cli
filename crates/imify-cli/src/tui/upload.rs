@@ -1,4 +1,4 @@
-//! The live view of `imify datasets upload`.
+//! The live view of `imify datasets upload`, also used by `imify policies download`.
 
 use std::collections::VecDeque;
 use std::time::Duration;
@@ -24,11 +24,21 @@ const PATH_MIN_WIDTH: usize = 20;
 const GAP: &str = "  ";
 const INDENT: &str = "  ";
 
-/// What the upload is doing.
+/// What the view shows: an upload into an ingest session, or a download into a directory.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Transfer {
+    Upload,
+    /// A download into the directory `target`.
+    Download {
+        target: String,
+    },
+}
+
+/// What the transfer is doing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Phase {
     CreatingSession,
-    Uploading,
+    Transferring,
     Completing,
     Finished { at: Duration },
     Failed,
@@ -48,13 +58,15 @@ struct FileInFlight {
     sent: u64,
 }
 
-/// The live view of an upload: phase, total progress with rate and time left, file count and
-/// the files in flight.
+/// The live view of an upload or a download: phase, total progress with rate and time left,
+/// file count and the files in flight.
 #[derive(Debug)]
 pub struct UploadView {
     theme: Theme,
+    transfer: Transfer,
     name: String,
-    total_files: usize,
+    /// `None` when the number of files is not known before the transfer.
+    total_files: Option<usize>,
     total_bytes: u64,
     session: Option<String>,
     phase: Phase,
@@ -77,8 +89,9 @@ impl UploadView {
     ) -> Self {
         Self {
             theme,
+            transfer: Transfer::Upload,
             name: name.into(),
-            total_files,
+            total_files: Some(total_files),
             total_bytes,
             session: None,
             phase: Phase::CreatingSession,
@@ -89,6 +102,40 @@ impl UploadView {
             retries: 0,
             samples: VecDeque::new(),
         }
+    }
+
+    /// A view of the download of `name` into the directory `target`: `total_bytes` bytes in an
+    /// unknown number of files.
+    pub fn download(
+        name: impl Into<String>,
+        target: impl Into<String>,
+        total_bytes: u64,
+        theme: Theme,
+    ) -> Self {
+        Self {
+            transfer: Transfer::Download {
+                target: target.into(),
+            },
+            total_files: None,
+            phase: Phase::Transferring,
+            ..Self::new(name, 0, total_bytes, theme)
+        }
+    }
+
+    /// Counts `files_done` files of `bytes_done` bytes as finished before the transfer.
+    pub fn resumed(&mut self, at: Duration, files_done: usize, bytes_done: u64) {
+        self.finished_files += files_done;
+        self.finished_bytes += bytes_done;
+        self.record_sample(at);
+    }
+
+    /// Ends the transfer: finished at `at` when `succeeded`, failed otherwise.
+    pub fn end(&mut self, at: Duration, succeeded: bool) {
+        self.phase = if succeeded {
+            Phase::Finished { at }
+        } else {
+            Phase::Failed
+        };
     }
 
     /// Bytes of finished files plus bytes sent of the files in flight.
@@ -147,11 +194,14 @@ impl UploadView {
 
     fn phase_line(&self) -> Line<'static> {
         let label = match (self.phase, self.pause) {
-            (Phase::Uploading, Some(pause)) => {
+            (Phase::Transferring, Some(pause)) => {
                 format!("Paused (rate limited, {})", format::duration(pause.pause))
             }
             (Phase::CreatingSession, _) => "Creating session".to_owned(),
-            (Phase::Uploading, None) => "Uploading".to_owned(),
+            (Phase::Transferring, None) => match self.transfer {
+                Transfer::Upload => "Uploading".to_owned(),
+                Transfer::Download { .. } => "Downloading".to_owned(),
+            },
             (Phase::Completing | Phase::Finished { .. }, _) => "Completing".to_owned(),
             (Phase::Failed, _) => "Failed".to_owned(),
         };
@@ -219,7 +269,10 @@ impl UploadView {
     }
 
     fn count_line(&self) -> Line<'static> {
-        let files = format!("{}/{} files", self.finished_files, self.total_files);
+        let files = match self.total_files {
+            Some(total) => format!("{}/{total} files", self.finished_files),
+            None => files(self.finished_files),
+        };
         let text = match self.retries {
             0 => files,
             1 => format!("{files}{GAP}1 retry"),
@@ -245,6 +298,28 @@ impl UploadView {
             ));
         }
         lines
+    }
+}
+
+impl UploadView {
+    /// The summary line of a download into `target`.
+    fn download_summary(&self, target: &str) -> Line<'static> {
+        let done = files(self.finished_files);
+        match self.phase {
+            Phase::Finished { at } => Line::styled(
+                format!(
+                    "Downloaded {done} ({}) in {} to {target}.",
+                    format::bytes(self.finished_bytes),
+                    format::duration(at),
+                ),
+                self.theme.success,
+            ),
+            Phase::Failed => Line::styled(format!("Failed after {done}."), self.theme.error),
+            Phase::CreatingSession | Phase::Transferring | Phase::Completing => Line::styled(
+                format!("Interrupted after {done}. Run the same command again to continue."),
+                self.theme.warning,
+            ),
+        }
     }
 }
 
@@ -311,7 +386,7 @@ impl View for UploadView {
         match event.step {
             UploadStep::SessionCreated { session } => {
                 self.session = Some(session);
-                self.phase = Phase::Uploading;
+                self.phase = Phase::Transferring;
             }
             UploadStep::SessionResumed {
                 session,
@@ -319,7 +394,7 @@ impl View for UploadView {
                 bytes_done,
             } => {
                 self.session = Some(session);
-                self.phase = Phase::Uploading;
+                self.phase = Phase::Transferring;
                 self.finished_files += files_done;
                 self.finished_bytes += bytes_done;
             }
@@ -373,6 +448,10 @@ impl View for UploadView {
     }
 
     fn summary(&self) -> Text<'static> {
+        if let Transfer::Download { target } = &self.transfer {
+            return Text::from(self.download_summary(target));
+        }
+        let total_files = self.total_files.unwrap_or_default();
         let line = match self.phase {
             Phase::Finished { at } => Line::styled(
                 format!(
@@ -388,15 +467,15 @@ impl View for UploadView {
                 format!(
                     "Failed after {} of {}.",
                     self.finished_files,
-                    files(self.total_files)
+                    files(total_files)
                 ),
                 self.theme.error,
             ),
-            Phase::CreatingSession | Phase::Uploading | Phase::Completing => {
+            Phase::CreatingSession | Phase::Transferring | Phase::Completing => {
                 let interrupted = format!(
                     "Interrupted after {} of {}.",
                     self.finished_files,
-                    files(self.total_files)
+                    files(total_files)
                 );
                 let text = match &self.session {
                     Some(session) => {

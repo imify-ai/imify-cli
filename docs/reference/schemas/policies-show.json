@@ -1,0 +1,149 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "imify policies show result",
+  "description": "Written to stdout by `imify policies show --json`: the policy, its lineage and its checkpoints. The policy fields are those of `imify policies list --json`.",
+  "type": "object",
+  "required": [
+    "id",
+    "policy_type",
+    "state",
+    "phase",
+    "step",
+    "total_steps",
+    "dataset_id",
+    "dataset_version_id",
+    "error",
+    "created_at",
+    "started_at",
+    "finished_at",
+    "lineage",
+    "checkpoints"
+  ],
+  "properties": {
+    "id": {
+      "description": "Policy id assigned by the API.",
+      "type": "string",
+      "minLength": 1
+    },
+    "policy_type": {
+      "description": "Policy architecture, such as `act`, `groot_n1.7` or `pi0.5`. A value unknown to this CLI version passes through as sent.",
+      "type": "string"
+    },
+    "state": {
+      "description": "Life cycle state: `queued`, `training`, `ready` or `failed`. A state unknown to this CLI version passes through as sent.",
+      "type": "string"
+    },
+    "phase": {
+      "description": "Sub-step of the current state as sent by the API, such as `materializing`.",
+      "type": "string"
+    },
+    "step": {
+      "description": "Training steps completed.",
+      "type": "integer",
+      "minimum": 0
+    },
+    "total_steps": {
+      "description": "Training steps planned.",
+      "type": "integer",
+      "minimum": 0
+    },
+    "dataset_id": {
+      "description": "Id of the dataset the policy is trained on.",
+      "type": "string"
+    },
+    "dataset_version_id": {
+      "description": "Id of the dataset version the policy is trained on.",
+      "type": "string"
+    },
+    "error": {
+      "description": "Reason for a failed training as sent by the API, or null.",
+      "type": ["string", "null"]
+    },
+    "created_at": {
+      "description": "Creation time as sent by the API, an ISO 8601 date-time.",
+      "type": "string"
+    },
+    "started_at": {
+      "description": "Start of training as sent by the API, an ISO 8601 date-time, or null.",
+      "type": ["string", "null"]
+    },
+    "finished_at": {
+      "description": "End of training as sent by the API, an ISO 8601 date-time, or null.",
+      "type": ["string", "null"]
+    },
+    "lineage": {
+      "description": "What the policy was trained on.",
+      "type": "object",
+      "required": [
+        "dataset_id",
+        "dataset_version_id",
+        "dataset_version_name",
+        "task",
+        "embodiment",
+        "embodiment_fingerprint",
+        "episodes",
+        "episode_ids"
+      ],
+      "properties": {
+        "dataset_id": {
+          "description": "Id of the dataset.",
+          "type": "string"
+        },
+        "dataset_version_id": {
+          "description": "Id of the dataset version.",
+          "type": "string"
+        },
+        "dataset_version_name": {
+          "description": "Name of the dataset version.",
+          "type": "string"
+        },
+        "task": {
+          "description": "Task description of the dataset.",
+          "type": "string"
+        },
+        "embodiment": {
+          "description": "Display label of the robot embodiment, such as `so100`.",
+          "type": "string"
+        },
+        "embodiment_fingerprint": {
+          "description": "Fingerprint that identifies the embodiment.",
+          "type": "string"
+        },
+        "episodes": {
+          "description": "Number of episodes in the dataset version.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "episode_ids": {
+          "description": "Ids of the episodes in the dataset version.",
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "checkpoints": {
+      "description": "The policy's checkpoints, oldest first.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "size", "last_modified"],
+        "properties": {
+          "id": {
+            "description": "Checkpoint id, such as the training step `020000`.",
+            "type": "string",
+            "minLength": 1
+          },
+          "size": {
+            "description": "Total size of the checkpoint's files in bytes.",
+            "type": "integer",
+            "minimum": 0
+          },
+          "last_modified": {
+            "description": "Time of the last change as sent by the API, an ISO 8601 date-time.",
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}

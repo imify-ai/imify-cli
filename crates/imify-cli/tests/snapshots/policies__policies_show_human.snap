@@ -1,0 +1,21 @@
+---
+source: crates/imify-cli/tests/policies.rs
+expression: text(&output.stdout)
+---
+ID          run-3c9e1a7f
+Type        act
+State       ready
+Phase       done
+Progress    20000/20000
+Dataset     0b6f3c2e-8d1a-4f7e-9a51-2c4d6e8f0a13
+Version     v3 (ver-41d2)
+Task        Pick up the red cube
+Embodiment  so100
+Episodes    2
+Created     2026-10-01T09:30:00Z
+Started     2026-10-01T09:31:12Z
+Finished    2026-10-01T11:02:40Z
+
+CHECKPOINT     SIZE  LAST MODIFIED
+010000      1.2 GiB  2026-10-01T10:15:02Z
+020000      1.2 GiB  2026-10-01T11:01:55Z

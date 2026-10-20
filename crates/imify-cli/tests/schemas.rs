@@ -52,6 +52,18 @@ const CASES: &[(&str, &[&str])] = &[
             "cli__datasets_upload_dry_run_json.snap",
         ],
     ),
+    (
+        "policies-list.json",
+        &[
+            "policies__policies_list_json.snap",
+            "policies__policies_list_empty_json.snap",
+        ],
+    ),
+    ("policies-show.json", &["policies__policies_show_json.snap"]),
+    (
+        "policies-download.json",
+        &["policies__policies_download_json.snap"],
+    ),
     ("auth-whoami.json", &["cli__whoami_json.snap"]),
     (
         "doctor.json",

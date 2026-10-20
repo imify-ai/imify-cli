@@ -1,0 +1,5 @@
+---
+source: crates/imify-cli/tests/policies.rs
+expression: text(&output.stdout)
+---
+{"checkpoints":[{"id":"010000","last_modified":"2026-10-01T10:15:02Z","size":1288490189},{"id":"020000","last_modified":"2026-10-01T11:01:55Z","size":1288490189}],"created_at":"2026-10-01T09:30:00Z","dataset_id":"0b6f3c2e-8d1a-4f7e-9a51-2c4d6e8f0a13","dataset_version_id":"ver-41d2","error":null,"finished_at":"2026-10-01T11:02:40Z","id":"run-3c9e1a7f","lineage":{"dataset_id":"0b6f3c2e-8d1a-4f7e-9a51-2c4d6e8f0a13","dataset_version_id":"ver-41d2","dataset_version_name":"v3","embodiment":"so100","embodiment_fingerprint":"so100-f3a9c1","episode_ids":["ep-0001","ep-0002"],"episodes":2,"task":"Pick up the red cube"},"phase":"done","policy_type":"act","started_at":"2026-10-01T09:31:12Z","state":"ready","step":20000,"total_steps":20000}

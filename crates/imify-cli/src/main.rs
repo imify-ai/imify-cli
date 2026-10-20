@@ -14,7 +14,7 @@ mod update;
 use std::ffi::OsString;
 use std::process::ExitCode;
 
-use cli::{AuthCommand, Command, ConfigCommand, DatasetsCommand, SelfCommand};
+use cli::{AuthCommand, Command, ConfigCommand, DatasetsCommand, PoliciesCommand, SelfCommand};
 use output::renderer::Renderer;
 use output::{CliError, Environment, ErrorCode, Settings};
 use update::check::PendingCheck;
@@ -84,6 +84,17 @@ fn run(
         }) => runtime()?.block_on(commands::datasets::upload::upload(
             env, settings, args, renderer,
         )),
+        Some(Command::Policies { command }) => match command {
+            PoliciesCommand::List(args) => {
+                runtime()?.block_on(commands::policies::list(env, args, renderer))
+            }
+            PoliciesCommand::Show(args) => {
+                runtime()?.block_on(commands::policies::show(env, args, renderer))
+            }
+            PoliciesCommand::Download(args) => runtime()?.block_on(
+                commands::policies::download::download(env, settings, args, renderer),
+            ),
+        },
         Some(Command::Itself {
             command: SelfCommand::Update,
         }) => runtime()?.block_on(commands::self_update::update(env, renderer)),

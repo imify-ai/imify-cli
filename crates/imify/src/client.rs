@@ -37,6 +37,8 @@ const MAX_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
 /// [`Error::UnexpectedResponse`]; an error body larger than 1 MiB is dropped. Requests
 /// to the identity provider differ: the protected resource metadata, `config.json` and the
 /// discovery document follow redirects only within their origin, and token and revocation requests follow none.
+/// Storage requests of a [`Downloader`](crate::download::Downloader) carry no
+/// `Authorization` header and follow redirects only within the origin of the presigned URL.
 /// Cloning is cheap; clones share their connection pools.
 ///
 /// # Examples
@@ -115,6 +117,27 @@ impl Client {
                     &decode_json,
                 )
             },
+        )
+        .await
+    }
+
+    /// Sends a request with the `Authorization` header to `url` and turns the response
+    /// into `T` with `decode`, retrying failures that `mode` allows. `decode` receives every
+    /// response except redirects, which fail with [`Error::UnexpectedResponse`].
+    pub(crate) async fn execute_with<T, D>(
+        &self,
+        mode: RetryMode,
+        method: Method,
+        url: Url,
+        decode: &D,
+    ) -> Result<T, Error>
+    where
+        D: Fn(StatusCode, &HeaderMap, &[u8]) -> Result<T, Error>,
+    {
+        self.retry(
+            mode,
+            |_, _, _| {},
+            || self.send(Authorize::Yes, method.clone(), url.clone(), None, decode),
         )
         .await
     }
@@ -203,6 +226,12 @@ impl Client {
     /// limits the time without progress to [`Client::read_timeout`].
     pub(crate) fn upload_http(&self) -> &reqwest::Client {
         &self.upload_http
+    }
+
+    /// The HTTP client for storage downloads. It sends no `Authorization` header, follows
+    /// redirects only within the origin of the request and applies the read timeout.
+    pub(crate) fn download_http(&self) -> Result<&reqwest::Client, Error> {
+        self.provider_http.same_origin()
     }
 
     /// The configured read timeout.
@@ -450,8 +479,8 @@ impl HttpSettings {
     }
 }
 
-/// The HTTP clients for identity provider requests. Each is built on first use, since
-/// building one loads the TLS root certificates.
+/// The HTTP clients for identity provider requests and storage downloads. Each is built on
+/// first use, since building one loads the TLS root certificates.
 #[derive(Debug)]
 struct ProviderHttp {
     settings: HttpSettings,
