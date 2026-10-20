@@ -1480,7 +1480,7 @@ dependencies = [
 
 [[package]]
 name = "imify-cli"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anstream",
  "apple-native-keyring-store",

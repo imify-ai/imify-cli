@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0](https://github.com/imify-ai/imify-cli/compare/v0.2.0...v0.3.0) - 2026-10-20
+
+### Added
+
+- *(cli)* rename datasets ls to datasets list ([#107](https://github.com/imify-ai/imify-cli/pull/107))
+- *(policies)* download a checkpoint into a directory ([#105](https://github.com/imify-ai/imify-cli/pull/105))
+- *(policies)* list policies and show one with its checkpoints ([#104](https://github.com/imify-ai/imify-cli/pull/104))
+- *(auth)* discover the login client from protected resource metadata ([#94](https://github.com/imify-ai/imify-cli/pull/94))
+
 ## [0.2.0](https://github.com/imify-ai/imify-cli/compare/v0.1.0...v0.2.0) - 2026-10-17
 
 ### Added
