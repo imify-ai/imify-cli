@@ -44,7 +44,7 @@ crates/imify/src/
                     StoredLogin with refresh, token revocation
   datasets/         dataset endpoints and models
   ingest/           upload engine: Transport trait, planner, pacing, resume journal, progress events
-  download/         download engine for policies and checkpoints: manifest checks, target
+  download/         download engine for training checkpoints: manifest checks, target
                     directory scan and writes relative to directory file descriptors,
                     storage GET, manifest refresh, progress events
   validate/         offline structural checks of LeRobot v3 and v2.1 datasets
@@ -86,7 +86,7 @@ Each seam is a trait with one production implementation and test doubles. They e
 
 ## Download flow
 
-1. The engine fetches the manifest of a policy or checkpoint: one presigned storage URL, relative path and size per file. It refuses unsafe or colliding paths and storage URLs other than `https`, or `http` on `localhost`, `127.0.0.1` or `::1`, before it writes anything.
+1. The engine fetches the manifest of a training checkpoint: one presigned storage URL, relative path and size per file. It refuses unsafe or colliding paths and storage URLs other than `https`, or `http` on `localhost`, `127.0.0.1` or `::1`, before it writes anything.
 2. It opens the target directory and scans it without following links. An entry the download does not own stops it before any storage request. Files that exist with the manifest size are skipped.
 3. Remaining files download with bounded concurrency through an HTTP client that sends no `Authorization` header. Each file is written to `<path>.part` relative to directory file descriptors with `O_NOFOLLOW`, checked against the manifest size, synced and renamed into place.
    - An existing `.part` that is a regular file with one link and fewer bytes `n` than the manifest size is continued with `Range: bytes=n-`. A 206 with `Content-Range: bytes n-(size-1)/size` appends to it, and a 200 truncates it and writes from byte 0. Another `Content-Range` or a 416 removes it and requests the file once more without a range.

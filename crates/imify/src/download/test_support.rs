@@ -18,12 +18,13 @@ use crate::{Client, Error, RetryPolicy};
 
 pub(super) const TOKEN: &str = "tok_7f3a9c-secret";
 pub(super) const POLICY: &str = "8d41c7";
-pub(super) const ARTIFACT: &str = "/api/v1/training-runs/8d41c7/artifact";
+pub(super) const CHECKPOINT: &str = "step-20000";
+pub(super) const MANIFEST: &str = "/api/v1/training-runs/8d41c7/checkpoints/step-20000";
 /// The query of every presigned URL in the fixtures.
 pub(super) const SIGNATURE: &str = "X-Amz-Signature=sig-0b7e4f-secret";
 
 pub(super) fn source() -> DownloadSource {
-    DownloadSource::policy(POLICY)
+    DownloadSource::checkpoint(POLICY, CHECKPOINT)
 }
 
 pub(super) fn client_with(server: &MockServer, max_retries: u32) -> Client {
@@ -78,7 +79,7 @@ pub(super) fn manifest_of(server: &MockServer, files: &[(&str, &[u8])]) -> Value
 
 pub(super) async fn mount_manifest(server: &MockServer, body: &Value) {
     Mock::given(method("GET"))
-        .and(path(ARTIFACT))
+        .and(path(MANIFEST))
         .respond_with(ResponseTemplate::new(200).set_body_json(body))
         .mount(server)
         .await;

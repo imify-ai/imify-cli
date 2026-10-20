@@ -1,4 +1,4 @@
-//! Downloads the files of a trained policy or a checkpoint into a directory.
+//! Downloads the files of a training checkpoint into a directory.
 //!
 //! ```no_run
 //! # async fn run() -> Result<(), imify::Error> {
@@ -15,13 +15,16 @@
 //!             println!("{path}: {size} bytes");
 //!         }
 //!     })
-//!     .download(&DownloadSource::policy("8d41c7"), "policies/pick-place")
+//!     .download(
+//!         &DownloadSource::checkpoint("8d41c7", "step-20000"),
+//!         "checkpoints/step-20000",
+//!     )
 //!     .await?;
 //! println!("{} files in {}", summary.files, summary.target.display());
 //! # Ok(()) }
 //! ```
 //!
-//! A download fetches the manifest of the source from the API: one presigned storage URL,
+//! A download fetches the manifest of the checkpoint from the API: one presigned storage URL,
 //! relative path and size per file. It checks every entry and the target directory before
 //! it writes anything, then fetches the files with bounded concurrency. Each file is
 //! written to `<path>.part`, checked against the manifest size, synced and renamed to
@@ -77,18 +80,13 @@ const DEFAULT_CONCURRENCY: NonZeroUsize = match NonZeroUsize::new(4) {
 /// ```
 /// use imify::download::DownloadSource;
 ///
-/// let policy = DownloadSource::policy("8d41c7");
-/// let checkpoint = DownloadSource::checkpoint("8d41c7", "step-20000");
-/// assert_ne!(policy, checkpoint);
+/// let first = DownloadSource::checkpoint("8d41c7", "step-10000");
+/// let second = DownloadSource::checkpoint("8d41c7", "step-20000");
+/// assert_ne!(first, second);
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum DownloadSource {
-    /// The final policy of a training run: `GET /api/v1/training-runs/{policy}/artifact`.
-    Policy {
-        /// Id of the training run.
-        policy: String,
-    },
     /// One checkpoint of a training run:
     /// `GET /api/v1/training-runs/{policy}/checkpoints/{checkpoint}`.
     Checkpoint {
@@ -100,19 +98,6 @@ pub enum DownloadSource {
 }
 
 impl DownloadSource {
-    /// The final policy of the training run `policy`.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// let source = imify::download::DownloadSource::policy("8d41c7");
-    /// ```
-    pub fn policy(policy: impl Into<String>) -> Self {
-        Self::Policy {
-            policy: policy.into(),
-        }
-    }
-
     /// The checkpoint `checkpoint` of the training run `policy`.
     ///
     /// # Examples
@@ -243,7 +228,7 @@ pub enum DownloadEvent {
 /// use imify::download::{DownloadSource, Downloader};
 ///
 /// let summary = Downloader::new(client)
-///     .download(&DownloadSource::policy("8d41c7"), "policies/pick-place")
+///     .download(&DownloadSource::checkpoint("8d41c7", "step-20000"), "checkpoints/20000")
 ///     .await?;
 /// println!(
 ///     "{} of {} files fetched",

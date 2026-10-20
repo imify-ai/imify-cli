@@ -111,12 +111,12 @@ async fn a_total_size_other_than_the_sum_of_the_sizes_is_an_unexpected_response(
 }
 
 #[tokio::test]
-async fn an_unknown_policy_is_not_found_and_creates_no_directory() {
+async fn an_unknown_checkpoint_is_not_found_and_creates_no_directory() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
-        .and(path(ARTIFACT))
+        .and(path(MANIFEST))
         .respond_with(
-            ResponseTemplate::new(404).set_body_json(json!({"detail": "Training run not found"})),
+            ResponseTemplate::new(404).set_body_json(json!({"detail": "Checkpoint not found"})),
         )
         .mount(&server)
         .await;
@@ -136,7 +136,7 @@ async fn storage_without_downloads_is_a_validation_error_with_the_detail() {
     let server = MockServer::start().await;
     let detail = "Downloads are not available for this storage backend";
     Mock::given(method("GET"))
-        .and(path(ARTIFACT))
+        .and(path(MANIFEST))
         .respond_with(ResponseTemplate::new(422).set_body_json(json!({"detail": detail})))
         .mount(&server)
         .await;
@@ -155,7 +155,7 @@ async fn storage_without_downloads_is_a_validation_error_with_the_detail() {
 }
 
 #[tokio::test]
-async fn a_policy_id_with_a_slash_is_sent_as_one_path_segment() {
+async fn ids_with_a_slash_are_sent_as_single_path_segments() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path(

@@ -19,7 +19,7 @@ use crate::{Client, DownloadError, Error};
 
 type EventHandler = Arc<dyn Fn(&DownloadEvent) + Send + Sync>;
 
-/// Downloads the files of a policy or a checkpoint into a directory.
+/// Downloads the files of a training checkpoint into a directory.
 ///
 /// Dropping the future returned by [`Downloader::download`] stops every transfer. The
 /// `.part` files stay, and the next download into the same directory continues them.
@@ -167,7 +167,7 @@ impl Downloader {
     /// use imify::download::DownloadSource;
     ///
     /// let summary = downloader
-    ///     .download(&DownloadSource::policy("8d41c7"), "policies/pick-place")
+    ///     .download(&DownloadSource::checkpoint("8d41c7", "step-20000"), "checkpoints/20000")
     ///     .await?;
     /// println!("{} files, {} skipped", summary.files, summary.files_skipped);
     /// # Ok(()) }

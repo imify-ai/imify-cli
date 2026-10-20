@@ -115,20 +115,14 @@ pub(crate) async fn fetch(client: &Client, source: &DownloadSource) -> Result<Ma
 }
 
 fn manifest_url(client: &Client, source: &DownloadSource) -> Result<Url, Error> {
-    let (policy, rest): (&str, &[&str]) = match source {
-        DownloadSource::Policy { policy } => (policy, &["artifact"]),
-        DownloadSource::Checkpoint { policy, checkpoint } => {
-            (policy, &["checkpoints", checkpoint.as_str()])
-        }
-    };
+    let DownloadSource::Checkpoint { policy, checkpoint } = source;
     let mut url = client.url(TRAINING_RUNS_PATH)?;
     url.path_segments_mut()
         .map_err(|()| Error::Config {
             message: "base URL cannot have a path".to_owned(),
         })?
         .pop_if_empty()
-        .push(policy)
-        .extend(rest);
+        .extend([policy.as_str(), "checkpoints", checkpoint.as_str()]);
     Ok(url)
 }
 

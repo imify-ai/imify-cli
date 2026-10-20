@@ -7,7 +7,7 @@ use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use super::test_support::*;
-use super::{DownloadEvent, DownloadSource, DownloadSummary, Downloader};
+use super::{DownloadEvent, DownloadSummary, Downloader};
 use crate::{DownloadError, Error};
 
 const WEIGHTS: &[u8] = &[7_u8; 4096];
@@ -92,7 +92,7 @@ async fn a_missing_target_directory_is_created_with_its_parents() {
     let server = MockServer::start().await;
     mount_files(&server, &[("model.bin", WEIGHTS)]).await;
     let root = tempfile::tempdir().unwrap();
-    let target = root.path().join("policies/pick-place");
+    let target = root.path().join("checkpoints/step-20000");
 
     downloader(&server)
         .download(&source(), &target)
@@ -113,7 +113,7 @@ async fn the_manifest_request_carries_the_token_and_storage_requests_do_not() {
         .await
         .unwrap();
 
-    let manifest_requests = requests_to(&server, ARTIFACT).await;
+    let manifest_requests = requests_to(&server, MANIFEST).await;
     assert_eq!(
         manifest_requests[0].headers["authorization"],
         format!("Bearer {TOKEN}").as_str()
@@ -121,29 +121,6 @@ async fn the_manifest_request_carries_the_token_and_storage_requests_do_not() {
     let storage = storage_requests(&server).await;
     assert_eq!(storage.len(), 1);
     assert!(!storage[0].headers.contains_key("authorization"));
-}
-
-#[tokio::test]
-async fn a_checkpoint_is_downloaded_from_its_manifest() {
-    let server = MockServer::start().await;
-    let body = manifest_of(&server, &[("model.bin", WEIGHTS)]);
-    Mock::given(method("GET"))
-        .and(path("/api/v1/training-runs/8d41c7/checkpoints/step-20000"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(body))
-        .mount(&server)
-        .await;
-    mount_file(&server, "model.bin", WEIGHTS).await;
-    let target = tempfile::tempdir().unwrap();
-
-    downloader(&server)
-        .download(
-            &DownloadSource::checkpoint(POLICY, "step-20000"),
-            target.path(),
-        )
-        .await
-        .unwrap();
-
-    assert_eq!(fs::read(target.path().join("model.bin")).unwrap(), WEIGHTS);
 }
 
 #[tokio::test]
@@ -230,7 +207,7 @@ async fn an_expired_url_fetches_the_manifest_again_and_completes_the_file() {
         entry("b.bin", &storage_url(&uri, "new/b.bin"), 4096),
     ]);
     Mock::given(method("GET"))
-        .and(path(ARTIFACT))
+        .and(path(MANIFEST))
         .respond_with(ResponseTemplate::new(200).set_body_json(first))
         .up_to_n_times(1)
         .mount(&server)
@@ -254,7 +231,7 @@ async fn an_expired_url_fetches_the_manifest_again_and_completes_the_file() {
         .unwrap();
 
     assert_eq!(fs::read(target.path().join("b.bin")).unwrap(), WEIGHTS);
-    assert_eq!(requests_to(&server, ARTIFACT).await.len(), 2);
+    assert_eq!(requests_to(&server, MANIFEST).await.len(), 2);
     assert_eq!(requests_to(&server, "/storage/old/a.bin").await.len(), 1);
     assert!(requests_to(&server, "/storage/new/a.bin").await.is_empty());
     assert!(events.all().contains(&DownloadEvent::ManifestRefreshed));
@@ -273,7 +250,7 @@ async fn files_rejected_at_the_same_time_share_one_manifest_refresh() {
         entry("b.bin", &storage_url(&uri, "new/b.bin"), 4096),
     ]);
     Mock::given(method("GET"))
-        .and(path(ARTIFACT))
+        .and(path(MANIFEST))
         .respond_with(ResponseTemplate::new(200).set_body_json(first))
         .up_to_n_times(1)
         .mount(&server)
@@ -291,7 +268,7 @@ async fn files_rejected_at_the_same_time_share_one_manifest_refresh() {
         .await
         .unwrap();
 
-    assert_eq!(requests_to(&server, ARTIFACT).await.len(), 2);
+    assert_eq!(requests_to(&server, MANIFEST).await.len(), 2);
     assert_eq!(files_below(target.path()), ["a.bin", "b.bin"]);
 }
 
@@ -308,7 +285,7 @@ async fn a_second_rejection_of_the_same_file_fails_with_url_expired() {
         .unwrap_err();
 
     assert!(matches!(download_reason(&error), DownloadError::UrlExpired));
-    assert_eq!(requests_to(&server, ARTIFACT).await.len(), 2);
+    assert_eq!(requests_to(&server, MANIFEST).await.len(), 2);
     assert!(!target.path().join("model.bin").exists());
 }
 
@@ -353,7 +330,7 @@ async fn a_refreshed_manifest_with_another_size_fails_with_manifest_changed() {
         8192,
     )]);
     Mock::given(method("GET"))
-        .and(path(ARTIFACT))
+        .and(path(MANIFEST))
         .respond_with(ResponseTemplate::new(200).set_body_json(first))
         .up_to_n_times(1)
         .mount(&server)

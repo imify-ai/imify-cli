@@ -51,18 +51,18 @@ let session = Uploader::new(client)
 
 `upload` creates an ingest session, sends `meta/info.json`, sends the files under `meta/`, `data/` and `videos/` 4 at a time, and completes the session. Files are streamed from disk. Request starts are at least 100 ms apart; a rate-limited response holds all starts for the requested delay. `UploadOptions` changes the concurrency and the interval.
 
-## Download a policy
+## Download a checkpoint
 
 ```rust
 use imify::download::{DownloadSource, Downloader};
 
 let summary = Downloader::new(client)
-    .download(&DownloadSource::policy("8d41c7"), "policies/pick-place")
+    .download(&DownloadSource::checkpoint("8d41c7", "step-20000"), "checkpoints/20000")
     .await?;
 println!("{} files in {}", summary.files, summary.target.display());
 ```
 
-`download` fetches the manifest of the policy, or of a checkpoint with `DownloadSource::checkpoint`, and saves its files 4 at a time. Each file is written to `<path>.part`, checked against the manifest size, synced and renamed into place. Storage requests carry no `Authorization` header. The download refuses to start when a manifest path is unsafe, or when the target directory holds a symbolic link, a file not in the manifest or a manifest file with another size. Files that exist with the manifest size are skipped, so running the download again completes an interrupted one. A partial `<path>.part` is continued with a `Range` request when storage answers with 206 and the matching `Content-Range`. When storage rejects an expired URL with 403, the manifest is fetched again once.
+`download` fetches the manifest of a training checkpoint and saves its files 4 at a time. Each file is written to `<path>.part`, checked against the manifest size, synced and renamed into place. Storage requests carry no `Authorization` header. The download refuses to start when a manifest path is unsafe, or when the target directory holds a symbolic link, a file not in the manifest or a manifest file with another size. Files that exist with the manifest size are skipped, so running the download again completes an interrupted one. A partial `<path>.part` is continued with a `Range` request when storage answers with 206 and the matching `Content-Range`. When storage rejects an expired URL with 403, the manifest is fetched again once.
 
 ## Update a program installed by its installer
 
