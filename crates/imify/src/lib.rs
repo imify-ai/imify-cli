@@ -23,6 +23,7 @@ pub mod auth;
 mod client;
 pub mod datasets;
 mod discovery;
+pub mod download;
 mod error;
 mod health;
 pub mod ingest;
@@ -36,7 +37,7 @@ pub mod validate;
 pub use account::User;
 pub use client::{Client, ClientBuilder};
 pub use discovery::OidcSettings;
-pub use error::{Error, FieldError, JournalError, LoginFailure};
+pub use error::{DownloadError, Error, FieldError, JournalError, LoginFailure};
 pub use health::{Health, Readiness};
 pub use retry::RetryPolicy;
 
