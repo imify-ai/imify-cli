@@ -496,7 +496,7 @@ Work with datasets
 Usage: imify datasets [OPTIONS] <COMMAND>
 
 Commands:
-  ls        List the datasets visible to the access token's user
+  list      List the datasets visible to the access token's user
   validate  Check a local LeRobot dataset before an upload
   upload    Upload a local LeRobot dataset into an ingest session
   help      Print this message or the help of the given subcommand(s)
@@ -527,12 +527,12 @@ Options:
           Print help
 ```
 
-## imify datasets ls
+## imify datasets list
 
 ```text
 List the datasets visible to the access token's user
 
-Usage: imify datasets ls [OPTIONS]
+Usage: imify datasets list [OPTIONS]
 
 Options:
       --json
@@ -577,9 +577,9 @@ Options:
           Print help
 
 Examples:
-  imify datasets ls
-  imify datasets ls --embodiment so100 --sort episodes --reverse
-  imify datasets ls --task cube --json
+  imify datasets list
+  imify datasets list --embodiment so100 --sort episodes --reverse
+  imify datasets list --task cube --json
 ```
 
 ## imify datasets validate

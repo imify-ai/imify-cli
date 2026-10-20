@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "imify datasets ls result",
-  "description": "Written to stdout by `imify datasets ls --json`: the datasets that match the filters, in the requested order.",
+  "title": "imify datasets list result",
+  "description": "Written to stdout by `imify datasets list --json`: the datasets that match the filters, in the requested order.",
   "type": "array",
   "items": {
     "type": "object",

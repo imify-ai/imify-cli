@@ -38,10 +38,10 @@ const CASES: &[(&str, &[&str])] = &[
         &["imify__output__renderer__tests__event_stream_json.snap"],
     ),
     (
-        "datasets-ls.json",
+        "datasets-list.json",
         &[
-            "cli__datasets_ls_json.snap",
-            "cli__datasets_ls_empty_json.snap",
+            "cli__datasets_list_json.snap",
+            "cli__datasets_list_empty_json.snap",
         ],
     ),
     (

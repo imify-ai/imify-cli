@@ -5,21 +5,21 @@
 ## List datasets
 
 ```console
-$ imify datasets ls
+$ imify datasets list
 ID                                    TASK                  FORMAT      EMBODIMENT  EPISODES  ACCEPTED
 0b6f3c2e-8d1a-4f7e-9a51-2c4d6e8f0a13  Pick up the red cube  lerobot_v3  so100             50        48
 5e2d7a90-1c3b-4e6f-8a7d-9b0c1d2e3f45  Stack two blocks      lerobot_v3  koch              12        12
 ```
 
-`imify datasets ls` prints every dataset visible to the user the access token belongs to. A dataset holds the episodes recorded for one task on one embodiment. `EPISODES` is the number of episodes in the dataset, `ACCEPTED` the number that passed quality control. Values are never truncated. Without datasets, the command prints `No datasets.` and exits with code 0.
+`imify datasets list` prints every dataset visible to the user the access token belongs to. A dataset holds the episodes recorded for one task on one embodiment. `EPISODES` is the number of episodes in the dataset, `ACCEPTED` the number that passed quality control. Values are never truncated. Without datasets, the command prints `No datasets.` and exits with code 0.
 
 The command requires a login or `IMIFY_TOKEN` for the API host, as described in [Authentication](authentication.md).
 
 ### Filter
 
 ```sh
-imify datasets ls --task cube
-imify datasets ls --format lerobot_v3 --embodiment so100
+imify datasets list --task cube
+imify datasets list --format lerobot_v3 --embodiment so100
 ```
 
 | Flag | Keeps datasets |
@@ -33,7 +33,7 @@ Filters combine: a dataset is listed when it matches every filter given.
 ### Sort
 
 ```sh
-imify datasets ls --sort episodes --reverse
+imify datasets list --sort episodes --reverse
 ```
 
 Without `--sort`, datasets are ordered by task, then embodiment, then id. `--sort` takes `id`, `task`, `format`, `embodiment`, `episodes` or `accepted`; datasets with the same value are ordered by id. Text compares by Unicode code point, so uppercase letters sort before lowercase. Numbers compare numerically. `--reverse` reverses the whole order.
@@ -41,7 +41,7 @@ Without `--sort`, datasets are ordered by task, then embodiment, then id. `--sor
 ### JSON
 
 ```console
-$ imify datasets ls --embodiment so100 --json
+$ imify datasets list --embodiment so100 --json
 [{"accepted":48,"action_dim":6,"cameras":["wrist","top"],"created_at":"2026-10-01T09:30:00Z","embodiment":"so100","embodiment_fingerprint":"f3a9c1","episodes":50,"format":"lerobot_v3","id":"0b6f3c2e-8d1a-4f7e-9a51-2c4d6e8f0a13","task":"Pick up the red cube"}]
 ```
 
@@ -60,7 +60,7 @@ $ imify datasets ls --embodiment so100 --json
 | `episodes` | integer | Number of episodes. |
 | `accepted` | integer | Number of episodes that passed quality control. |
 
-Schema: [`datasets-ls.json`](../reference/schemas/datasets-ls.json).
+Schema: [`datasets-list.json`](../reference/schemas/datasets-list.json).
 
 ### Errors
 

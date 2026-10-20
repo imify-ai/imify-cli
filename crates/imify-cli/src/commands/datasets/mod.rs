@@ -10,20 +10,20 @@ use imify::datasets::Dataset;
 use imify::validate::{Finding, Report};
 
 use super::{client, write_result};
-use crate::cli::{LsArgs, SortField, ValidateArgs};
+use crate::cli::{ListArgs, SortField, ValidateArgs};
 use crate::output::renderer::{Render, Renderer};
 use crate::output::sanitize::printable;
 use crate::output::table::{Column, Table};
 use crate::output::{CliError, Environment, ErrorCode};
 
-/// `imify datasets ls`: prints the datasets that match the filters, in the requested order.
+/// `imify datasets list`: prints the datasets that match the filters, in the requested order.
 ///
 /// # Errors
 ///
 /// Returns the error of building the client, of the API request, or of writing the result.
-pub async fn ls(
+pub async fn list(
     env: &Environment,
-    args: &LsArgs,
+    args: &ListArgs,
     renderer: &mut dyn Renderer,
 ) -> Result<(), CliError> {
     let api = client(env).await?;
@@ -35,7 +35,7 @@ pub async fn ls(
 }
 
 /// Keeps the datasets that match every filter in `args` and orders them.
-fn select(datasets: Vec<Dataset>, args: &LsArgs) -> Vec<Dataset> {
+fn select(datasets: Vec<Dataset>, args: &ListArgs) -> Vec<Dataset> {
     let mut selected: Vec<Dataset> = datasets
         .into_iter()
         .filter(|dataset| passes_filters(dataset, args))
@@ -47,7 +47,7 @@ fn select(datasets: Vec<Dataset>, args: &LsArgs) -> Vec<Dataset> {
     selected
 }
 
-fn passes_filters(dataset: &Dataset, args: &LsArgs) -> bool {
+fn passes_filters(dataset: &Dataset, args: &ListArgs) -> bool {
     let task = args
         .task
         .as_ref()
@@ -80,7 +80,7 @@ fn compare(a: &Dataset, b: &Dataset, field: Option<SortField>) -> Ordering {
     primary.then_with(|| a.id.cmp(&b.id))
 }
 
-/// The result of `imify datasets ls`.
+/// The result of `imify datasets list`.
 struct DatasetList(Vec<Dataset>);
 
 impl Render for DatasetList {
@@ -295,10 +295,10 @@ mod tests {
         datasets.iter().map(|dataset| dataset.id.as_str()).collect()
     }
 
-    fn sorted_by(field: SortField) -> LsArgs {
-        LsArgs {
+    fn sorted_by(field: SortField) -> ListArgs {
+        ListArgs {
             sort: Some(field),
-            ..LsArgs::default()
+            ..ListArgs::default()
         }
     }
 
@@ -311,7 +311,7 @@ mod tests {
             dataset("a", "Pick", "so100", 1),
         ];
 
-        let selected = select(datasets, &LsArgs::default());
+        let selected = select(datasets, &ListArgs::default());
 
         assert_eq!(ids(&selected), ["b", "a", "c", "d"]);
     }
@@ -347,7 +347,7 @@ mod tests {
             dataset("c", "Pick", "so100", 9),
             dataset("b", "Pick", "so100", 5),
         ];
-        let args = LsArgs {
+        let args = ListArgs {
             reverse: true,
             ..sorted_by(SortField::Episodes)
         };
@@ -363,9 +363,9 @@ mod tests {
             dataset("a", "Pick up the red CUBE", "so100", 1),
             dataset("b", "Stack two blocks", "so100", 1),
         ];
-        let args = LsArgs {
+        let args = ListArgs {
             task: Some("cube".into()),
-            ..LsArgs::default()
+            ..ListArgs::default()
         };
 
         let selected = select(datasets, &args);
@@ -379,9 +379,9 @@ mod tests {
             with_format(dataset("a", "Pick", "so100", 1), "lerobot_v3"),
             with_format(dataset("b", "Pick", "so100", 1), "lerobot_v3_1"),
         ];
-        let args = LsArgs {
+        let args = ListArgs {
             format: Some("lerobot_v3".into()),
-            ..LsArgs::default()
+            ..ListArgs::default()
         };
 
         let selected = select(datasets, &args);
@@ -395,13 +395,13 @@ mod tests {
             dataset("a", "Pick", "so100", 1),
             dataset("b", "Pick", "koch", 1),
         ];
-        let by_label = LsArgs {
+        let by_label = ListArgs {
             embodiment: Some("so100".into()),
-            ..LsArgs::default()
+            ..ListArgs::default()
         };
-        let by_fingerprint = LsArgs {
+        let by_fingerprint = ListArgs {
             embodiment: Some("fp-so100".into()),
-            ..LsArgs::default()
+            ..ListArgs::default()
         };
 
         assert_eq!(ids(&select(datasets.clone(), &by_label)), ["a"]);
@@ -415,10 +415,10 @@ mod tests {
             dataset("b", "Pick", "koch", 1),
             dataset("c", "Stack", "so100", 1),
         ];
-        let args = LsArgs {
+        let args = ListArgs {
             task: Some("pick".into()),
             embodiment: Some("so100".into()),
-            ..LsArgs::default()
+            ..ListArgs::default()
         };
 
         let selected = select(datasets, &args);

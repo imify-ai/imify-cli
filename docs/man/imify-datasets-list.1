@@ -1,10 +1,10 @@
 .ie \n(.g .ds Aq \(aq
 .el .ds Aq '
-.TH imify-datasets-ls 1 "" "imify" ""
+.TH imify-datasets-list 1 "" "imify" ""
 .SH NAME
-imify\-datasets\-ls \- List the datasets visible to the access token\*(Aqs user
+imify\-datasets\-list \- List the datasets visible to the access token\*(Aqs user
 .SH SYNOPSIS
-\fBimify datasets ls\fR [\fB\-\-json\fR] [\fB\-\-task\fR] [\fB\-\-format\fR] [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-\-embodiment\fR] [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-\-sort\fR] [\fB\-\-yes\fR] [\fB\-\-no\-color\fR] [\fB\-\-reverse\fR] [\fB\-\-api\-url\fR] [\fB\-\-profile\fR] [\fB\-h\fR|\fB\-\-help\fR] 
+\fBimify datasets list\fR [\fB\-\-json\fR] [\fB\-\-task\fR] [\fB\-\-format\fR] [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-\-embodiment\fR] [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-\-sort\fR] [\fB\-\-yes\fR] [\fB\-\-no\-color\fR] [\fB\-\-reverse\fR] [\fB\-\-api\-url\fR] [\fB\-\-profile\fR] [\fB\-h\fR|\fB\-\-help\fR] 
 .SH DESCRIPTION
 List the datasets visible to the access token\*(Aqs user
 .SH OPTIONS
@@ -67,6 +67,6 @@ Settings profile in the config file [env: IMIFY_PROFILE] [default: default]
 Print help
 .SH EXTRA
 Examples:
-  imify datasets ls
-  imify datasets ls \-\-embodiment so100 \-\-sort episodes \-\-reverse
-  imify datasets ls \-\-task cube \-\-json
+  imify datasets list
+  imify datasets list \-\-embodiment so100 \-\-sort episodes \-\-reverse
+  imify datasets list \-\-task cube \-\-json
