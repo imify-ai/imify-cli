@@ -119,6 +119,27 @@ impl Client {
         .await
     }
 
+    /// Sends a request with the `Authorization` header to `url` and turns the response
+    /// into `T` with `decode`, retrying failures that `mode` allows. `decode` receives every
+    /// response except redirects, which fail with [`Error::UnexpectedResponse`].
+    pub(crate) async fn execute_with<T, D>(
+        &self,
+        mode: RetryMode,
+        method: Method,
+        url: Url,
+        decode: &D,
+    ) -> Result<T, Error>
+    where
+        D: Fn(StatusCode, &HeaderMap, &[u8]) -> Result<T, Error>,
+    {
+        self.retry(
+            mode,
+            |_, _, _| {},
+            || self.send(Authorize::Yes, method.clone(), url.clone(), None, decode),
+        )
+        .await
+    }
+
     /// Sends a `GET` without an `Authorization` header to `url` and decodes the JSON
     /// response as `T`, retrying failures the retry policy allows. Follows redirects only
     /// within the origin of `url`.
