@@ -52,7 +52,7 @@ crates/imify/src/
 crates/imify-cli/src/
   main.rs           parse, dispatch, map errors to exit codes
   cli.rs            global flags and the top-level command enum
-  commands/         one module per noun: datasets, auth, config, doctor, self (self_update)
+  commands/         one module per noun: datasets, policies, auth, config, doctor, self (self_update)
   credentials/      where a login is stored: OS keychain, file; selection by IMIFY_CREDENTIAL_STORE
   browser.rs        opens the sign-in URL in the system browser
   config/           settings and their sources: --api-url, environment, profiles in config.toml, defaults

@@ -12,6 +12,7 @@ Commands:
   auth      Sign in, sign out and show the signed-in user
   config    Read and change the settings in the config file
   datasets  Work with datasets
+  policies  Work with policies: the models trained on a dataset version
   self      Manage this imify installation
   help      Print this message or the help of the given subcommand(s)
 
@@ -677,6 +678,130 @@ Examples:
   imify datasets upload ./pick-cube --task "Pick up the red cube"
   imify datasets upload ./pick-cube --task "Pick up the red cube" --dry-run
   imify datasets upload ./pick-cube --task "Pick up the red cube" --restart
+```
+
+## imify policies
+
+```text
+Work with policies: the models trained on a dataset version
+
+Usage: imify policies [OPTIONS] <COMMAND>
+
+Commands:
+  list  List the policies visible to the access token's user
+  show  Show a policy, what it was trained on and its checkpoints
+  help  Print this message or the help of the given subcommand(s)
+
+Options:
+      --json
+          Write JSON instead of text [env: IMIFY_OUTPUT=json]
+
+  -q, --quiet
+          Write the result only
+
+  -v, --verbose...
+          Log more detail to stderr: -v for debug, -vv for trace
+
+      --yes
+          Confirm without prompting
+
+      --no-color
+          Disable color [env: NO_COLOR]
+
+      --api-url <URL>
+          API host [env: IMIFY_API_URL] [default: profile, then https://platform.imify.ai]
+
+      --profile <NAME>
+          Settings profile in the config file [env: IMIFY_PROFILE] [default: default]
+
+  -h, --help
+          Print help
+```
+
+## imify policies list
+
+```text
+List the policies visible to the access token's user
+
+Usage: imify policies list [OPTIONS]
+
+Options:
+      --json
+          Write JSON instead of text [env: IMIFY_OUTPUT=json]
+
+      --state <STATE>
+          Keep policies in this state
+          
+          [possible values: queued, training, ready, failed]
+
+      --dataset <ID>
+          Keep policies trained on the dataset with this id
+
+  -q, --quiet
+          Write the result only
+
+  -v, --verbose...
+          Log more detail to stderr: -v for debug, -vv for trace
+
+      --yes
+          Confirm without prompting
+
+      --no-color
+          Disable color [env: NO_COLOR]
+
+      --api-url <URL>
+          API host [env: IMIFY_API_URL] [default: profile, then https://platform.imify.ai]
+
+      --profile <NAME>
+          Settings profile in the config file [env: IMIFY_PROFILE] [default: default]
+
+  -h, --help
+          Print help
+
+Examples:
+  imify policies list
+  imify policies list --state ready --json
+  imify policies list --dataset 0b6f3c2e-8d1a-4f7e-9a51-2c4d6e8f0a13
+```
+
+## imify policies show
+
+```text
+Show a policy, what it was trained on and its checkpoints
+
+Usage: imify policies show [OPTIONS] <POLICY>
+
+Arguments:
+  <POLICY>
+          The policy id
+
+Options:
+      --json
+          Write JSON instead of text [env: IMIFY_OUTPUT=json]
+
+  -q, --quiet
+          Write the result only
+
+  -v, --verbose...
+          Log more detail to stderr: -v for debug, -vv for trace
+
+      --yes
+          Confirm without prompting
+
+      --no-color
+          Disable color [env: NO_COLOR]
+
+      --api-url <URL>
+          API host [env: IMIFY_API_URL] [default: profile, then https://platform.imify.ai]
+
+      --profile <NAME>
+          Settings profile in the config file [env: IMIFY_PROFILE] [default: default]
+
+  -h, --help
+          Print help
+
+Example:
+  imify policies show run-3c9e1a7f
 ```
 
 ## imify self
