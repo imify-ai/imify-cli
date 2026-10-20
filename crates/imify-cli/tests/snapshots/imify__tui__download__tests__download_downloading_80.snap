@@ -1,0 +1,9 @@
+---
+source: crates/imify-cli/src/tui/download/tests.rs
+expression: text
+---
+Downloading  run-3c9e1a7f 020000
+[██████████░░░░░░░░░░░░░░░░░░░░]  420.0 MiB / 1.2 GiB  34%  110.5 MiB/s  7s left
+2 files
+  pretrained_model/model.safetensors                       300.0 MiB / 800.0 MiB
+  training_state/optimizer_state.safetensors               120.0 MiB / 429.0 MiB

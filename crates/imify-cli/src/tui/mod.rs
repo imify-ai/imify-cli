@@ -9,6 +9,7 @@
 //! warning and [`Progress::new`] selects [`Progress::Lines`].
 
 pub mod cursor;
+pub mod download;
 pub mod format;
 pub mod live;
 pub mod theme;

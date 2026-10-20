@@ -1,6 +1,6 @@
 # Policies
 
-A policy is the model trained on one dataset version. A checkpoint is a policy's state at one training step. `imify policies list` lists policies, `imify policies show` shows one policy with its checkpoints.
+A policy is the model trained on one dataset version. A checkpoint is a policy's state at one training step. `imify policies list` lists policies, `imify policies show` shows one policy with its checkpoints, and `imify policies download` saves a checkpoint to a directory.
 
 The commands require a login or `IMIFY_TOKEN` for the API host, as described in [Authentication](authentication.md).
 
@@ -102,17 +102,73 @@ CHECKPOINT     SIZE  LAST MODIFIED
 
 Schema: [`policies-show.json`](../reference/schemas/policies-show.json).
 
+## Download a checkpoint
+
+```console
+$ imify policies download run-3c9e1a7f latest
+Latest checkpoint of run-3c9e1a7f: 020000.
+Downloaded 4 files (1.2 GiB) in 41s to run-3c9e1a7f-020000.
+policy      run-3c9e1a7f
+checkpoint  020000
+path        /home/ada/run-3c9e1a7f-020000
+files       4 (1.2 GiB)
+```
+
+`imify policies download <policy> <checkpoint>` downloads the checkpoint directory, with `pretrained_model/` and `training_state/`, so LeRobot loads it with `--policy.path`. `<checkpoint>` is a checkpoint id from `imify policies show`, or `latest` for the checkpoint with the highest step. With `latest`, the command names the checkpoint it chose before the download starts. The download works in every policy state and for every listed checkpoint.
+
+The target directory is `./<policy>-<checkpoint>`, with the resolved id for `latest`. `-o <dir>` selects another directory. Missing directories are created. The result names the target directory as an absolute path.
+
+Files download 4 at a time. Each file is written to `<file>.part`, checked against the size the API lists and renamed into place. While the download runs, a live view on stderr shows the progress, as for [`imify datasets upload`](datasets-upload.md). With `--json`, `--quiet`, `-v` or without a terminal on stderr, progress is written as events instead.
+
+### Resume
+
+Ctrl-C stops the download with `interrupted` and exit code 130. Running the same command again continues it: files that are complete are not fetched again, and a partial `.part` file continues where it stopped. The download refuses to start with `conflict` when the target directory holds a file that is not part of the checkpoint, a file of the checkpoint with another size, or a symbolic link. It changes none of them.
+
+### Known limitation
+
+While a policy is training, its newest checkpoint may still be uploading. Storage lists only finished files, so such a download can succeed with files missing. Download a checkpoint older than the newest one, or wait until the policy is `ready`, when you need a complete checkpoint.
+
+### JSON
+
+```console
+$ imify policies download run-3c9e1a7f 020000 --json
+{"path":"pretrained_model/config.json","size":15,"type":"file_started"}
+{"path":"pretrained_model/config.json","size":15,"type":"file_finished"}
+{"bytes":1319413953,"checkpoint":"020000","files":4,"path":"/home/ada/run-3c9e1a7f-020000","policy":"run-3c9e1a7f","resumed_bytes":0,"type":"result"}
+```
+
+`--json` writes one event per line to stdout, the result last:
+
+| Type | Fields | Written when |
+|---|---|---|
+| `checkpoint_resolved` | `checkpoint` | first, when the argument is `latest` |
+| `resumed` | `files_done`, `bytes_done` | files are complete in the target directory and are not fetched again |
+| `file_started` | `path`, `size` | a file transfer starts |
+| `file_retrying` | `path`, `attempt`, `reason` | a file is requested again after a failure |
+| `file_finished` | `path`, `size` | a file is complete |
+| `rate_limited` | `pause_ms` | storage rate-limited a request |
+| `manifest_refreshed` | | storage rejected an expired URL, and the URLs were fetched again from the API |
+| `result` | `policy`, `checkpoint`, `path`, `files`, `bytes`, `resumed_bytes` | the download is complete |
+
+`path` in the result is the absolute target directory. `bytes` is the size of the checkpoint, `resumed_bytes` the size of the files that were complete before the download.
+
+Schema: [`policies-download.json`](../reference/schemas/policies-download.json).
+
 ## Errors
 
 | Code | Exit | Cause |
 |---|---|---|
-| `invalid_argument` | 2 | The API URL is invalid, or `--state` names an unknown state. |
+| `invalid_argument` | 2 | The API URL is invalid, `--state` names an unknown state, or the default target directory `<policy>-<checkpoint>` is not a plain directory name; pass `-o`. |
 | `auth_required` | 3 | There is no login for the host, and `IMIFY_TOKEN` is not set. |
 | `auth_expired` | 3 | The stored login has expired or was revoked. |
 | `auth_rejected` | 3 | The API rejected the token. |
 | `permission_denied` | 3 | The token lacks the permission to read policies. |
-| `not_found` | 4 | `imify policies show`: no policy has the id. |
-| `network`, `server`, `rate_limited` | 7 | The API could not be reached, failed, or throttled the request. |
+| `not_found` | 4 | No policy has the id. `imify policies download`: the policy has no checkpoint with the id, or no checkpoints. |
+| `conflict` | 6 | `imify policies download`: the target directory holds a file that is not part of the checkpoint, a file of the checkpoint with another size, or a symbolic link. |
+| `network`, `rate_limited` | 7 | The API could not be reached, or throttled the request. |
+| `server` | 7 | The API failed. `imify policies download`: storage failed or sent another size than listed, the list of files has an unsafe path or URL or changed during the download, or storage rejected the URLs again after they were fetched anew. |
+| `io` | 9 | `imify policies download`: a file or directory cannot be created, written or renamed, such as on a full disk or without permission. |
+| `interrupted` | 130 | Ctrl-C during `imify policies download`. |
 | `internal` | 1 | The API's response does not describe policies. |
 
 All error codes: [JSON output and exit codes](../reference/json-output.md#errors).

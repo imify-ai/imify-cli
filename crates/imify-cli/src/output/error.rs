@@ -1,6 +1,8 @@
 //! Stable error codes, their exit codes and the error envelope.
 
-use imify::LoginFailure;
+use std::path::Path;
+
+use imify::{DownloadError, LoginFailure};
 use serde::Serialize;
 
 use crate::credentials::KeychainError;
@@ -45,12 +47,15 @@ pub enum ErrorCode {
     /// `imify self update` did not complete: unreadable install receipt, no installer in the
     /// release, or a failing installer.
     SelfUpdateFailed,
+    /// A local file or directory cannot be created, written or renamed, such as on a full
+    /// disk or without permission.
+    Io,
 }
 
 impl ErrorCode {
     /// Every error code, in documentation order.
     #[cfg(test)]
-    pub const ALL: [Self; 17] = [
+    pub const ALL: [Self; 18] = [
         Self::Internal,
         Self::InvalidArgument,
         Self::AuthRequired,
@@ -68,6 +73,7 @@ impl ErrorCode {
         Self::Interrupted,
         Self::SelfUpdateUnsupported,
         Self::SelfUpdateFailed,
+        Self::Io,
     ];
 
     /// The process exit code for this error.
@@ -85,6 +91,7 @@ impl ErrorCode {
             Self::Conflict => 6,
             Self::Network | Self::Server | Self::RateLimited => 7,
             Self::Cancelled => 8,
+            Self::Io => 9,
             Self::Interrupted => 130,
         }
     }
@@ -204,6 +211,7 @@ impl From<imify::Error> for CliError {
                     None => error,
                 }
             }
+            imify::Error::Download { path, reason } => download_error(&path, &reason, message),
             imify::Error::CredentialStore { source } if source.is::<PrivateFileError>() => {
                 Self::new(ErrorCode::Internal, message)
             }
@@ -220,6 +228,21 @@ impl From<imify::Error> for CliError {
             }
             _ => Self::new(ErrorCode::Internal, message),
         }
+    }
+}
+
+/// Maps a failed download: an entry of the target directory not in the manifest becomes
+/// `conflict`, a local file system error `io`, and a manifest or storage failure `server`.
+fn download_error(path: &Path, reason: &DownloadError, message: String) -> CliError {
+    match reason {
+        DownloadError::Foreign(_) => {
+            CliError::new(ErrorCode::Conflict, message).with_hint(format!(
+                "Remove {}, or download into another directory with `-o`.",
+                path.display()
+            ))
+        }
+        DownloadError::Io(_) => CliError::new(ErrorCode::Io, message),
+        _ => CliError::new(ErrorCode::Server, message),
     }
 }
 
@@ -271,6 +294,7 @@ mod tests {
                 (ErrorCode::Interrupted, 130),
                 (ErrorCode::SelfUpdateUnsupported, 2),
                 (ErrorCode::SelfUpdateFailed, 1),
+                (ErrorCode::Io, 9),
             ]
         );
     }
@@ -302,6 +326,7 @@ mod tests {
                 "interrupted",
                 "self_update_unsupported",
                 "self_update_failed",
+                "io",
             ]
         );
     }
@@ -595,6 +620,57 @@ mod tests {
             (error.code, error.hint),
             (ErrorCode::SelfUpdateFailed, None)
         );
+    }
+
+    fn download_error(reason: imify::DownloadError) -> CliError {
+        CliError::from(imify::Error::Download {
+            path: "run-3c9e1a7f-020000/notes.txt".into(),
+            reason,
+        })
+    }
+
+    #[test]
+    fn a_target_entry_not_in_the_manifest_maps_to_conflict_with_a_hint_naming_it() {
+        let error = download_error(imify::DownloadError::Foreign(
+            "a file not in the manifest".into(),
+        ));
+
+        assert_eq!(
+            (error.code, error.hint.as_deref()),
+            (
+                ErrorCode::Conflict,
+                Some(
+                    "Remove run-3c9e1a7f-020000/notes.txt, or download into another directory with `-o`."
+                )
+            )
+        );
+    }
+
+    #[test]
+    fn a_local_file_system_error_of_a_download_maps_to_io() {
+        let error = download_error(imify::DownloadError::Io(std::io::Error::other(
+            "No space left on device",
+        )));
+
+        assert_eq!(error.code, ErrorCode::Io);
+    }
+
+    #[test]
+    fn unusable_manifests_and_storage_failures_of_a_download_map_to_server() {
+        let codes = [
+            imify::DownloadError::UnsafePath("../etc/passwd".into()),
+            imify::DownloadError::UnsafeUrl("ftp://storage.example.com".into()),
+            imify::DownloadError::SizeMismatch {
+                expected: 1024,
+                received: 2048,
+            },
+            imify::DownloadError::UrlExpired,
+            imify::DownloadError::ManifestChanged("model.safetensors has another size".into()),
+            imify::DownloadError::Storage { status: 404 },
+        ]
+        .map(|reason| download_error(reason).code);
+
+        assert_eq!(codes, [ErrorCode::Server; 6]);
     }
 
     #[test]

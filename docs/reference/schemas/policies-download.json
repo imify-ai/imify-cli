@@ -1,0 +1,155 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "imify policies download event",
+  "description": "One line of the NDJSON stream that `imify policies download <policy> <checkpoint> --json` writes to stdout. The last line has type `result`.",
+  "type": "object",
+  "required": ["type"],
+  "properties": {
+    "type": {
+      "enum": [
+        "checkpoint_resolved",
+        "resumed",
+        "file_started",
+        "file_retrying",
+        "file_finished",
+        "rate_limited",
+        "manifest_refreshed",
+        "result"
+      ]
+    }
+  },
+  "oneOf": [
+    { "$ref": "#/$defs/checkpoint_resolved" },
+    { "$ref": "#/$defs/resumed" },
+    { "$ref": "#/$defs/file_started" },
+    { "$ref": "#/$defs/file_retrying" },
+    { "$ref": "#/$defs/file_finished" },
+    { "$ref": "#/$defs/rate_limited" },
+    { "$ref": "#/$defs/manifest_refreshed" },
+    { "$ref": "#/$defs/result" }
+  ],
+  "$defs": {
+    "count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "path": {
+      "description": "Path of the file relative to the target directory, with `/` separators.",
+      "type": "string",
+      "minLength": 1
+    },
+    "checkpoint_resolved": {
+      "description": "Written first when the checkpoint argument is `latest`: the checkpoint with the highest step.",
+      "type": "object",
+      "required": ["type", "checkpoint"],
+      "properties": {
+        "type": { "const": "checkpoint_resolved" },
+        "checkpoint": {
+          "description": "Id of the checkpoint that is downloaded.",
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "resumed": {
+      "description": "Files of the checkpoint that are complete in the target directory and not fetched again.",
+      "type": "object",
+      "required": ["type", "files_done", "bytes_done"],
+      "properties": {
+        "type": { "const": "resumed" },
+        "files_done": { "$ref": "#/$defs/count" },
+        "bytes_done": { "$ref": "#/$defs/count" }
+      }
+    },
+    "file_started": {
+      "description": "A file transfer starts.",
+      "type": "object",
+      "required": ["type", "path", "size"],
+      "properties": {
+        "type": { "const": "file_started" },
+        "path": { "$ref": "#/$defs/path" },
+        "size": { "$ref": "#/$defs/count" }
+      }
+    },
+    "file_retrying": {
+      "description": "A file is requested again after a failure.",
+      "type": "object",
+      "required": ["type", "path", "attempt", "reason"],
+      "properties": {
+        "type": { "const": "file_retrying" },
+        "path": { "$ref": "#/$defs/path" },
+        "attempt": {
+          "description": "Number of the retry, starting at 1.",
+          "type": "integer",
+          "minimum": 1
+        },
+        "reason": {
+          "description": "Description of the failure.",
+          "type": "string"
+        }
+      }
+    },
+    "file_finished": {
+      "description": "A file has the manifest size and is renamed into place.",
+      "type": "object",
+      "required": ["type", "path", "size"],
+      "properties": {
+        "type": { "const": "file_finished" },
+        "path": { "$ref": "#/$defs/path" },
+        "size": { "$ref": "#/$defs/count" }
+      }
+    },
+    "rate_limited": {
+      "description": "Storage rate-limited a request. No request starts during the pause.",
+      "type": "object",
+      "required": ["type", "pause_ms"],
+      "properties": {
+        "type": { "const": "rate_limited" },
+        "pause_ms": { "$ref": "#/$defs/count" }
+      }
+    },
+    "manifest_refreshed": {
+      "description": "Storage rejected an expired URL, and the URLs were fetched again from the API.",
+      "type": "object",
+      "required": ["type"],
+      "properties": {
+        "type": { "const": "manifest_refreshed" }
+      }
+    },
+    "result": {
+      "description": "The completed download.",
+      "type": "object",
+      "required": ["type", "policy", "checkpoint", "path", "files", "bytes", "resumed_bytes"],
+      "properties": {
+        "type": { "const": "result" },
+        "policy": {
+          "description": "Id of the policy.",
+          "type": "string",
+          "minLength": 1
+        },
+        "checkpoint": {
+          "description": "Id of the downloaded checkpoint; the resolved id when the argument was `latest`.",
+          "type": "string",
+          "minLength": 1
+        },
+        "path": {
+          "description": "The target directory, an absolute path.",
+          "type": "string",
+          "minLength": 1
+        },
+        "files": {
+          "description": "Number of files in the checkpoint.",
+          "$ref": "#/$defs/count"
+        },
+        "bytes": {
+          "description": "Total size of the checkpoint's files in bytes.",
+          "$ref": "#/$defs/count"
+        },
+        "resumed_bytes": {
+          "description": "Bytes of the files that were complete in the target directory before the download and not fetched again.",
+          "$ref": "#/$defs/count"
+        }
+      }
+    }
+  }
+}

@@ -269,6 +269,28 @@ pub enum PoliciesCommand {
     /// Show a policy, what it was trained on and its checkpoints
     #[command(after_help = "Example:\n  imify policies show run-3c9e1a7f")]
     Show(PoliciesShowArgs),
+    #[command(
+        about = "Download a checkpoint of a policy into a directory",
+        long_about = "Download a checkpoint of a policy into a directory.\n\nDownloads the checkpoint directory with pretrained_model/ and training_state/, loadable with LeRobot's --policy.path. CHECKPOINT is an id from `imify policies show`, or `latest` for the checkpoint with the highest step. Works in every policy state. Downloads 4 files at a time. Running the same download again continues an interrupted one; the download refuses to start when the directory holds files that are not part of the checkpoint.\n\nKnown limitation: while a policy is training, its newest checkpoint may still be uploading. Storage lists only finished files, so such a download can succeed with files missing.",
+        after_help = "Examples:\n  \
+            imify policies download run-3c9e1a7f latest\n  \
+            imify policies download run-3c9e1a7f 020000 -o ./pick-cube-act"
+    )]
+    Download(PoliciesDownloadArgs),
+}
+
+/// The arguments of `imify policies download`.
+#[derive(Debug, Args)]
+pub struct PoliciesDownloadArgs {
+    /// The policy id
+    #[arg(value_parser = not_blank)]
+    pub policy: String,
+    /// The checkpoint id, or `latest` for the checkpoint with the highest step
+    #[arg(value_parser = not_blank)]
+    pub checkpoint: String,
+    /// Target directory [default: ./<POLICY>-<CHECKPOINT>]
+    #[arg(short, long, value_name = "DIR")]
+    pub output: Option<PathBuf>,
 }
 
 /// Filters of `imify policies list`.

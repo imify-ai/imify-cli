@@ -1,0 +1,11 @@
+---
+source: crates/imify-cli/tests/policies.rs
+expression: "format!(\"{}\\n{result}\\n\", lines.join(\"\\n\")).replace(&canonical, \"<dir>\")"
+---
+{"path":"pretrained_model/config.json","size":15,"type":"file_finished"}
+{"path":"pretrained_model/config.json","size":15,"type":"file_started"}
+{"path":"pretrained_model/model.safetensors","size":25,"type":"file_finished"}
+{"path":"pretrained_model/model.safetensors","size":25,"type":"file_started"}
+{"path":"training_state/optimizer_state.safetensors","size":15,"type":"file_finished"}
+{"path":"training_state/optimizer_state.safetensors","size":15,"type":"file_started"}
+{"bytes":55,"checkpoint":"020000","files":3,"path":"<dir>/run-3c9e1a7f-020000","policy":"run-3c9e1a7f","resumed_bytes":0,"type":"result"}

@@ -1,0 +1,9 @@
+---
+source: crates/imify-cli/src/tui/download/tests.rs
+expression: text
+---
+Downloading  run-3c9e1a7f 020000
+420.0 MiB / 1.2 GiB  34%  110.5 MiB/s
+2 files
+  pretrained_model…odel.safetensors  37%
+  training_state/o…tate.safetensors  27%

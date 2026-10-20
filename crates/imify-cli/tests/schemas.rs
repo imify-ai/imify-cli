@@ -60,6 +60,10 @@ const CASES: &[(&str, &[&str])] = &[
         ],
     ),
     ("policies-show.json", &["policies__policies_show_json.snap"]),
+    (
+        "policies-download.json",
+        &["policies__policies_download_json.snap"],
+    ),
     ("auth-whoami.json", &["cli__whoami_json.snap"]),
     (
         "doctor.json",

@@ -1,5 +1,7 @@
 //! Policy commands.
 
+pub mod download;
+
 use std::io::{self, Write};
 
 use imify::policies::{Checkpoint, Lineage, Policy, PolicyFilter, PolicyId, PolicyState};

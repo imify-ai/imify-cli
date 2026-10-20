@@ -1,0 +1,51 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH imify-policies-download 1 "" "imify" ""
+.SH NAME
+imify\-policies\-download \- Download a checkpoint of a policy into a directory
+.SH SYNOPSIS
+\fBimify policies download\fR [\fB\-\-json\fR] [\fB\-o\fR|\fB\-\-output\fR] [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-\-yes\fR] [\fB\-\-no\-color\fR] [\fB\-\-api\-url\fR] [\fB\-\-profile\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fIPOLICY\fR> <\fICHECKPOINT\fR> 
+.SH DESCRIPTION
+Download a checkpoint of a policy into a directory.
+.PP
+Downloads the checkpoint directory with pretrained_model/ and training_state/, loadable with LeRobot\*(Aqs \-\-policy.path. CHECKPOINT is an id from `imify policies show`, or `latest` for the checkpoint with the highest step. Works in every policy state. Downloads 4 files at a time. Running the same download again continues an interrupted one; the download refuses to start when the directory holds files that are not part of the checkpoint.
+.PP
+Known limitation: while a policy is training, its newest checkpoint may still be uploading. Storage lists only finished files, so such a download can succeed with files missing.
+.SH OPTIONS
+.TP
+\fB\-\-json\fR
+Write JSON instead of text [env: IMIFY_OUTPUT=json]
+.TP
+\fB\-o\fR, \fB\-\-output\fR \fI<DIR>\fR
+Target directory [default: ./<POLICY>\-<CHECKPOINT>]
+.TP
+\fB\-q\fR, \fB\-\-quiet\fR
+Write the result only
+.TP
+\fB\-v\fR, \fB\-\-verbose\fR
+Log more detail to stderr: \-v for debug, \-vv for trace
+.TP
+\fB\-\-yes\fR
+Confirm without prompting
+.TP
+\fB\-\-no\-color\fR
+Disable color [env: NO_COLOR]
+.TP
+\fB\-\-api\-url\fR \fI<URL>\fR
+API host [env: IMIFY_API_URL] [default: profile, then https://platform.imify.ai]
+.TP
+\fB\-\-profile\fR \fI<NAME>\fR
+Settings profile in the config file [env: IMIFY_PROFILE] [default: default]
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)
+.TP
+<\fIPOLICY\fR>
+The policy id
+.TP
+<\fICHECKPOINT\fR>
+The checkpoint id, or `latest` for the checkpoint with the highest step
+.SH EXTRA
+Examples:
+  imify policies download run\-3c9e1a7f latest
+  imify policies download run\-3c9e1a7f 020000 \-o ./pick\-cube\-act
