@@ -1,0 +1,8 @@
+---
+source: crates/imify-cli/tests/policies.rs
+expression: "text(&output.stdout).replace(&canonical, \"<dir>\")"
+---
+policy      run-3c9e1a7f
+checkpoint  020000
+path        <dir>/run-3c9e1a7f-020000
+files       3 (55 B)

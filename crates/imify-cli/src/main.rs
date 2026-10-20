@@ -91,6 +91,9 @@ fn run(
             PoliciesCommand::Show(args) => {
                 runtime()?.block_on(commands::policies::show(env, args, renderer))
             }
+            PoliciesCommand::Download(args) => runtime()?.block_on(
+                commands::policies::download::download(env, settings, args, renderer),
+            ),
         },
         Some(Command::Itself {
             command: SelfCommand::Update,

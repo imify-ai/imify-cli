@@ -43,6 +43,9 @@ crates/imify/src/
                     localhost redirect listener, ID token checks), CredentialStore trait,
                     StoredLogin with refresh, token revocation
   datasets/         dataset endpoints and models
+  download/         download engine for training checkpoints: manifest checks, target
+                    directory scan and writes relative to directory file descriptors,
+                    storage GET, manifest refresh, progress events
   ingest/           upload engine: Transport trait, planner, pacing, resume journal, progress events
   download/         download engine for training checkpoints: manifest checks, target
                     directory scan and writes relative to directory file descriptors,

@@ -688,9 +688,10 @@ Work with policies: the models trained on a dataset version
 Usage: imify policies [OPTIONS] <COMMAND>
 
 Commands:
-  list  List the policies visible to the access token's user
-  show  Show a policy, what it was trained on and its checkpoints
-  help  Print this message or the help of the given subcommand(s)
+  list      List the policies visible to the access token's user
+  show      Show a policy, what it was trained on and its checkpoints
+  download  Download a checkpoint of a policy into a directory
+  help      Print this message or the help of the given subcommand(s)
 
 Options:
       --json
@@ -802,6 +803,57 @@ Options:
 
 Example:
   imify policies show run-3c9e1a7f
+```
+
+## imify policies download
+
+```text
+Download a checkpoint of a policy into a directory.
+
+Downloads the checkpoint directory with pretrained_model/ and training_state/, loadable with LeRobot's --policy.path. CHECKPOINT is an id from `imify policies show`, or `latest` for the checkpoint with the highest step. Works in every policy state. Downloads 4 files at a time. Running the same download again continues an interrupted one; the download refuses to start when the directory holds files that are not part of the checkpoint.
+
+Known limitation: while a policy is training, its newest checkpoint may still be uploading. Storage lists only finished files, so such a download can succeed with files missing.
+
+Usage: imify policies download [OPTIONS] <POLICY> <CHECKPOINT>
+
+Arguments:
+  <POLICY>
+          The policy id
+
+  <CHECKPOINT>
+          The checkpoint id, or `latest` for the checkpoint with the highest step
+
+Options:
+      --json
+          Write JSON instead of text [env: IMIFY_OUTPUT=json]
+
+  -o, --output <DIR>
+          Target directory [default: ./<POLICY>-<CHECKPOINT>]
+
+  -q, --quiet
+          Write the result only
+
+  -v, --verbose...
+          Log more detail to stderr: -v for debug, -vv for trace
+
+      --yes
+          Confirm without prompting
+
+      --no-color
+          Disable color [env: NO_COLOR]
+
+      --api-url <URL>
+          API host [env: IMIFY_API_URL] [default: profile, then https://platform.imify.ai]
+
+      --profile <NAME>
+          Settings profile in the config file [env: IMIFY_PROFILE] [default: default]
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+Examples:
+  imify policies download run-3c9e1a7f latest
+  imify policies download run-3c9e1a7f 020000 -o ./pick-cube-act
 ```
 
 ## imify self
