@@ -53,7 +53,7 @@ use std::time::Duration;
 
 mod engine;
 mod journal;
-mod pace;
+pub(crate) mod pace;
 mod plan;
 mod session;
 mod transport;
