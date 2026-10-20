@@ -1,0 +1,8 @@
+---
+source: crates/imify-cli/tests/policies.rs
+expression: text(&output.stdout)
+---
+ID            TYPE        STATE            PROGRESS  DATASET                               CREATED
+run-3c9e1a7f  act         ready         20000/20000  0b6f3c2e-8d1a-4f7e-9a51-2c4d6e8f0a13  2026-10-01T09:30:00Z
+run-8b20d4e6  groot_n1.7  training       1200/30000  5e2d7a90-1c3b-4e6f-8a7d-9b0c1d2e3f45  2026-10-02T08:00:00Z
+run-5f61c0b2  pi0.5       provisioning      0/10000  0b6f3c2e-8d1a-4f7e-9a51-2c4d6e8f0a13  2026-10-03T07:15:00Z

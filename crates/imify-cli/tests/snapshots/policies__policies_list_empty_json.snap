@@ -1,0 +1,5 @@
+---
+source: crates/imify-cli/tests/policies.rs
+expression: text(&output.stdout)
+---
+[]

@@ -4,6 +4,7 @@ pub mod auth;
 pub mod config;
 pub mod datasets;
 pub mod doctor;
+pub mod policies;
 pub mod self_update;
 
 use url::Url;

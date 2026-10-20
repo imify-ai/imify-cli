@@ -95,6 +95,11 @@ Writes a report to stdout. Exits with the error code of the first failing check,
         #[command(subcommand)]
         command: DatasetsCommand,
     },
+    /// Work with policies: the models trained on a dataset version
+    Policies {
+        #[command(subcommand)]
+        command: PoliciesCommand,
+    },
     /// Manage this imify installation
     #[command(name = "self", after_help = "Example:\n  imify self update")]
     Itself {
@@ -251,6 +256,47 @@ pub struct UploadArgs {
     /// Discard the interrupted upload of PATH and start a new ingest session
     #[arg(long)]
     pub restart: bool,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum PoliciesCommand {
+    /// List the policies visible to the access token's user
+    #[command(after_help = "Examples:\n  \
+        imify policies list\n  \
+        imify policies list --state ready --json\n  \
+        imify policies list --dataset 0b6f3c2e-8d1a-4f7e-9a51-2c4d6e8f0a13")]
+    List(PoliciesListArgs),
+    /// Show a policy, what it was trained on and its checkpoints
+    #[command(after_help = "Example:\n  imify policies show run-3c9e1a7f")]
+    Show(PoliciesShowArgs),
+}
+
+/// Filters of `imify policies list`.
+#[derive(Debug, Default, Args)]
+pub struct PoliciesListArgs {
+    /// Keep policies in this state
+    #[arg(long)]
+    pub state: Option<StateArg>,
+    /// Keep policies trained on the dataset with this id
+    #[arg(long, value_name = "ID", value_parser = not_blank)]
+    pub dataset: Option<String>,
+}
+
+/// A policy state `imify policies list --state` accepts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum StateArg {
+    Queued,
+    Training,
+    Ready,
+    Failed,
+}
+
+/// The argument of `imify policies show`.
+#[derive(Debug, Args)]
+pub struct PoliciesShowArgs {
+    /// The policy id
+    #[arg(value_parser = not_blank)]
+    pub policy: String,
 }
 
 /// Accepts `value` unless it is empty or whitespace only.

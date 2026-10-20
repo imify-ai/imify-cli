@@ -1,0 +1,5 @@
+---
+source: crates/imify-cli/tests/policies.rs
+expression: text(&output.stdout)
+---
+[{"created_at":"2026-10-01T09:30:00Z","dataset_id":"0b6f3c2e-8d1a-4f7e-9a51-2c4d6e8f0a13","dataset_version_id":"ver-41d2","error":null,"finished_at":"2026-10-01T11:02:40Z","id":"run-3c9e1a7f","phase":"done","policy_type":"act","started_at":"2026-10-01T09:31:12Z","state":"ready","step":20000,"total_steps":20000},{"created_at":"2026-10-02T08:00:00Z","dataset_id":"5e2d7a90-1c3b-4e6f-8a7d-9b0c1d2e3f45","dataset_version_id":"ver-77a0","error":null,"finished_at":null,"id":"run-8b20d4e6","phase":"training","policy_type":"groot_n1.7","started_at":"2026-10-02T08:01:00Z","state":"training","step":1200,"total_steps":30000},{"created_at":"2026-10-03T07:15:00Z","dataset_id":"0b6f3c2e-8d1a-4f7e-9a51-2c4d6e8f0a13","dataset_version_id":"ver-41d2","error":null,"finished_at":null,"id":"run-5f61c0b2","phase":"waiting","policy_type":"pi0.5","started_at":null,"state":"provisioning","step":0,"total_steps":10000}]
