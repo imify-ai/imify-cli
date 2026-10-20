@@ -1,4 +1,4 @@
-//! Spacing of request starts shared by all upload workers.
+//! Spacing of request starts shared by the workers of an upload or a download.
 
 use std::sync::{Mutex, PoisonError};
 use std::time::Duration;
