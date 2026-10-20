@@ -35,12 +35,21 @@
 //! manifest file with another size, a symbolic link, or anything other than a regular
 //! file or directory. Files of the manifest that exist with the manifest size are not
 //! fetched again, so running the same download again completes an interrupted one.
-//! An existing `.part` file is removed and created anew when its file is fetched.
+//!
+//! # Resume
+//!
+//! A `.part` file left by an interrupted transfer is continued when it is a regular file
+//! with one link and fewer bytes than the manifest size. The request carries
+//! `Range: bytes=<n>-` for its `n` bytes. A 206 with `Content-Range: bytes
+//! <n>-<size - 1>/<size>` appends to it, and a 200 replaces its content. Another
+//! `Content-Range` or a 416 removes it, and the file is requested again from its first
+//! byte. Any other `.part` file is removed and created anew.
 //!
 //! # Failures
 //!
-//! A file is fetched again from its first byte after a network error, a server error or
-//! a rate limit, as the client's [`RetryPolicy`](crate::RetryPolicy) allows. When storage
+//! A file is requested again after a network error, a server error or a rate limit, as
+//! the client's [`RetryPolicy`](crate::RetryPolicy) allows, and continues from the bytes
+//! in its `.part` file as described under [Resume](#resume). When storage
 //! rejects a presigned URL with 403, the manifest is fetched again once and the file
 //! continues from its new URL. The first file that fails stops the download; files
 //! already renamed into place stay.
@@ -191,14 +200,16 @@ pub enum DownloadEvent {
         /// Size in bytes.
         size: u64,
     },
-    /// Part of a file was written to `<path>.part`.
+    /// Part of a file was written to `<path>.part`. When a request continues a `.part`
+    /// file, the first `FileProgress` of that request reports the bytes it already holds.
     FileProgress {
         /// Path relative to the target directory.
         path: String,
-        /// Bytes of the current request written so far.
+        /// Bytes in `<path>.part` so far, continued bytes included.
         bytes_received: u64,
     },
-    /// A file is fetched again from its first byte after a failure.
+    /// A file is requested again after a failure. The request continues the `.part` file
+    /// when storage answers the range request with 206.
     FileRetrying {
         /// Path relative to the target directory.
         path: String,

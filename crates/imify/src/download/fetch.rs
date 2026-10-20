@@ -3,6 +3,7 @@
 use std::path::PathBuf;
 
 use reqwest::StatusCode;
+use reqwest::header::{CONTENT_RANGE, RANGE};
 
 use super::manifest::{Entry, StorageUrl};
 use super::target::{PartFile, Target};
@@ -20,9 +21,14 @@ struct Truncated {
 }
 
 /// Fetches `url` into the `.part` file of `entry` below `target` and returns the file,
-/// which holds exactly the manifest size on success. The `.part` file is created only
-/// after the status and `Content-Length` are accepted. `progress` receives the bytes
-/// written so far after each write.
+/// which holds exactly the manifest size on success. `progress` receives the bytes in
+/// the file after each write, and first the bytes continued from an earlier transfer.
+///
+/// A `.part` file that [`Target::reusable_part`] accepts is continued with a `Range`
+/// request. A 206 with the matching `Content-Range` appends to it, a 200 replaces its
+/// content. Another `Content-Range` or a 416 removes it, and the file is requested
+/// again from its first byte. A new `.part` file is created only after the status and
+/// `Content-Length` are accepted.
 ///
 /// Storage statuses map as follows: 403 to [`DownloadError::UrlExpired`], 429 and 503 to
 /// [`Error::RateLimited`], other 5xx to [`Error::Server`], any other non-success status to
@@ -35,19 +41,44 @@ pub(crate) async fn fetch(
     progress: &(dyn Fn(u64) + Send + Sync),
 ) -> Result<PartFile, Error> {
     let (path, size) = (target.path_of(&entry.path), entry.size);
-    let mut response = http
-        .get(url.as_url().clone())
-        .send()
-        .await
-        .map_err(|error| network_error(error.without_url()))?;
+    let mut reused = target.reusable_part(&entry.path, size).await?;
+    let mut response = loop {
+        let offset = reused.as_ref().map_or(0, PartFile::len);
+        let response = send(http, url, offset).await?;
+        match response.status() {
+            StatusCode::PARTIAL_CONTENT | StatusCode::RANGE_NOT_SATISFIABLE
+                if offset > 0 && !continues(&response, offset, size) =>
+            {
+                if let Some(part) = reused.take() {
+                    part.discard().await?;
+                }
+            }
+            _ => break response,
+        }
+    };
     check_status(response.status(), response.headers(), &path)?;
+    let start = match &reused {
+        Some(part) if response.status() == StatusCode::PARTIAL_CONTENT => part.len(),
+        _ => 0,
+    };
     if let Some(announced) = response.content_length()
-        && announced != size
+        && start + announced != size
     {
-        return Err(size_mismatch(path, size, announced));
+        return Err(size_mismatch(path, size, start + announced));
     }
-    let mut part = target.create_part(&entry.path).await?;
-    let mut received: u64 = 0;
+    let mut part = match reused {
+        Some(mut part) => {
+            if start == 0 {
+                part.truncate().await?;
+            }
+            part
+        }
+        None => target.create_part(&entry.path).await?,
+    };
+    if start > 0 {
+        progress(start);
+    }
+    let mut received = start;
     while let Some(chunk) = response
         .chunk()
         .await
@@ -69,6 +100,31 @@ pub(crate) async fn fetch(
         });
     }
     Ok(part)
+}
+
+/// Sends the `GET`, with `Range: bytes=<offset>-` when `offset` is not 0.
+async fn send(
+    http: &reqwest::Client,
+    url: &StorageUrl,
+    offset: u64,
+) -> Result<reqwest::Response, Error> {
+    let mut request = http.get(url.as_url().clone());
+    if offset > 0 {
+        request = request.header(RANGE, format!("bytes={offset}-"));
+    }
+    request
+        .send()
+        .await
+        .map_err(|error| network_error(error.without_url()))
+}
+
+/// Returns `true` when `response` carries `Content-Range: bytes <offset>-<size - 1>/<size>`.
+fn continues(response: &reqwest::Response, offset: u64, size: u64) -> bool {
+    let expected = format!("bytes {offset}-{}/{size}", size - 1);
+    response
+        .headers()
+        .get(CONTENT_RANGE)
+        .is_some_and(|value| value.as_bytes() == expected.as_bytes())
 }
 
 fn check_status(

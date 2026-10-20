@@ -22,7 +22,7 @@ type EventHandler = Arc<dyn Fn(&DownloadEvent) + Send + Sync>;
 /// Downloads the files of a policy or a checkpoint into a directory.
 ///
 /// Dropping the future returned by [`Downloader::download`] stops every transfer. The
-/// `.part` files stay, and the next download into the same directory replaces them.
+/// `.part` files stay, and the next download into the same directory continues them.
 ///
 /// # Examples
 ///

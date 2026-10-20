@@ -62,7 +62,7 @@ let summary = Downloader::new(client)
 println!("{} files in {}", summary.files, summary.target.display());
 ```
 
-`download` fetches the manifest of the policy, or of a checkpoint with `DownloadSource::checkpoint`, and saves its files 4 at a time. Each file is written to `<path>.part`, checked against the manifest size, synced and renamed into place. Storage requests carry no `Authorization` header. The download refuses to start when a manifest path is unsafe, or when the target directory holds a symbolic link, a file not in the manifest or a manifest file with another size. Files that exist with the manifest size are skipped, so running the download again completes an interrupted one. When storage rejects an expired URL with 403, the manifest is fetched again once.
+`download` fetches the manifest of the policy, or of a checkpoint with `DownloadSource::checkpoint`, and saves its files 4 at a time. Each file is written to `<path>.part`, checked against the manifest size, synced and renamed into place. Storage requests carry no `Authorization` header. The download refuses to start when a manifest path is unsafe, or when the target directory holds a symbolic link, a file not in the manifest or a manifest file with another size. Files that exist with the manifest size are skipped, so running the download again completes an interrupted one. A partial `<path>.part` is continued with a `Range` request when storage answers with 206 and the matching `Content-Range`. When storage rejects an expired URL with 403, the manifest is fetched again once.
 
 ## Update a program installed by its installer
 

@@ -469,6 +469,10 @@ async fn a_transfer_truncated_on_every_attempt_fails_with_a_network_error() {
 
     assert!(matches!(error, Error::Network { .. }), "{error:?}");
     assert!(!target.path().join("model.bin").exists());
+    assert_eq!(
+        fs::read(target.path().join("model.bin.part")).unwrap(),
+        &WEIGHTS[..2048]
+    );
 }
 
 #[tokio::test]

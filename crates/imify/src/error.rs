@@ -266,8 +266,8 @@ pub enum DownloadError {
     SizeMismatch {
         /// Size in the manifest.
         expected: u64,
-        /// Size announced in `Content-Length`, or the bytes received when the body
-        /// exceeds the manifest size.
+        /// Size announced in `Content-Length`, plus the bytes continued from a `.part`
+        /// file, or the bytes received when the body exceeds the manifest size.
         received: u64,
     },
     /// Storage answered 403 again after the manifest was fetched again.

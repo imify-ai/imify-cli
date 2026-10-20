@@ -4,7 +4,7 @@
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
 use std::fs::File;
-use std::io;
+use std::io::{self, Seek, SeekFrom};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -12,7 +12,7 @@ use std::sync::Arc;
 use rustix::fd::OwnedFd;
 use rustix::fs::{AtFlags, Dir, FileType, Mode, OFlags};
 use rustix::io::Errno;
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 
 use super::manifest::Manifest;
 use crate::{DownloadError, Error};
@@ -153,18 +153,44 @@ impl Target {
         Ok(())
     }
 
+    /// Opens `<relative>.part` to continue it when it is a regular file with one link and
+    /// between 1 byte and `size - 1` bytes. Removes any other entry at that name and
+    /// returns `None`.
+    pub(crate) async fn reusable_part(
+        &self,
+        relative: &str,
+        size: u64,
+    ) -> Result<Option<PartFile>, Error> {
+        let target = self.clone();
+        let relative = relative.to_owned();
+        blocking(self.path_of(&relative), move || {
+            let slot = target.locate(&relative)?;
+            if let Some((file, len)) = slot.open_reusable(size)? {
+                return Ok(Some(PartFile::new(slot, file, len)));
+            }
+            slot.remove()?;
+            Ok(None)
+        })
+        .await
+    }
+
     /// Creates the parent directories of the manifest file `relative`, removes an existing
     /// `<relative>.part` and creates it as a new, empty file.
     pub(crate) async fn create_part(&self, relative: &str) -> Result<PartFile, Error> {
         let target = self.clone();
         let relative = relative.to_owned();
         blocking(self.path_of(&relative), move || {
-            target.create_part_blocking(&relative)
+            let slot = target.locate(&relative)?;
+            slot.remove()?;
+            let file = slot.create()?;
+            Ok(PartFile::new(slot, file, 0))
         })
         .await
     }
 
-    fn create_part_blocking(&self, relative: &str) -> Result<PartFile, Error> {
+    /// Creates the parent directories of the manifest file `relative` and opens the one
+    /// that holds it.
+    fn locate(&self, relative: &str) -> Result<Slot, Error> {
         let (directories, name) = relative.rsplit_once('/').unwrap_or(("", relative));
         let mut dir = rustix::fs::openat(&*self.dir, ".", DIRECTORY_FLAGS, Mode::empty())
             .map_err(|errno| io_error(self.root.clone(), errno.into()))?;
@@ -181,66 +207,137 @@ impl Target {
             dir = rustix::fs::openat(&dir, component, DIRECTORY_FLAGS, Mode::empty())
                 .map_err(|errno| open_error(walked.clone(), errno))?;
         }
-        let part_name = format!("{name}.part");
-        let part_path = self.root.join(format!("{relative}.part"));
-        // A new file, never an existing one: an existing `.part` may be a hard link to a
-        // file outside the target.
-        match rustix::fs::unlinkat(&dir, part_name.as_str(), AtFlags::empty()) {
-            Ok(()) | Err(Errno::NOENT) => {}
-            Err(errno) => return Err(io_error(part_path, errno.into())),
-        }
-        let flags =
-            OFlags::CREATE | OFlags::EXCL | OFlags::RDWR | OFlags::NOFOLLOW | OFlags::CLOEXEC;
-        let mode = Mode::RUSR | Mode::WUSR | Mode::RGRP | Mode::ROTH;
-        let file = File::from(
-            rustix::fs::openat(&dir, part_name.as_str(), flags, mode)
-                .map_err(|errno| open_error(part_path.clone(), errno))?,
-        );
-        Ok(PartFile {
+        Ok(Slot {
             dir,
             name: name.to_owned(),
-            part_name,
+            part_name: format!("{name}.part"),
             path: self.path_of(relative),
-            part_path,
-            file: tokio::fs::File::from_std(file),
+            part_path: self.root.join(format!("{relative}.part")),
         })
     }
 }
 
-/// The open `.part` file of one manifest file.
+/// Where the `.part` file of one manifest file lives: its open parent directory and names.
 #[derive(Debug)]
-pub(crate) struct PartFile {
+struct Slot {
     dir: OwnedFd,
     name: String,
     part_name: String,
     path: PathBuf,
     part_path: PathBuf,
+}
+
+impl Slot {
+    /// Opens the `.part` file without following a link, and returns it with its size when
+    /// it is a regular file with one link and between 1 and `size - 1` bytes.
+    fn open_reusable(&self, size: u64) -> Result<Option<(File, u64)>, Error> {
+        // `O_NONBLOCK` keeps the open of a FIFO from waiting for a reader.
+        let flags = OFlags::RDWR | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC;
+        let mut file =
+            match rustix::fs::openat(&self.dir, self.part_name.as_str(), flags, Mode::empty()) {
+                Ok(fd) => File::from(fd),
+                // Nothing to continue: no entry, a symbolic link or an entry that cannot be
+                // opened. The caller removes the entry and creates a new file.
+                Err(_) => return Ok(None),
+            };
+        let stat = rustix::fs::fstat(&file).map_err(|errno| self.io_error(errno.into()))?;
+        let len = u64::try_from(stat.st_size).unwrap_or_default();
+        let reusable = FileType::from_raw_mode(stat.st_mode) == FileType::RegularFile
+            && stat.st_nlink == 1
+            && len > 0
+            && len < size;
+        if !reusable {
+            return Ok(None);
+        }
+        file.seek(SeekFrom::End(0))
+            .map_err(|source| self.io_error(source))?;
+        Ok(Some((file, len)))
+    }
+
+    /// Removes the `.part` file, or a link at its name, when one exists.
+    fn remove(&self) -> Result<(), Error> {
+        match rustix::fs::unlinkat(&self.dir, self.part_name.as_str(), AtFlags::empty()) {
+            Ok(()) | Err(Errno::NOENT) => Ok(()),
+            Err(errno) => Err(self.io_error(errno.into())),
+        }
+    }
+
+    /// Creates the `.part` file. It fails when any entry exists at its name.
+    fn create(&self) -> Result<File, Error> {
+        let flags =
+            OFlags::CREATE | OFlags::EXCL | OFlags::RDWR | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+        let mode = Mode::RUSR | Mode::WUSR | Mode::RGRP | Mode::ROTH;
+        rustix::fs::openat(&self.dir, self.part_name.as_str(), flags, mode)
+            .map(File::from)
+            .map_err(|errno| open_error(self.part_path.clone(), errno))
+    }
+
+    fn io_error(&self, source: io::Error) -> Error {
+        io_error(self.part_path.clone(), source)
+    }
+}
+
+/// The open `.part` file of one manifest file, positioned at its end.
+#[derive(Debug)]
+pub(crate) struct PartFile {
+    slot: Slot,
     file: tokio::fs::File,
+    len: u64,
 }
 
 impl PartFile {
+    fn new(slot: Slot, file: File, len: u64) -> Self {
+        Self {
+            slot,
+            file: tokio::fs::File::from_std(file),
+            len,
+        }
+    }
+
+    /// The bytes in the file when it was opened.
+    pub(crate) fn len(&self) -> u64 {
+        self.len
+    }
+
+    /// Empties the file, so writing starts at its first byte.
+    pub(crate) async fn truncate(&mut self) -> Result<(), Error> {
+        let failed = |source: io::Error| self.slot.io_error(source);
+        self.file.set_len(0).await.map_err(failed)?;
+        self.file.seek(SeekFrom::Start(0)).await.map_err(failed)?;
+        self.len = 0;
+        Ok(())
+    }
+
+    /// Closes and removes the file.
+    pub(crate) async fn discard(self) -> Result<(), Error> {
+        let Self { slot, file, .. } = self;
+        drop(file);
+        blocking(slot.part_path.clone(), move || slot.remove()).await
+    }
+
     /// Appends `bytes`.
     pub(crate) async fn write(&mut self, bytes: &[u8]) -> Result<(), Error> {
         self.file
             .write_all(bytes)
             .await
-            .map_err(|source| io_error(self.part_path.clone(), source))
+            .map_err(|source| self.slot.io_error(source))
     }
 
     /// Syncs the file and then renames it to the manifest path.
     pub(crate) async fn finish(mut self) -> Result<(), Error> {
-        let failed = |source: io::Error| io_error(self.part_path.clone(), source);
+        let failed = |source: io::Error| self.slot.io_error(source);
         self.file.flush().await.map_err(failed)?;
         self.file.sync_all().await.map_err(failed)?;
-        let path = self.path.clone();
-        blocking(path.clone(), move || {
+        let Self { slot, file, .. } = self;
+        drop(file);
+        blocking(slot.path.clone(), move || {
             rustix::fs::renameat(
-                &self.dir,
-                self.part_name.as_str(),
-                &self.dir,
-                self.name.as_str(),
+                &slot.dir,
+                slot.part_name.as_str(),
+                &slot.dir,
+                slot.name.as_str(),
             )
-            .map_err(|errno| io_error(path, errno.into()))
+            .map_err(|errno| io_error(slot.path.clone(), errno.into()))
         })
         .await
     }

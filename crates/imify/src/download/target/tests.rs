@@ -6,7 +6,8 @@ use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use wiremock::{MockServer, ResponseTemplate};
+use wiremock::matchers::{header, header_exists, method, path};
+use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use crate::download::test_support::*;
 use crate::download::{DownloadEvent, Downloader};
@@ -150,6 +151,129 @@ async fn a_part_file_hard_linked_outside_the_target_leaves_the_outside_file_unch
         b"unchanged"
     );
     assert_eq!(fs::read(target.path().join("model.bin")).unwrap(), WEIGHTS);
+    assert!(!range_requested(&server, "/storage/model.bin").await);
+}
+
+/// Bytes `0, 1, 2, ...` modulo 251, so a misplaced range shows in the content.
+fn counting(len: usize) -> Vec<u8> {
+    (0..len)
+        .map(|index| u8::try_from(index % 251).unwrap())
+        .collect()
+}
+
+/// Returns `true` when any request to `path` carried a `Range` header.
+async fn range_requested(server: &MockServer, path: &str) -> bool {
+    requests_to(server, path)
+        .await
+        .iter()
+        .any(|request| request.headers.contains_key("range"))
+}
+
+/// A mock whose manifest lists `model.bin` with the bytes of `counting(4096)`.
+async fn counting_manifest() -> MockServer {
+    let server = MockServer::start().await;
+    mount_manifest(
+        &server,
+        &manifest_of(&server, &[("model.bin", &counting(4096))]),
+    )
+    .await;
+    server
+}
+
+#[tokio::test]
+async fn a_partial_part_file_is_continued_with_a_range_request() {
+    let server = counting_manifest().await;
+    let bytes = counting(4096);
+    Mock::given(method("GET"))
+        .and(path("/storage/model.bin"))
+        .and(header("range", "bytes=1000-"))
+        .respond_with(
+            ResponseTemplate::new(206)
+                .insert_header("content-range", "bytes 1000-4095/4096")
+                .set_body_bytes(&bytes[1000..]),
+        )
+        .mount(&server)
+        .await;
+    let target = tempfile::tempdir().unwrap();
+    write(target.path(), "model.bin.part", &bytes[..1000]);
+    let events = Events::default();
+
+    events
+        .attach(downloader(&server))
+        .download(&source(), target.path())
+        .await
+        .unwrap();
+
+    assert_eq!(fs::read(target.path().join("model.bin")).unwrap(), bytes);
+    let first_progress = events.all().into_iter().find_map(|event| match event {
+        DownloadEvent::FileProgress { bytes_received, .. } => Some(bytes_received),
+        _ => None,
+    });
+    assert_eq!(first_progress, Some(1000));
+}
+
+#[tokio::test]
+async fn a_full_response_to_a_range_request_restarts_the_file() {
+    let server = counting_manifest().await;
+    mount_file(&server, "model.bin", &counting(4096)).await;
+    let target = tempfile::tempdir().unwrap();
+    write(target.path(), "model.bin.part", &[0xff; 1000]);
+
+    download_into(&server, target.path()).await.unwrap();
+
+    assert!(range_requested(&server, "/storage/model.bin").await);
+    assert_eq!(
+        fs::read(target.path().join("model.bin")).unwrap(),
+        counting(4096)
+    );
+}
+
+#[tokio::test]
+async fn a_refused_range_discards_the_part_file_and_restarts_once() {
+    let refusals = [
+        ResponseTemplate::new(206)
+            .insert_header("content-range", "bytes 0-4095/4096")
+            .set_body_bytes(counting(4096)),
+        ResponseTemplate::new(416),
+    ];
+    for refusal in refusals {
+        let server = counting_manifest().await;
+        Mock::given(method("GET"))
+            .and(path("/storage/model.bin"))
+            .and(header_exists("range"))
+            .respond_with(refusal)
+            .mount(&server)
+            .await;
+        mount_file(&server, "model.bin", &counting(4096)).await;
+        let target = tempfile::tempdir().unwrap();
+        write(target.path(), "model.bin.part", &[0xff; 1000]);
+
+        download_into(&server, target.path()).await.unwrap();
+
+        let requests = requests_to(&server, "/storage/model.bin").await;
+        assert_eq!(requests.len(), 2);
+        assert!(!requests[1].headers.contains_key("range"));
+        assert_eq!(
+            fs::read(target.path().join("model.bin")).unwrap(),
+            counting(4096)
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_part_file_not_smaller_than_the_manifest_size_is_discarded() {
+    let server = counting_manifest().await;
+    mount_file(&server, "model.bin", &counting(4096)).await;
+    let target = tempfile::tempdir().unwrap();
+    write(target.path(), "model.bin.part", &[0xff; 5000]);
+
+    download_into(&server, target.path()).await.unwrap();
+
+    assert!(!range_requested(&server, "/storage/model.bin").await);
+    assert_eq!(
+        fs::read(target.path().join("model.bin")).unwrap(),
+        counting(4096)
+    );
 }
 
 #[tokio::test]
