@@ -6,7 +6,7 @@ Command-line client and Rust SDK for the [imify](https://imify.ai) platform: man
 imify auth login                                # sign in through the browser
 imify datasets validate ./pick-cube             # check a LeRobot v3 or v2.1 dataset offline
 imify datasets upload ./pick-cube --task "pick the cube"
-imify datasets ls
+imify datasets list
 imify doctor                                    # check the configuration, the API and the token
 ```
 
@@ -70,7 +70,7 @@ On macOS, use `shasum -a 256 --check` in place of `sha256sum --check`. `gh attes
 - `imify auth login`, `imify auth logout` and `imify auth whoami`: browser sign-in, with `--no-browser` for machines without one; the login is stored in the OS keychain or a user-only file. `IMIFY_TOKEN` for CI.
 - `imify datasets validate`: offline check of a LeRobot v3 or v2.1 dataset.
 - `imify datasets upload`: uploads a dataset into an ingest session; an interrupted upload continues where it stopped.
-- `imify datasets ls`: lists datasets, with filters and sorting.
+- `imify datasets list`: lists datasets, with filters and sorting.
 - `imify doctor`: checks the configuration, the API, the clock and the token.
 - `imify config`: stores the API URL.
 
@@ -100,7 +100,7 @@ A missing login fails with the error code `auth_required`, a rejected token with
 imify config set api-url https://api.example.com        # store the host in ~/.config/imify/config.toml
 imify auth login --api-url https://api.example.com      # or pass it to one command
 export IMIFY_API_URL=https://api.example.com            # or set it for the shell
-imify datasets ls --profile staging                     # or use the [profiles.staging] table of the config file
+imify datasets list --profile staging                     # or use the [profiles.staging] table of the config file
 ```
 
 Without configuration, `imify` uses `https://platform.imify.ai`. `--api-url` takes precedence over `IMIFY_API_URL`, which takes precedence over the config file. The URL must use `https`, except for `localhost`, `127.0.0.1` and `::1`. Each host keeps its own login.

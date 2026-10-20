@@ -74,8 +74,8 @@ fn run(
             ConfigCommand::Profiles => commands::config::profiles(env, renderer),
         },
         Some(Command::Datasets {
-            command: DatasetsCommand::Ls(args),
-        }) => runtime()?.block_on(commands::datasets::ls(env, args, renderer)),
+            command: DatasetsCommand::List(args),
+        }) => runtime()?.block_on(commands::datasets::list(env, args, renderer)),
         Some(Command::Datasets {
             command: DatasetsCommand::Validate(args),
         }) => commands::datasets::validate(args, renderer),

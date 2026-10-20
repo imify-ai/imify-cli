@@ -384,8 +384,8 @@ async fn api_with_datasets(status: u16, body: serde_json::Value) -> MockServer {
     server
 }
 
-fn datasets_ls(server: &MockServer, extra_args: &[&str]) -> Output {
-    let mut args = vec!["datasets", "ls"];
+fn datasets_list(server: &MockServer, extra_args: &[&str]) -> Output {
+    let mut args = vec!["datasets", "list"];
     args.extend_from_slice(extra_args);
     imify(
         &args,
@@ -394,50 +394,50 @@ fn datasets_ls(server: &MockServer, extra_args: &[&str]) -> Output {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn datasets_ls_prints_the_datasets_as_a_table() {
+async fn datasets_list_prints_the_datasets_as_a_table() {
     let server = api_with_datasets(200, datasets_body()).await;
 
-    let output = datasets_ls(&server, &[]);
+    let output = datasets_list(&server, &[]);
 
     assert!(output.status.success(), "{}", text(&output.stderr));
-    insta::assert_snapshot!("datasets_ls_human", text(&output.stdout));
+    insta::assert_snapshot!("datasets_list_human", text(&output.stdout));
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn datasets_ls_json_prints_every_field_as_an_array() {
+async fn datasets_list_json_prints_every_field_as_an_array() {
     let server = api_with_datasets(200, datasets_body()).await;
 
-    let output = datasets_ls(&server, &["--json"]);
+    let output = datasets_list(&server, &["--json"]);
 
     assert!(output.status.success(), "{}", text(&output.stderr));
-    insta::assert_snapshot!("datasets_ls_json", text(&output.stdout));
+    insta::assert_snapshot!("datasets_list_json", text(&output.stdout));
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn datasets_ls_without_datasets_prints_no_datasets() {
+async fn datasets_list_without_datasets_prints_no_datasets() {
     let server = api_with_datasets(200, json!([])).await;
 
-    let output = datasets_ls(&server, &[]);
+    let output = datasets_list(&server, &[]);
 
     assert!(output.status.success(), "{}", text(&output.stderr));
-    insta::assert_snapshot!("datasets_ls_empty_human", text(&output.stdout));
+    insta::assert_snapshot!("datasets_list_empty_human", text(&output.stdout));
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn datasets_ls_json_without_datasets_prints_an_empty_array() {
+async fn datasets_list_json_without_datasets_prints_an_empty_array() {
     let server = api_with_datasets(200, json!([])).await;
 
-    let output = datasets_ls(&server, &["--json"]);
+    let output = datasets_list(&server, &["--json"]);
 
     assert!(output.status.success(), "{}", text(&output.stderr));
-    insta::assert_snapshot!("datasets_ls_empty_json", text(&output.stdout));
+    insta::assert_snapshot!("datasets_list_empty_json", text(&output.stdout));
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn datasets_ls_json_filters_and_sorts_before_printing() {
+async fn datasets_list_json_filters_and_sorts_before_printing() {
     let server = api_with_datasets(200, datasets_body()).await;
 
-    let output = datasets_ls(
+    let output = datasets_list(
         &server,
         &["--json", "--format", "lerobot_v3", "--sort", "episodes"],
     );
@@ -452,11 +452,11 @@ async fn datasets_ls_json_filters_and_sorts_before_printing() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn datasets_ls_without_imify_token_fails_with_auth_required_and_sends_no_request() {
+async fn datasets_list_without_imify_token_fails_with_auth_required_and_sends_no_request() {
     let server = api_with_datasets(200, datasets_body()).await;
 
     let output = imify(
-        &["datasets", "ls", "--json"],
+        &["datasets", "list", "--json"],
         &[("IMIFY_API_URL", &server.uri())],
     );
 
@@ -467,10 +467,10 @@ async fn datasets_ls_without_imify_token_fails_with_auth_required_and_sends_no_r
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn datasets_ls_with_a_rejected_token_fails_with_auth_rejected() {
+async fn datasets_list_with_a_rejected_token_fails_with_auth_rejected() {
     let server = api_with_datasets(401, json!({"detail": "Invalid token"})).await;
 
-    let output = datasets_ls(&server, &["--json"]);
+    let output = datasets_list(&server, &["--json"]);
 
     assert_eq!(output.status.code(), Some(3));
     let envelope: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
@@ -478,10 +478,10 @@ async fn datasets_ls_with_a_rejected_token_fails_with_auth_rejected() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn datasets_ls_with_a_body_that_is_not_a_list_of_datasets_fails_with_internal() {
+async fn datasets_list_with_a_body_that_is_not_a_list_of_datasets_fails_with_internal() {
     let server = api_with_datasets(200, json!({"items": []})).await;
 
-    let output = datasets_ls(&server, &["--json"]);
+    let output = datasets_list(&server, &["--json"]);
 
     assert_eq!(output.status.code(), Some(1));
     let envelope: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
@@ -489,8 +489,8 @@ async fn datasets_ls_with_a_body_that_is_not_a_list_of_datasets_fails_with_inter
 }
 
 #[test]
-fn datasets_ls_with_an_unknown_sort_field_is_a_usage_error() {
-    let output = imify(&["datasets", "ls", "--json", "--sort", "size"], &[]);
+fn datasets_list_with_an_unknown_sort_field_is_a_usage_error() {
+    let output = imify(&["datasets", "list", "--json", "--sort", "size"], &[]);
 
     assert_eq!(output.status.code(), Some(2));
     let envelope: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
@@ -498,11 +498,11 @@ fn datasets_ls_with_an_unknown_sort_field_is_a_usage_error() {
 }
 
 #[test]
-fn datasets_ls_help_shows_examples() {
-    let output = imify(&["datasets", "ls", "--help"], &[]);
+fn datasets_list_help_shows_examples() {
+    let output = imify(&["datasets", "list", "--help"], &[]);
 
     assert!(output.status.success());
-    assert!(text(&output.stdout).contains("Examples:\n  imify datasets ls\n"));
+    assert!(text(&output.stdout).contains("Examples:\n  imify datasets list\n"));
 }
 
 /// Runs `imify datasets validate <path>` in the root of `dataset`, so output names no
@@ -2199,11 +2199,11 @@ fn datasets_validate_escapes_a_parquet_value() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn datasets_ls_escapes_a_server_dataset_name() {
+async fn datasets_list_escapes_a_server_dataset_name() {
     let body = json!([dataset_body(PICK_ID, HOSTILE, "lerobot_v3", "so100", 1, 1)]);
     let server = api_with_datasets(200, body).await;
 
-    let output = datasets_ls(&server, &[]);
+    let output = datasets_list(&server, &[]);
 
     assert_eq!(output.status.code(), Some(0), "{}", text(&output.stderr));
     assert_escaped(&text(&output.stdout));

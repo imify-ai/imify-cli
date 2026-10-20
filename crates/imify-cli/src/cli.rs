@@ -175,10 +175,10 @@ pub enum ConfigCommand {
 pub enum DatasetsCommand {
     /// List the datasets visible to the access token's user
     #[command(after_help = "Examples:\n  \
-        imify datasets ls\n  \
-        imify datasets ls --embodiment so100 --sort episodes --reverse\n  \
-        imify datasets ls --task cube --json")]
-    Ls(LsArgs),
+            imify datasets list\n  \
+            imify datasets list --embodiment so100 --sort episodes --reverse\n  \
+            imify datasets list --task cube --json")]
+    List(ListArgs),
     #[command(
         about = "Check a local LeRobot dataset before an upload",
         long_about = "Check a local LeRobot dataset before an upload.\n\nWrites the report to stdout and exits with 5 when it has an error. Needs no network access and no token.",
@@ -196,9 +196,9 @@ pub enum DatasetsCommand {
     Upload(UploadArgs),
 }
 
-/// Filters and order of `imify datasets ls`.
+/// Filters and order of `imify datasets list`.
 #[derive(Debug, Default, Args)]
-pub struct LsArgs {
+pub struct ListArgs {
     /// Keep datasets whose task contains TEXT, ignoring case
     #[arg(long, value_name = "TEXT")]
     pub task: Option<String>,
@@ -216,7 +216,7 @@ pub struct LsArgs {
     pub reverse: bool,
 }
 
-/// A field `imify datasets ls` sorts by.
+/// A field `imify datasets list` sorts by.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum SortField {
     Id,

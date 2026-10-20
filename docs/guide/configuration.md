@@ -27,7 +27,7 @@ Logins are stored per host. Switching to another host keeps the login of the pre
 
 ```console
 $ imify auth login --api-url https://staging.example.com
-$ imify datasets ls --api-url https://staging.example.com
+$ imify datasets list --api-url https://staging.example.com
 ```
 
 ## Profiles
@@ -36,7 +36,7 @@ $ imify datasets ls --api-url https://staging.example.com
 $ imify config set api-url https://staging.example.com --profile staging
 Set api-url to https://staging.example.com for profile staging in /home/ada/.config/imify/config.toml.
 $ imify auth login --profile staging
-$ IMIFY_PROFILE=staging imify datasets ls
+$ IMIFY_PROFILE=staging imify datasets list
 $ imify config profiles
 ACTIVE  NAME     API-URL
 *       default  https://platform.imify.ai
