@@ -8,6 +8,7 @@ imify datasets validate ./pick-cube             # check a LeRobot v3 or v2.1 dat
 imify datasets upload ./pick-cube --task "pick the cube"
 imify datasets list
 imify doctor                                    # check the configuration, the API and the token
+imify browse                                    # open the platform in the browser
 ```
 
 Every command accepts `--json` for machine-readable output on stdout and returns a [documented exit code](docs/dev/adr/0003-output-contract.md). Set `IMIFY_OUTPUT=json` to make it the default, for example in an agent's environment.
@@ -73,6 +74,7 @@ On macOS, use `shasum -a 256 --check` in place of `sha256sum --check`. `gh attes
 - `imify datasets list`: lists datasets, with filters and sorting.
 - `imify doctor`: checks the configuration, the API, the clock and the token.
 - `imify config`: stores the API URL.
+- `imify browse`: opens the platform in the browser.
 
 ## Authentication
 
