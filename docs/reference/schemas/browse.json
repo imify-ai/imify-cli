@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "imify browse result",
+  "description": "Written to stdout by `imify browse --json`: the URL of the platform and whether a browser was opened.",
+  "type": "object",
+  "required": ["url", "opened"],
+  "properties": {
+    "url": {
+      "description": "The API URL, without a trailing slash, such as `https://platform.imify.ai`.",
+      "type": "string",
+      "format": "uri",
+      "minLength": 1
+    },
+    "opened": {
+      "description": "`true` when the system browser was started with the URL, `false` with `--no-browser`.",
+      "type": "boolean"
+    }
+  }
+}

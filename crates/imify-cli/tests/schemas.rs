@@ -75,6 +75,13 @@ const CASES: &[(&str, &[&str])] = &[
         ],
     ),
     ("auth-login.json", &["login_json.snap"]),
+    (
+        "browse.json",
+        &[
+            "browse__browse_json.snap",
+            "browse__browse_no_browser_json.snap",
+        ],
+    ),
     ("config-get.json", &["config__get_default_json.snap"]),
     ("config-list.json", &["config__list_json.snap"]),
     (
