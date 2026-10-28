@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0](https://github.com/imify-ai/imify-cli/compare/v0.3.0...v0.4.0) - 2026-10-28
+
+### Added
+
+- *(cli)* imify browse ([#113](https://github.com/imify-ai/imify-cli/pull/113))
+
+### Other
+
+- bump jsonschema from 0.58.6 to 0.59.0 ([#111](https://github.com/imify-ai/imify-cli/pull/111))
+
 ## [0.3.0](https://github.com/imify-ai/imify-cli/compare/v0.2.0...v0.3.0) - 2026-10-20
 
 ### Added

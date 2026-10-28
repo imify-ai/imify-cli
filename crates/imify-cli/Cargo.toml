@@ -1,6 +1,6 @@
 [package]
 name = "imify-cli"
-version = "0.3.0"
+version = "0.4.0"
 description = "Command-line interface for the imify platform"
 readme = "../../README.md"
 keywords = ["imify", "robotics", "datasets", "lerobot", "cli"]
