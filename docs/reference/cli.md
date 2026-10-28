@@ -9,6 +9,7 @@ Usage: imify [OPTIONS] [COMMAND]
 
 Commands:
   doctor    Check the configuration, the API and the access token
+  browse    Open the platform in the web browser
   auth      Sign in, sign out and show the signed-in user
   config    Read and change the settings in the config file
   datasets  Work with datasets
@@ -82,6 +83,49 @@ Options:
 Examples:
   imify doctor --api-url https://api.example.com
   imify doctor --profile staging
+```
+
+## imify browse
+
+```text
+Open the platform in the web browser.
+
+Opens the API host with the system's default browser: https://platform.imify.ai, unless --api-url, IMIFY_API_URL, the config file or a profile selects another. Needs no token and sends no request.
+
+Usage: imify browse [OPTIONS]
+
+Options:
+      --json
+          Write JSON instead of text [env: IMIFY_OUTPUT=json]
+
+      --no-browser
+          Print the URL instead of opening a browser
+
+  -q, --quiet
+          Write the result only
+
+  -v, --verbose...
+          Log more detail to stderr: -v for debug, -vv for trace
+
+      --yes
+          Confirm without prompting
+
+      --no-color
+          Disable color [env: NO_COLOR]
+
+      --api-url <URL>
+          API host [env: IMIFY_API_URL] [default: profile, then https://platform.imify.ai]
+
+      --profile <NAME>
+          Settings profile in the config file [env: IMIFY_PROFILE] [default: default]
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+Examples:
+  imify browse
+  imify browse --no-browser
+  imify browse --profile staging
 ```
 
 ## imify auth

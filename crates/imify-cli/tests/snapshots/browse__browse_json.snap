@@ -1,0 +1,5 @@
+---
+source: crates/imify-cli/tests/browse.rs
+expression: text(&output.stdout)
+---
+{"opened":true,"url":"https://platform.imify.ai"}
