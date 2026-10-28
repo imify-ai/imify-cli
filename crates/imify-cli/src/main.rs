@@ -66,6 +66,7 @@ fn run(
             AuthCommand::Whoami => runtime()?.block_on(commands::auth::whoami(env, renderer)),
         },
         Some(Command::Doctor) => runtime()?.block_on(commands::doctor::doctor(env, renderer)),
+        Some(Command::Browse(args)) => commands::browse::browse(env, args, renderer),
         Some(Command::Config { command }) => match command {
             ConfigCommand::Get { key } => commands::config::get(env, *key, renderer),
             ConfigCommand::Set { key, value } => commands::config::set(env, *key, value, renderer),

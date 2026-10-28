@@ -1,6 +1,7 @@
 //! Command implementations and what they share: the API client and result output.
 
 pub mod auth;
+pub mod browse;
 pub mod config;
 pub mod datasets;
 pub mod doctor;

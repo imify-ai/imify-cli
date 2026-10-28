@@ -1,0 +1,44 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH imify-browse 1 "" "imify" ""
+.SH NAME
+imify\-browse \- Open the platform in the web browser
+.SH SYNOPSIS
+\fBimify browse\fR [\fB\-\-json\fR] [\fB\-\-no\-browser\fR] [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-\-yes\fR] [\fB\-\-no\-color\fR] [\fB\-\-api\-url\fR] [\fB\-\-profile\fR] [\fB\-h\fR|\fB\-\-help\fR] 
+.SH DESCRIPTION
+Open the platform in the web browser.
+.PP
+Opens the API host with the system\*(Aqs default browser: https://platform.imify.ai, unless \-\-api\-url, IMIFY_API_URL, the config file or a profile selects another. Needs no token and sends no request.
+.SH OPTIONS
+.TP
+\fB\-\-json\fR
+Write JSON instead of text [env: IMIFY_OUTPUT=json]
+.TP
+\fB\-\-no\-browser\fR
+Print the URL instead of opening a browser
+.TP
+\fB\-q\fR, \fB\-\-quiet\fR
+Write the result only
+.TP
+\fB\-v\fR, \fB\-\-verbose\fR
+Log more detail to stderr: \-v for debug, \-vv for trace
+.TP
+\fB\-\-yes\fR
+Confirm without prompting
+.TP
+\fB\-\-no\-color\fR
+Disable color [env: NO_COLOR]
+.TP
+\fB\-\-api\-url\fR \fI<URL>\fR
+API host [env: IMIFY_API_URL] [default: profile, then https://platform.imify.ai]
+.TP
+\fB\-\-profile\fR \fI<NAME>\fR
+Settings profile in the config file [env: IMIFY_PROFILE] [default: default]
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)
+.SH EXTRA
+Examples:
+  imify browse
+  imify browse \-\-no\-browser
+  imify browse \-\-profile staging

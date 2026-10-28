@@ -76,6 +76,17 @@ Writes a report to stdout. Exits with the error code of the first failing check,
   imify doctor --profile staging"
     )]
     Doctor,
+    #[command(
+        about = "Open the platform in the web browser",
+        long_about = "Open the platform in the web browser.
+
+Opens the API host with the system's default browser: https://platform.imify.ai, unless --api-url, IMIFY_API_URL, the config file or a profile selects another. Needs no token and sends no request.",
+        after_help = "Examples:
+  imify browse
+  imify browse --no-browser
+  imify browse --profile staging"
+    )]
+    Browse(BrowseArgs),
     /// Sign in, sign out and show the signed-in user
     #[command(after_help = "Examples:
   imify auth login
@@ -106,6 +117,14 @@ Writes a report to stdout. Exits with the error code of the first failing check,
         #[command(subcommand)]
         command: SelfCommand,
     },
+}
+
+/// The arguments of `imify browse`.
+#[derive(Debug, Default, Args)]
+pub struct BrowseArgs {
+    /// Print the URL instead of opening a browser
+    #[arg(long)]
+    pub no_browser: bool,
 }
 
 #[derive(Debug, Subcommand)]
