@@ -16,7 +16,8 @@ type Opener = dyn Fn() -> keyring_core::Result<Backend> + Send + Sync;
 /// A keychain backend, opened on first use.
 ///
 /// Opening the Secret Service blocks on D-Bus, so it happens on the thread of the first
-/// operation, which callers run outside the async runtime.
+/// operation, which callers run outside the async runtime. Dropping it blocks on D-Bus
+/// too, so [`Keychain`] drops an opened backend on a thread of its own.
 pub struct Keychain {
     open: Box<Opener>,
     opened: OnceLock<Result<Backend, String>>,
@@ -62,7 +63,9 @@ impl Keychain {
         Self::opened_by(|| Err(keyring_core::Error::NoDefaultStore))
     }
 
-    fn opened_by(open: impl Fn() -> keyring_core::Result<Backend> + Send + Sync + 'static) -> Self {
+    pub(super) fn opened_by(
+        open: impl Fn() -> keyring_core::Result<Backend> + Send + Sync + 'static,
+    ) -> Self {
         Self {
             open: Box::new(open),
             opened: OnceLock::new(),
@@ -78,6 +81,17 @@ impl Keychain {
         backend
             .build(SERVICE, account, None)
             .map_err(KeychainError::from)
+    }
+}
+
+/// The Secret Service backend runs its own `block_on` when it is dropped, which panics on a
+/// thread that drives the async runtime, such as at the end of a command. A thread of its
+/// own has no runtime.
+impl Drop for Keychain {
+    fn drop(&mut self) {
+        if let Some(opened) = self.opened.take() {
+            let _ = std::thread::spawn(move || drop(opened)).join();
+        }
     }
 }
 
