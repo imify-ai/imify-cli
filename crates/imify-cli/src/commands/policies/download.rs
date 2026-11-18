@@ -514,7 +514,13 @@ mod tests {
     fn checkpoints(ids: &[&str]) -> Vec<Checkpoint> {
         let listing: Vec<serde_json::Value> = ids
             .iter()
-            .map(|id| serde_json::json!({"id": id, "size": 1024, "last_modified": "2026-10-01T10:15:02Z"}))
+            .map(|id| {
+                serde_json::json!({
+                    "name": format!("trainingRuns/run-3c9e1a7f/checkpoints/{id}"),
+                    "sizeBytes": 1024,
+                    "updateTime": "2026-10-01T10:15:02Z"
+                })
+            })
             .collect();
         serde_json::from_value(serde_json::Value::Array(listing)).unwrap()
     }

@@ -11,11 +11,12 @@ use std::time::{Duration, Instant};
 
 use imify_test_support::{DatasetBuilder, Format};
 use serde_json::json;
-use wiremock::matchers::{method, path, path_regex};
-use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
+use wiremock::MockServer;
 
-const SESSIONS: &str = "/api/v1/ingest/sessions";
-const FILES: &str = "/api/v1/ingest/sessions/3f2c9a/files/";
+mod recordings;
+
+use recordings::{RECORDINGS, Stored, completed};
+
 /// Time a data file `PUT` takes to answer: longer than the test waits for the exit.
 const SLOW_ANSWER: Duration = Duration::from_secs(30);
 /// Time allowed from the start of the binary to the first data file transfer.
@@ -23,80 +24,29 @@ const START_LIMIT: Duration = Duration::from_secs(30);
 /// Time allowed from SIGINT to the exit of the binary.
 const EXIT_LIMIT: Duration = Duration::from_secs(10);
 
-/// Answers a file `PUT` with the stored path and size after `delay`.
-struct Store {
-    delay: Duration,
-}
-
-impl Respond for Store {
-    fn respond(&self, request: &Request) -> ResponseTemplate {
-        let stored = request.url.path().strip_prefix(FILES).unwrap_or_default();
-        ResponseTemplate::new(200)
-            .set_body_json(json!({ "path": stored, "size": request.body.len() }))
-            .set_delay(self.delay)
+/// Storage stores `meta/info.json` at once and answers every other file after
+/// [`SLOW_ANSWER`].
+fn slow_data_files(path: &str) -> Duration {
+    if path == "meta/info.json" {
+        Duration::ZERO
+    } else {
+        SLOW_ANSWER
     }
 }
 
-fn session_body(status: &str) -> serde_json::Value {
-    json!({
-        "id": "3f2c9a",
-        "name": "pick-cube",
-        "dataset_format": null,
-        "robot_type": null,
-        "fps": null,
-        "total_episodes": null,
-        "status": status,
-        "task_description": "Pick up the red cube",
-        "created_at": "2026-10-16T09:30:00Z"
-    })
-}
-
-/// An ingest API that stores `meta/info.json` at once and answers every other file after
-/// [`SLOW_ANSWER`]. It has no `complete` endpoint.
-async fn slow_ingest_api() -> MockServer {
+/// A recordings API whose storage is slow for data files, and the files it holds.
+async fn slow_ingest_api() -> (MockServer, Stored) {
     let server = MockServer::start().await;
-    Mock::given(method("POST"))
-        .and(path(SESSIONS))
-        .respond_with(ResponseTemplate::new(201).set_body_json(session_body("uploading")))
-        .mount(&server)
-        .await;
-    Mock::given(method("PUT"))
-        .and(path(format!("{FILES}meta/info.json")))
-        .respond_with(Store {
-            delay: Duration::ZERO,
-        })
-        .with_priority(1)
-        .mount(&server)
-        .await;
-    Mock::given(method("PUT"))
-        .and(path_regex(format!("^{FILES}")))
-        .respond_with(Store { delay: SLOW_ANSWER })
-        .mount(&server)
-        .await;
-    server
+    let stored = Stored::default();
+    recordings::mount_slow(&server, &stored, completed(), slow_data_files).await;
+    (server, stored)
 }
 
-/// Replaces the mocks of `server` with an ingest API that stores every file at once and
-/// completes the session, and clears the recorded requests.
-async fn make_fast(server: &MockServer) {
+/// Replaces the mocks of `server` with a recordings API that stores every file at once and
+/// completes the recording, and clears the recorded requests. Storage keeps `stored`.
+async fn make_fast(server: &MockServer, stored: &Stored) {
     server.reset().await;
-    Mock::given(method("POST"))
-        .and(path(SESSIONS))
-        .respond_with(ResponseTemplate::new(201).set_body_json(session_body("uploading")))
-        .mount(server)
-        .await;
-    Mock::given(method("PUT"))
-        .and(path_regex(format!("^{FILES}")))
-        .respond_with(Store {
-            delay: Duration::ZERO,
-        })
-        .mount(server)
-        .await;
-    Mock::given(method("POST"))
-        .and(path("/api/v1/ingest/sessions/3f2c9a/complete"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(session_body("ready")))
-        .mount(server)
-        .await;
+    recordings::mount(server, stored, completed()).await;
 }
 
 /// Kills the child process when dropped, so that a failed assertion leaves no process behind.
@@ -127,6 +77,12 @@ fn is_data_transfer(line: &str) -> bool {
         .is_ok_and(|event| event["type"] == "file_started" && event["path"] != "meta/info.json")
 }
 
+/// Whether `line` is the `file_finished` event of `meta/info.json`.
+fn is_info_finished(line: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(line)
+        .is_ok_and(|event| event["type"] == "file_finished" && event["path"] == "meta/info.json")
+}
+
 /// `imify datasets upload . --task "Pick up the red cube" --json` in `root` against `server`,
 /// with `HOME` set to `home`.
 fn upload_command(server: &MockServer, root: &Path, home: &Path) -> Command {
@@ -153,8 +109,8 @@ struct Interrupted {
     stderr: String,
 }
 
-/// Starts the upload, sends SIGINT once the transfer of a data file started and waits for the
-/// exit.
+/// Starts the upload, sends SIGINT once `meta/info.json` is uploaded and the transfer of a data
+/// file started, and waits for the exit.
 ///
 /// # Errors
 ///
@@ -181,9 +137,8 @@ fn interrupt_upload(mut command: Command) -> io::Result<Interrupted> {
 
     let deadline = Instant::now() + START_LIMIT;
     let mut written = Vec::new();
-    while !written
-        .last()
-        .is_some_and(|line: &String| is_data_transfer(line))
+    while !(written.iter().any(|line: &String| is_data_transfer(line))
+        && written.iter().any(|line: &String| is_info_finished(line)))
     {
         let left = deadline.saturating_duration_since(Instant::now());
         let line = lines.recv_timeout(left).map_err(|_| {
@@ -219,8 +174,8 @@ fn interrupt_upload(mut command: Command) -> io::Result<Interrupted> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn ctrl_c_during_an_upload_exits_with_130_and_leaves_the_session_open() {
-    let server = slow_ingest_api().await;
+async fn ctrl_c_during_an_upload_exits_with_130_and_leaves_the_recording_open() {
+    let (server, _) = slow_ingest_api().await;
     let parent = tempfile::tempdir().unwrap();
     let root = parent.path().join("pick-cube");
     DatasetBuilder::new(Format::V3_0).write_to(&root).unwrap();
@@ -250,14 +205,14 @@ async fn ctrl_c_during_an_upload_exits_with_130_and_leaves_the_session_open() {
     assert!(
         requests
             .iter()
-            .all(|request| !request.url.path().ends_with("/complete")),
+            .all(|request| !request.url.path().ends_with(":complete")),
         "complete was requested"
     );
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn running_an_interrupted_upload_again_completes_the_same_session() {
-    let server = slow_ingest_api().await;
+async fn running_an_interrupted_upload_again_completes_the_same_recording() {
+    let (server, stored) = slow_ingest_api().await;
     let parent = tempfile::tempdir().unwrap();
     let root = parent.path().join("pick-cube");
     let home = parent.path().join("home");
@@ -269,7 +224,7 @@ async fn running_an_interrupted_upload_again_completes_the_same_session() {
         "{}",
         interrupted.stderr
     );
-    make_fast(&server).await;
+    make_fast(&server, &stored).await;
 
     let output = upload_command(&server, &root, &home).output().unwrap();
 
@@ -292,9 +247,9 @@ async fn running_an_interrupted_upload_again_completes_the_same_session() {
     );
     let requests = server.received_requests().await.unwrap();
     let paths: Vec<&str> = requests.iter().map(|request| request.url.path()).collect();
-    assert!(!paths.contains(&SESSIONS), "{paths:?}");
+    assert!(!paths.contains(&RECORDINGS), "{paths:?}");
     assert!(
-        !paths.contains(&format!("{FILES}meta/info.json").as_str()),
+        !paths.contains(&format!("{}meta/info.json", recordings::STORAGE).as_str()),
         "{paths:?}"
     );
 }

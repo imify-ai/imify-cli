@@ -23,11 +23,11 @@ fn at(seconds: f64, step: UploadStep) -> UploadProgress {
     }
 }
 
-fn session_created(seconds: f64) -> UploadProgress {
+fn recording_created(seconds: f64) -> UploadProgress {
     at(
         seconds,
-        UploadStep::SessionCreated {
-            session: "3f2c9a".to_owned(),
+        UploadStep::RecordingCreated {
+            recording: "3f2c9a".to_owned(),
         },
     )
 }
@@ -104,7 +104,7 @@ fn uploading() -> UploadView {
     apply_all(
         &mut view,
         [
-            session_created(0.5),
+            recording_created(0.5),
             started(1.0, "meta/info.json", 2048),
             finished(1.2, "meta/info.json", 2048),
         ],
@@ -215,7 +215,7 @@ fn no_time_left_is_shown_while_the_rate_is_0() {
 
     apply_all(
         &mut view,
-        [session_created(0.5), started(1.0, DATA_0, 100 * MIB)],
+        [recording_created(0.5), started(1.0, DATA_0, 100 * MIB)],
     );
 
     assert!(!render_to_text(&view, 80).contains("left"));
@@ -227,7 +227,7 @@ fn rate_limited_shows_the_pause_until_the_next_event_after_the_pause_ends() {
     apply_all(
         &mut view,
         [
-            session_created(0.5),
+            recording_created(0.5),
             at(
                 1.0,
                 UploadStep::RateLimited {
@@ -265,8 +265,8 @@ fn more_files_in_flight_than_rows_show_the_first_rows_and_a_count_of_the_rest() 
 // Frames
 
 #[test]
-fn creating_session_frame() {
-    snapshot("upload_creating_session_80", &render_to_text(&view(), 80));
+fn preparing_frame() {
+    snapshot("upload_preparing_80", &render_to_text(&view(), 80));
 }
 
 #[test]
@@ -312,12 +312,12 @@ fn completing_frame_at_80_and_40_columns() {
 // Summaries
 
 #[test]
-fn summary_after_success_names_files_size_duration_and_session() {
+fn summary_after_success_names_files_size_duration_and_recording() {
     let mut view = view();
     apply_all(
         &mut view,
         [
-            session_created(0.5),
+            recording_created(0.5),
             started(1.0, DATA_0, TOTAL_BYTES),
             finished(70.0, DATA_0, TOTAL_BYTES),
             at(71.0, UploadStep::Completing),
@@ -329,12 +329,12 @@ fn summary_after_success_names_files_size_duration_and_session() {
 }
 
 #[test]
-fn summary_after_an_interrupt_says_the_session_stays_open() {
+fn summary_after_an_interrupt_says_the_recording_stays_open() {
     snapshot("upload_summary_interrupted", &text(&uploading().summary()));
 }
 
 #[test]
-fn summary_after_an_interrupt_before_the_session_exists_names_no_session() {
+fn summary_after_an_interrupt_before_the_recording_exists_names_no_recording() {
     assert_eq!(text(&view().summary()), "Interrupted after 0 of 8 files.");
 }
 
@@ -348,11 +348,11 @@ fn summary_after_a_failure_counts_the_finished_files() {
 
 // Resume
 
-fn session_resumed(seconds: f64, files_done: usize, bytes_done: u64) -> UploadProgress {
+fn recording_resumed(seconds: f64, files_done: usize, bytes_done: u64) -> UploadProgress {
     at(
         seconds,
-        UploadStep::SessionResumed {
-            session: "3f2c9a".to_owned(),
+        UploadStep::RecordingResumed {
+            recording: "3f2c9a".to_owned(),
             files_done,
             bytes_done,
         },
@@ -360,16 +360,16 @@ fn session_resumed(seconds: f64, files_done: usize, bytes_done: u64) -> UploadPr
 }
 
 #[test]
-fn resumed_session_counts_the_files_and_bytes_already_uploaded_as_done() {
+fn resumed_recording_counts_the_files_and_bytes_already_uploaded_as_done() {
     let mut view = view();
 
-    view.apply(session_resumed(0.5, 5, 600 * MIB));
+    view.apply(recording_resumed(0.5, 5, 600 * MIB));
 
     let frame = render_to_text(&view, 80);
     assert_eq!(view.bytes_done(), 600 * MIB);
     assert!(frame.contains("5/8 files"), "{frame}");
     assert!(
-        frame.starts_with("Uploading  pick-cube  session 3f2c9a"),
+        frame.starts_with("Uploading  pick-cube  recording 3f2c9a"),
         "{frame}"
     );
 }
@@ -381,7 +381,7 @@ fn bytes_already_uploaded_do_not_count_toward_the_rate() {
     apply_all(
         &mut view,
         [
-            session_resumed(0.0, 5, 600 * MIB),
+            recording_resumed(0.0, 5, 600 * MIB),
             started(1.0, DATA_0, 300 * MIB),
             sent(2.0, DATA_0, 20 * MIB),
         ],
@@ -397,7 +397,7 @@ fn resumed_frame_with_one_file_in_flight() {
     apply_all(
         &mut view,
         [
-            session_resumed(0.5, 5, 600 * MIB),
+            recording_resumed(0.5, 5, 600 * MIB),
             started(1.0, DATA_0, 300 * MIB),
             sent(3.0, DATA_0, 60 * MIB),
         ],
@@ -407,12 +407,12 @@ fn resumed_frame_with_one_file_in_flight() {
 }
 
 #[test]
-fn summary_after_a_resumed_upload_counts_the_files_of_the_whole_session() {
+fn summary_after_a_resumed_upload_counts_the_files_of_the_whole_recording() {
     let mut view = view();
     apply_all(
         &mut view,
         [
-            session_resumed(0.5, 7, TOTAL_BYTES - 300 * MIB),
+            recording_resumed(0.5, 7, TOTAL_BYTES - 300 * MIB),
             started(1.0, DATA_0, 300 * MIB),
             finished(10.0, DATA_0, 300 * MIB),
             at(10.5, UploadStep::Completing),
@@ -422,6 +422,6 @@ fn summary_after_a_resumed_upload_counts_the_files_of_the_whole_session() {
 
     assert_eq!(
         text(&view.summary()),
-        "Uploaded 8 files (1.4 GiB) in 11s to ingest session 3f2c9a."
+        "Uploaded 8 files (1.4 GiB) in 11s to recording 3f2c9a."
     );
 }

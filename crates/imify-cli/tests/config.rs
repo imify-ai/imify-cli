@@ -395,9 +395,9 @@ fn list_prints_every_key_with_value_and_source() {
 async fn commands_use_the_api_url_from_the_config_file() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
-        .and(path("/api/v1/me"))
+        .and(path("/api/v1/users/me"))
         .respond_with(ResponseTemplate::new(200).set_body_json(
-            json!({"subject": "user-1234", "name": "Ada Lovelace", "role": "admin"}),
+            json!({"name": "users/user-1234", "displayName": "Ada Lovelace", "role": "ADMIN"}),
         ))
         .expect(1)
         .mount(&server)
@@ -928,9 +928,9 @@ fn profiles_with_an_unknown_selected_profile_marks_none_active_and_warns() {
 async fn two_profiles_with_the_same_host_use_one_stored_login() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
-        .and(path("/api/v1/me"))
+        .and(path("/api/v1/users/me"))
         .respond_with(ResponseTemplate::new(200).set_body_json(
-            json!({"subject": "user-1234", "name": "Ada Lovelace", "role": "admin"}),
+            json!({"name": "users/user-1234", "displayName": "Ada Lovelace", "role": "ADMIN"}),
         ))
         .expect(2)
         .mount(&server)

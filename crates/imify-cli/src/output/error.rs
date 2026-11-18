@@ -184,13 +184,15 @@ impl From<imify::Error> for CliError {
                 Self::new(ErrorCode::AuthRequired, message).with_hint(AUTH_REQUIRED_HINT)
             }
             imify::Error::Auth {
-                status: Some(403), ..
-            } => Self::new(ErrorCode::PermissionDenied, message),
-            imify::Error::Auth {
                 status: Some(_), ..
             } => Self::new(ErrorCode::AuthRejected, message).with_hint(AUTH_REJECTED_HINT),
+            imify::Error::PermissionDenied { .. } => {
+                Self::new(ErrorCode::PermissionDenied, message)
+            }
             imify::Error::NotFound { .. } => Self::new(ErrorCode::NotFound, message),
-            imify::Error::Conflict { .. } => Self::new(ErrorCode::Conflict, message),
+            imify::Error::Conflict { .. } | imify::Error::FailedPrecondition { .. } => {
+                Self::new(ErrorCode::Conflict, message)
+            }
             imify::Error::RateLimited { retry_after } => {
                 let error = Self::new(ErrorCode::RateLimited, message);
                 match retry_after {
@@ -198,7 +200,9 @@ impl From<imify::Error> for CliError {
                     None => error,
                 }
             }
-            imify::Error::Server { .. } => Self::new(ErrorCode::Server, message),
+            imify::Error::Server { .. } | imify::Error::Upload { .. } => {
+                Self::new(ErrorCode::Server, message)
+            }
             imify::Error::Network { .. } => Self::new(ErrorCode::Network, message),
             imify::Error::Config { .. } => Self::new(ErrorCode::InvalidArgument, message),
             imify::Error::Login { reason, .. } => login_error(reason, message),
@@ -445,10 +449,10 @@ mod tests {
     }
 
     #[test]
-    fn auth_error_with_status_403_maps_to_permission_denied() {
-        let error = imify::Error::Auth {
-            status: Some(403),
-            message: "Not allowed".into(),
+    fn permission_denied_maps_to_permission_denied() {
+        let error = imify::Error::PermissionDenied {
+            message: "this network has no access to the API".into(),
+            reason: None,
         };
 
         assert_eq!(code_of(error), ErrorCode::PermissionDenied);
@@ -469,9 +473,9 @@ mod tests {
 
     #[test]
     fn permission_denied_has_no_hint() {
-        let error = CliError::from(imify::Error::Auth {
-            status: Some(403),
+        let error = CliError::from(imify::Error::PermissionDenied {
             message: "Not allowed".into(),
+            reason: Some("REQUEST_BLOCKED".into()),
         });
 
         assert_eq!(error.hint, None);
@@ -485,11 +489,22 @@ mod tests {
             }),
             code_of(imify::Error::Conflict {
                 message: "Dataset exists".into(),
+                reason: None,
+            }),
+            code_of(imify::Error::FailedPrecondition {
+                message: "1 file is not uploaded".into(),
+                reason: Some("FILES_NOT_UPLOADED".into()),
+                violations: Vec::new(),
             }),
             code_of(imify::Error::RateLimited { retry_after: None }),
             code_of(imify::Error::Server {
                 status: 503,
                 message: "Service Unavailable".into(),
+                retry_after: None,
+            }),
+            code_of(imify::Error::Upload {
+                path: "data/a".into(),
+                reason: imify::UploadError::UrlExpired,
             }),
             code_of(imify::Error::Network {
                 source: Box::new(std::io::Error::other("connection refused")),
@@ -501,7 +516,9 @@ mod tests {
             [
                 ErrorCode::NotFound,
                 ErrorCode::Conflict,
+                ErrorCode::Conflict,
                 ErrorCode::RateLimited,
+                ErrorCode::Server,
                 ErrorCode::Server,
                 ErrorCode::Network,
             ]
@@ -523,6 +540,7 @@ mod tests {
             code_of(imify::Error::Validation {
                 message: "invalid request".into(),
                 fields: Vec::new(),
+                reason: None,
             }),
             code_of(imify::Error::UnexpectedResponse {
                 status: 418,

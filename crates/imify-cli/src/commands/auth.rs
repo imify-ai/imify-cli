@@ -121,6 +121,16 @@ impl TokenSource for AuthSource {
             Self::Stored(source) => source.token(),
         }
     }
+
+    fn renew<'a>(
+        &'a self,
+        rejected: &'a Token,
+    ) -> Pin<Box<dyn Future<Output = Result<Option<Token>, imify::Error>> + Send + 'a>> {
+        match self {
+            Self::Env(source) => source.renew(rejected),
+            Self::Stored(source) => source.renew(rejected),
+        }
+    }
 }
 
 /// Resolves where the token for `host` comes from: `IMIFY_TOKEN` when it is set and not
@@ -177,15 +187,27 @@ impl Render for Whoami {
         serde_json::json!({
             "subject": self.0.subject,
             "name": self.0.name,
-            "role": self.0.role,
+            "role": role_value(&self.0),
         })
     }
 
     fn human(&self, w: &mut dyn Write) -> io::Result<()> {
         writeln!(w, "Name     {}", printable(&self.0.name))?;
         writeln!(w, "Subject  {}", printable(&self.0.subject))?;
-        writeln!(w, "Role     {}", printable(&self.0.role))
+        writeln!(w, "Role     {}", printable(&role_text(&self.0)))
     }
+}
+
+/// The role of `user` in JSON output: lowercase, such as `admin`, and `None` for a user in no
+/// role group.
+pub fn role_value(user: &User) -> Option<String> {
+    user.role.as_deref().map(str::to_lowercase)
+}
+
+/// The role of `user` in human output: lowercase, such as `admin`, and `no access` for a user
+/// in no role group.
+pub fn role_text(user: &User) -> String {
+    role_value(user).unwrap_or_else(|| "no access".to_owned())
 }
 
 /// What `imify auth login` uses besides the API and the identity provider.
@@ -547,7 +569,7 @@ impl Render for LoginResult {
             "host": self.host,
             "subject": self.user.subject,
             "name": self.user.name,
-            "role": self.user.role,
+            "role": role_value(&self.user),
             "storage": self.saved.storage(),
             "storage_fallback": matches!(self.saved, Saved::FileFallback { .. }),
         })
@@ -559,7 +581,7 @@ impl Render for LoginResult {
             "Logged in to {} as {} ({}).",
             self.host,
             printable(&self.user.name),
-            printable(&self.user.role)
+            printable(&role_text(&self.user))
         )?;
         match &self.saved {
             Saved::Keychain => writeln!(w, "Credentials stored in the keychain."),

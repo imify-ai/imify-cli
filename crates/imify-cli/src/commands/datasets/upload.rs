@@ -1,4 +1,4 @@
-//! `imify datasets upload`: validates a local dataset and uploads it into an ingest session.
+//! `imify datasets upload`: validates a local dataset and uploads it into a recording.
 
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -6,12 +6,12 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use imify::JournalError;
 use imify::ingest::{
-    NewSession, ResumePolicy, Session, SessionStatus, SkipReason, SkippedEntry, UploadEvent,
-    UploadPlan, Uploader,
+    NewRecording, Recording, ResumePolicy, SkipReason, SkippedEntry, UploadEvent, UploadPlan,
+    Uploader,
 };
 use imify::validate::Report;
+use imify::{JournalError, UploadError};
 use tokio::sync::mpsc::{self, UnboundedSender};
 
 use super::{
@@ -29,24 +29,28 @@ use crate::tui::upload::UploadView;
 use crate::tui::{self, Outcome, Progress, format};
 
 /// Width of the key column of the human result.
-const KEY_WIDTH: usize = 10;
+const KEY_WIDTH: usize = 12;
 
-/// `imify datasets upload <path> --task <text>`: validates the dataset, uploads it into an
-/// ingest session and writes the session.
+/// Most characters of the name of a recording: longer directory names are cut.
+const MAX_NAME_CHARS: usize = 128;
+
+/// `imify datasets upload <path> --task <text>`: validates the dataset, uploads it into a
+/// recording and writes the recording.
 ///
 /// Writes `validated` and `planned`, then the upload's progress, then the `result` event. With
 /// `--dry-run`, stops after `planned` and needs no client. Otherwise the upload keeps a journal
-/// in the [`journal_dir`] and continues the session of an interrupted upload of `<path>`;
-/// `--resume` requires such a session, `--restart` discards it.
+/// in the [`journal_dir`] and continues the recording of an interrupted upload of `<path>`;
+/// `--resume` requires such a recording, `--restart` discards it.
 ///
 /// # Errors
 ///
 /// Returns the error of building the client and of locating the journal directory before the
-/// dataset is read. Returns `invalid_argument` when `<path>` is not a readable directory or a
-/// file changes during the upload, `dataset_invalid` when the report has an error or the API
-/// rejects the dataset, `not_found` for `--resume` without an interrupted upload, `conflict`
-/// when the journal belongs to another upload or is corrupt, `interrupted` on Ctrl-C, and the
-/// mapped API error otherwise.
+/// dataset is read. Returns `invalid_argument` when `<path>` is not a readable directory, a
+/// recording option is outside the limits of the API or a file changes during the upload,
+/// `dataset_invalid` when the report has an error or the API rejects the dataset, `not_found`
+/// for `--resume` without an interrupted upload, `conflict` when the journal belongs to another
+/// upload, is corrupt or outdated, or a file changed since the recording knows it,
+/// `interrupted` on Ctrl-C, and the mapped API error otherwise.
 pub async fn upload(
     env: &Environment,
     settings: &Settings,
@@ -66,7 +70,8 @@ pub async fn upload(
             (api.origin, api.lookup),
         ))
     };
-    let name = session_name(&args.path)?;
+    let name = recording_name(&args.path)?;
+    let new_recording = new_recording(&name, args)?;
     let report = imify::validate::validate_dataset(&args.path).map_err(dataset_root_error)?;
     write_event(renderer, &Validated(&report))?;
     if let Some(error) = invalid_report_error(&report, &args.path) {
@@ -80,11 +85,10 @@ pub async fn upload(
         write_event(renderer, &Planned(&plan))?;
     }
     let mut result = UploadResult {
-        name: &name,
-        task: &args.task,
+        settings: &new_recording,
         files: plan.files().len(),
         bytes: plan.total_bytes(),
-        session: None,
+        recording: None,
         resumed: false,
     };
     let Some((target, (origin, lookup))) = target else {
@@ -106,14 +110,37 @@ pub async fn upload(
     if planned_after_open(settings.live_view, links_skipped, live.is_some()) {
         write_event(renderer, &Planned(&plan))?;
     }
-    let new_session = NewSession::new(name.as_str()).task_description(args.task.as_str());
-    let sent = match send(target, live, &plan, &new_session, renderer).await {
+    let sent = match send(target, live, &plan, &new_recording, renderer).await {
         Ok(sent) => sent,
         Err(error) => return Err(origin.adjust(error, lookup).await),
     };
-    result.session = Some(&sent.session);
+    result.recording = Some(&sent.recording);
     result.resumed = sent.resumed;
     write_event(renderer, &result)
+}
+
+/// The settings of the new recording: named `name`, with the task and the recording options
+/// of `args`.
+///
+/// # Errors
+///
+/// Returns `invalid_argument` when a value is outside the limits of the API.
+fn new_recording(name: &str, args: &UploadArgs) -> Result<NewRecording, CliError> {
+    let mut recording = NewRecording::new(name).task(args.task.as_str());
+    recording.robot.clone_from(&args.robot);
+    recording.operator.clone_from(&args.operator);
+    recording.site.clone_from(&args.site);
+    recording.start_time.clone_from(&args.start_time);
+    recording.labels = args.labels.iter().cloned().collect();
+    recording.check().map_err(|error| match error {
+        imify::Error::Validation { message, .. } => CliError::new(
+            ErrorCode::InvalidArgument,
+            format!("Invalid recording option: {message}."),
+        )
+        .with_hint("Run `imify datasets upload --help`."),
+        other => other.into(),
+    })?;
+    Ok(recording)
 }
 
 /// Where an upload goes: the API client, and the journal that lets it continue an interrupted
@@ -124,8 +151,8 @@ struct Target {
     policy: ResumePolicy,
 }
 
-/// The policy for the journal: `--resume` requires a journaled session, `--restart` discards
-/// it, and without either a journaled session is continued when one exists.
+/// The policy for the journal: `--resume` requires a journaled recording, `--restart` discards
+/// it, and without either a journaled recording is continued when one exists.
 fn resume_policy(resume: bool, restart: bool) -> ResumePolicy {
     match (resume, restart) {
         (true, _) => ResumePolicy::Required,
@@ -134,29 +161,36 @@ fn resume_policy(resume: bool, restart: bool) -> ResumePolicy {
     }
 }
 
-/// The completed session of an upload and whether the upload continued a journaled session.
+/// The completed recording of an upload and whether the upload continued a journaled
+/// recording.
 struct Sent {
-    session: Session,
+    recording: Recording,
     resumed: bool,
 }
 
-/// The session name: the final component of the canonicalized `path`.
+/// The recording name: the final component of the canonicalized `path`, cut to its first 128
+/// characters.
 ///
 /// # Errors
 ///
 /// Returns `invalid_argument` when `path` cannot be resolved or has no final component.
-fn session_name(path: &Path) -> Result<String, CliError> {
+fn recording_name(path: &Path) -> Result<String, CliError> {
     let resolved = path
         .canonicalize()
         .map_err(|source| unreadable_root(path, &source))?;
     resolved
         .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
+        .map(|name| {
+            name.to_string_lossy()
+                .chars()
+                .take(MAX_NAME_CHARS)
+                .collect()
+        })
         .ok_or_else(|| {
             CliError::new(
                 ErrorCode::InvalidArgument,
                 format!(
-                    "{} has no directory name to name the ingest session after.",
+                    "{} has no directory name to name the recording after.",
                     resolved.display()
                 ),
             )
@@ -164,13 +198,13 @@ fn session_name(path: &Path) -> Result<String, CliError> {
         })
 }
 
-/// Uploads `plan` into a new or a journaled session and reports the progress in `live`, or as
-/// event lines without it.
+/// Uploads `plan` into a new or a journaled recording and reports the progress in `live`, or
+/// as event lines without it.
 async fn send(
     target: Target,
     live: Option<LiveView<StderrBackend, UploadView>>,
     plan: &UploadPlan,
-    new_session: &NewSession,
+    new_recording: &NewRecording,
     renderer: &mut dyn Renderer,
 ) -> Result<Sent, CliError> {
     let start = Instant::now();
@@ -182,13 +216,13 @@ async fn send(
     let uploader = Uploader::new(target.client)
         .journal(target.journal_dir, target.policy)
         .on_event(move |event| {
-            if matches!(event, UploadEvent::SessionResumed { .. }) {
+            if matches!(event, UploadEvent::RecordingResumed { .. }) {
                 resumed_flag.store(true, Ordering::Relaxed);
             }
             forward(event);
         });
     let operation = async {
-        let result = uploader.upload(plan, new_session).await;
+        let result = uploader.upload(plan, new_recording).await;
         if live_in_use {
             let step = if result.is_ok() {
                 UploadStep::Finished
@@ -209,8 +243,8 @@ async fn send(
     .await
     .map_err(|error| progress_error(&error))?
     {
-        Outcome::Finished(result) => result.map_err(upload_error).map(|session| Sent {
-            session,
+        Outcome::Finished(result) => result.map_err(upload_error).map(|recording| Sent {
+            recording,
             resumed: resumed.load(Ordering::Relaxed),
         }),
         Outcome::Interrupted => Err(CliError::interrupted()),
@@ -245,8 +279,12 @@ fn send_progress(events: &UnboundedSender<UploadProgress>, start: Instant, step:
     });
 }
 
+/// The reason of a `409` for a file announced before with another size or SHA-256.
+const FILE_CONFLICT: &str = "FILE_CONFLICT";
+
 /// Maps an upload error: [`imify::Error::Validation`] becomes `dataset_invalid` with the
-/// API's message, [`imify::Error::Io`] becomes `invalid_argument` naming the file, and
+/// API's message, [`imify::Error::Io`] becomes `invalid_argument` naming the file, a file that
+/// changed since the recording knows it becomes `conflict` with the hint to restart, and
 /// [`imify::Error::Journal`] is mapped by [`journal_error`].
 fn upload_error(error: imify::Error) -> CliError {
     match error {
@@ -254,6 +292,18 @@ fn upload_error(error: imify::Error) -> CliError {
         imify::Error::Validation { message, .. } => {
             CliError::new(ErrorCode::DatasetInvalid, message)
         }
+        imify::Error::Conflict {
+            message,
+            reason: Some(reason),
+        } if reason == FILE_CONFLICT => changed_file_error(&message),
+        imify::Error::Upload {
+            path,
+            reason: UploadError::ChecksumMismatch,
+        } => changed_file_error(&format!("{path} changed since the upload started")),
+        imify::Error::Upload { path, reason } => CliError::new(
+            ErrorCode::Server,
+            format!("Storage refused {}: {reason}.", printable(&path)),
+        ),
         imify::Error::Io { path, source } => CliError::new(
             ErrorCode::InvalidArgument,
             format!(
@@ -266,8 +316,21 @@ fn upload_error(error: imify::Error) -> CliError {
     }
 }
 
-/// The hint for a journal that cannot be continued.
+/// The hint for a journal or a recording that cannot be continued.
 const RESTART_HINT: &str = "Run again with `--restart`.";
+
+/// The error for a local file that changed after the recording learned its size and SHA-256:
+/// the recording cannot take the new content.
+fn changed_file_error(message: &str) -> CliError {
+    CliError::new(
+        ErrorCode::Conflict,
+        format!(
+            "A dataset file changed during the upload: {}. The recording keeps the content it was announced with.",
+            printable(message)
+        ),
+    )
+    .with_hint(RESTART_HINT)
+}
 
 /// Maps an unusable journal: missing for `--resume` becomes `not_found`, mismatched or corrupt
 /// becomes `conflict` with the hint to restart, and an I/O failure becomes `internal`.
@@ -291,6 +354,11 @@ fn journal_error(path: &Path, reason: JournalError) -> CliError {
                 "The upload journal {} is corrupt: {detail}.",
                 path.display()
             ),
+        )
+        .with_hint(RESTART_HINT),
+        JournalError::Outdated(_) => CliError::new(
+            ErrorCode::Conflict,
+            "An older version of imify started the interrupted upload of this dataset directory. It cannot be continued.",
         )
         .with_hint(RESTART_HINT),
         other => CliError::new(
@@ -402,25 +470,49 @@ fn skipped_links(plan: &UploadPlan) -> impl Iterator<Item = &SkippedEntry> {
         .filter(|entry| entry.reason() == SkipReason::SymbolicLink)
 }
 
-/// The `result` event: the ingest session, or with `--dry-run` only what would be uploaded.
+/// The `result` event: the recording, or with `--dry-run` only what would be uploaded.
 struct UploadResult<'a> {
-    name: &'a str,
-    task: &'a str,
+    /// The settings sent to create the recording.
+    settings: &'a NewRecording,
     files: usize,
     bytes: u64,
     /// `None` for a dry run.
-    session: Option<&'a Session>,
-    /// Whether the upload continued a journaled session.
+    recording: Option<&'a Recording>,
+    /// Whether the upload continued a journaled recording.
     resumed: bool,
 }
 
-fn status_text(status: &SessionStatus) -> &str {
-    match status {
-        SessionStatus::Uploading => "uploading",
-        SessionStatus::Ready => "ready",
-        SessionStatus::Other(value) => value,
-        _ => "unknown",
+impl UploadResult<'_> {
+    /// The recording options: as sent with `--dry-run`, as the API reports them otherwise.
+    /// An empty value is `None`.
+    fn options(&self) -> RecordingOptions {
+        let non_empty = |value: &str| (!value.is_empty()).then(|| value.to_owned());
+        match self.recording {
+            Some(recording) => RecordingOptions {
+                robot: non_empty(&recording.robot),
+                operator: non_empty(&recording.operator),
+                site: non_empty(&recording.site),
+                start_time: recording.start_time.clone(),
+                labels: recording.labels.clone().into_iter().collect(),
+            },
+            None => RecordingOptions {
+                robot: self.settings.robot.clone(),
+                operator: self.settings.operator.clone(),
+                site: self.settings.site.clone(),
+                start_time: self.settings.start_time.clone(),
+                labels: self.settings.labels.clone().into_iter().collect(),
+            },
+        }
     }
+}
+
+/// The robot, operator, site, start time and labels of a recording.
+struct RecordingOptions {
+    robot: Option<String>,
+    operator: Option<String>,
+    site: Option<String>,
+    start_time: Option<String>,
+    labels: Vec<(String, String)>,
 }
 
 impl Render for UploadResult<'_> {
@@ -429,21 +521,33 @@ impl Render for UploadResult<'_> {
     }
 
     fn json(&self) -> serde_json::Value {
+        let options = self.options();
+        let labels: serde_json::Map<String, serde_json::Value> = options
+            .labels
+            .into_iter()
+            .map(|(key, value)| (key, value.into()))
+            .collect();
         let mut result = serde_json::json!({
-            "dry_run": self.session.is_none(),
-            "name": self.name,
-            "task": self.task,
+            "dry_run": self.recording.is_none(),
+            "name": self.settings.display_name,
+            "task": self.settings.task,
+            "robot": options.robot,
+            "operator": options.operator,
+            "site": options.site,
+            "start_time": options.start_time,
+            "labels": labels,
             "files": self.files,
             "bytes": self.bytes,
         });
-        if let (Some(session), Some(fields)) = (self.session, result.as_object_mut()) {
+        if let (Some(recording), Some(fields)) = (self.recording, result.as_object_mut()) {
             fields.extend([
-                ("session_id".to_owned(), session.id.as_str().into()),
-                ("format".to_owned(), session.dataset_format.clone().into()),
-                ("robot_type".to_owned(), session.robot_type.clone().into()),
-                ("fps".to_owned(), session.fps.into()),
-                ("episodes".to_owned(), session.total_episodes.into()),
-                ("status".to_owned(), status_text(&session.status).into()),
+                ("session_id".to_owned(), recording.id.as_str().into()),
+                ("dataset_id".to_owned(), recording.dataset_id.clone().into()),
+                ("format".to_owned(), recording.format.clone().into()),
+                ("robot_type".to_owned(), recording.robot_type.clone().into()),
+                ("fps".to_owned(), recording.fps.into()),
+                ("episodes".to_owned(), recording.episode_count.into()),
+                ("status".to_owned(), recording.state.as_str().into()),
                 ("resumed".to_owned(), self.resumed.into()),
             ]);
         }
@@ -452,22 +556,39 @@ impl Render for UploadResult<'_> {
 
     fn human(&self, w: &mut dyn Write) -> io::Result<()> {
         let mut rows: Vec<(&str, String)> = Vec::new();
-        if let Some(session) = self.session {
-            rows.push(("session", session.id.to_string()));
+        if let Some(recording) = self.recording {
+            rows.push(("recording", recording.id.to_string()));
         }
-        rows.push(("name", self.name.to_owned()));
-        rows.push(("task", self.task.to_owned()));
-        if let Some(session) = self.session {
+        rows.push(("name", self.settings.display_name.clone()));
+        rows.push(("task", self.settings.task.clone()));
+        let options = self.options();
+        rows.extend(
+            [
+                ("robot", options.robot),
+                ("operator", options.operator),
+                ("site", options.site),
+                ("start time", options.start_time),
+            ]
+            .into_iter()
+            .filter_map(|(key, value)| Some((key, value?))),
+        );
+        if !options.labels.is_empty() {
+            let labels: Vec<String> = options
+                .labels
+                .iter()
+                .map(|(key, value)| format!("{key}={value}"))
+                .collect();
+            rows.push(("labels", labels.join(", ")));
+        }
+        if let Some(recording) = self.recording {
             let or_dash = |value: Option<String>| value.unwrap_or_else(|| "-".to_owned());
             rows.extend([
-                ("format", or_dash(session.dataset_format.clone())),
-                ("robot", or_dash(session.robot_type.clone())),
-                ("fps", or_dash(session.fps.map(|fps| fps.to_string()))),
-                (
-                    "episodes",
-                    or_dash(session.total_episodes.map(|n| n.to_string())),
-                ),
-                ("status", status_text(&session.status).to_owned()),
+                ("dataset", or_dash(recording.dataset_id.clone())),
+                ("format", or_dash(recording.format.clone())),
+                ("robot type", or_dash(recording.robot_type.clone())),
+                ("fps", or_dash(recording.fps.map(|fps| fps.to_string()))),
+                ("episodes", recording.episode_count.to_string()),
+                ("status", recording.state.as_str().to_owned()),
             ]);
         }
         rows.push((
@@ -492,13 +613,13 @@ pub struct UploadProgress {
 /// What happened during an upload.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UploadStep {
-    SessionCreated {
-        session: String,
+    RecordingCreated {
+        recording: String,
     },
-    /// The upload continues a journaled session; `files_done` files of `bytes_done` bytes are
-    /// not sent again.
-    SessionResumed {
-        session: String,
+    /// The upload continues a journaled recording; `files_done` files of `bytes_done` bytes
+    /// are in storage and not sent again.
+    RecordingResumed {
+        recording: String,
         files_done: usize,
         bytes_done: u64,
     },
@@ -525,7 +646,7 @@ pub enum UploadStep {
         pause: Duration,
     },
     Completing,
-    /// The session is complete. Sent to the live view only.
+    /// The recording is complete. Sent to the live view only.
     Finished,
     /// The upload failed. Sent to the live view only.
     Failed,
@@ -535,15 +656,15 @@ impl UploadStep {
     /// The step for an SDK event, or `None` for an event this CLI version does not know.
     pub fn from_event(event: &UploadEvent) -> Option<Self> {
         let step = match event {
-            UploadEvent::SessionCreated { session } => Self::SessionCreated {
-                session: session.to_string(),
+            UploadEvent::RecordingCreated { recording } => Self::RecordingCreated {
+                recording: recording.to_string(),
             },
-            UploadEvent::SessionResumed {
-                session,
+            UploadEvent::RecordingResumed {
+                recording,
                 files_done,
                 bytes_done,
-            } => Self::SessionResumed {
-                session: session.to_string(),
+            } => Self::RecordingResumed {
+                recording: recording.to_string(),
                 files_done: *files_done,
                 bytes_done: *bytes_done,
             },
@@ -579,8 +700,8 @@ impl UploadStep {
 impl Render for UploadProgress {
     fn kind(&self) -> &'static str {
         match self.step {
-            UploadStep::SessionCreated { .. } => "session_created",
-            UploadStep::SessionResumed { .. } => "session_resumed",
+            UploadStep::RecordingCreated { .. } => "session_created",
+            UploadStep::RecordingResumed { .. } => "session_resumed",
             UploadStep::FileStarted { .. } => "file_started",
             UploadStep::FileProgress { .. } => "file_progress",
             UploadStep::FileRetrying { .. } => "file_retrying",
@@ -594,13 +715,15 @@ impl Render for UploadProgress {
 
     fn json(&self) -> serde_json::Value {
         match &self.step {
-            UploadStep::SessionCreated { session } => serde_json::json!({ "session_id": session }),
-            UploadStep::SessionResumed {
-                session,
+            UploadStep::RecordingCreated { recording } => {
+                serde_json::json!({ "session_id": recording })
+            }
+            UploadStep::RecordingResumed {
+                recording,
                 files_done,
                 bytes_done,
             } => serde_json::json!({
-                "session_id": session,
+                "session_id": recording,
                 "files_done": files_done,
                 "bytes_done": bytes_done,
             }),
@@ -626,17 +749,17 @@ impl Render for UploadProgress {
 
     fn human(&self, w: &mut dyn Write) -> io::Result<()> {
         match &self.step {
-            UploadStep::SessionCreated { session } => {
-                writeln!(w, "Created ingest session {}.", printable(session))
+            UploadStep::RecordingCreated { recording } => {
+                writeln!(w, "Created recording {}.", printable(recording))
             }
-            UploadStep::SessionResumed {
-                session,
+            UploadStep::RecordingResumed {
+                recording,
                 files_done,
                 bytes_done,
             } => writeln!(
                 w,
-                "Resumed ingest session {}: {files_done} files ({}) already uploaded.",
-                printable(session),
+                "Resumed recording {}: {files_done} files ({}) already uploaded.",
+                printable(recording),
                 format::bytes(*bytes_done)
             ),
             UploadStep::FileStarted { path, size } => {
@@ -671,7 +794,7 @@ impl Render for UploadProgress {
                 "Rate limited: no request starts for {}.",
                 format::duration(*pause)
             ),
-            UploadStep::Completing => writeln!(w, "Completing the ingest session."),
+            UploadStep::Completing => writeln!(w, "Completing the recording."),
             UploadStep::Finished | UploadStep::Failed => Ok(()),
         }
     }
@@ -692,31 +815,31 @@ mod tests {
     }
 
     #[test]
-    fn session_name_is_the_final_component_of_the_canonicalized_path() {
+    fn recording_name_is_the_final_component_of_the_canonicalized_path() {
         let (_parent, root) = dataset_dir();
 
         let names = [
-            session_name(&root).unwrap(),
-            session_name(&root.join("")).unwrap(),
-            session_name(&root.join(".")).unwrap(),
-            session_name(&root.join("meta/..")).unwrap(),
+            recording_name(&root).unwrap(),
+            recording_name(&root.join("")).unwrap(),
+            recording_name(&root.join(".")).unwrap(),
+            recording_name(&root.join("meta/..")).unwrap(),
         ];
 
         assert_eq!(names, ["pick-cube"; 4]);
     }
 
     #[test]
-    fn session_name_of_a_path_without_a_final_component_is_an_invalid_argument() {
-        let error = session_name(Path::new("/")).unwrap_err();
+    fn recording_name_of_a_path_without_a_final_component_is_an_invalid_argument() {
+        let error = recording_name(Path::new("/")).unwrap_err();
 
         assert_eq!(error.code, ErrorCode::InvalidArgument);
     }
 
     #[test]
-    fn session_name_of_a_missing_directory_is_an_invalid_argument() {
+    fn recording_name_of_a_missing_directory_is_an_invalid_argument() {
         let (_parent, root) = dataset_dir();
 
-        let error = session_name(&root.join("missing")).unwrap_err();
+        let error = recording_name(&root.join("missing")).unwrap_err();
 
         assert_eq!(error.code, ErrorCode::InvalidArgument);
     }
@@ -726,6 +849,7 @@ mod tests {
         let error = upload_error(imify::Error::Validation {
             message: "Unsupported codebase_version v1.6".into(),
             fields: Vec::new(),
+            reason: Some("INVALID_DATASET".into()),
         });
 
         assert_eq!(
@@ -843,8 +967,8 @@ mod tests {
     fn session_resumed() -> UploadProgress {
         UploadProgress {
             at: Duration::ZERO,
-            step: UploadStep::from_event(&UploadEvent::SessionResumed {
-                session: imify::ingest::SessionId::new("3f2c9a"),
+            step: UploadStep::from_event(&UploadEvent::RecordingResumed {
+                recording: imify::ingest::RecordingId::new("3f2c9a"),
                 files_done: 3,
                 bytes_done: 2048,
             })
@@ -866,14 +990,14 @@ mod tests {
     }
 
     #[test]
-    fn session_resumed_line_names_the_session_and_what_is_already_done() {
+    fn session_resumed_line_names_the_recording_and_what_is_already_done() {
         let mut line = Vec::new();
 
         session_resumed().human(&mut line).unwrap();
 
         assert_eq!(
             String::from_utf8(line).unwrap(),
-            "Resumed ingest session 3f2c9a: 3 files (2.0 KiB) already uploaded.\n"
+            "Resumed recording 3f2c9a: 3 files (2.0 KiB) already uploaded.\n"
         );
     }
 

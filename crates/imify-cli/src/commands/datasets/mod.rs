@@ -273,15 +273,15 @@ mod tests {
     fn dataset(id: &str, task: &str, embodiment: &str, episodes: u64) -> Dataset {
         serde_json::from_value(serde_json::json!({
             "id": id,
-            "task_description": task,
-            "dataset_format": "lerobot_v3",
-            "embodiment_label": embodiment,
+            "task": task,
+            "format": "v3",
+            "embodiment": embodiment,
             "embodiment_fingerprint": format!("fp-{embodiment}"),
             "cameras": ["top"],
             "action_dim": 6,
             "created_at": "2026-10-01T09:30:00Z",
-            "episode_count": episodes,
-            "accepted_count": episodes,
+            "episodes": episodes,
+            "accepted": episodes,
         }))
         .unwrap()
     }
