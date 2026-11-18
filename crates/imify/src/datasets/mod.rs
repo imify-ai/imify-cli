@@ -1,11 +1,17 @@
 //! Dataset endpoints and models.
 
-use reqwest::Method;
+use std::collections::HashMap;
 
+use serde::Deserialize;
+
+use crate::resource::{self, last_segment};
 use crate::{Client, Error};
 
-/// A dataset: the episodes recorded for one task on one embodiment. Unknown response
-/// fields are ignored.
+/// A dataset: the episodes recorded for one task on one embodiment, with the label,
+/// cameras and action dimensions of the embodiment. Unknown response fields are ignored.
+///
+/// `Deserialize` reads the field names of this struct, such as a copy a caller stored;
+/// [`Datasets::list`] reads the API's names.
 ///
 /// # Examples
 ///
@@ -16,34 +22,85 @@ use crate::{Client, Error};
 /// }
 /// # Ok(()) }
 /// ```
-#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[non_exhaustive]
 pub struct Dataset {
-    /// Identifier assigned by the API, a UUID string.
+    /// The dataset ID: the `{d}` of the resource name `datasets/{d}`.
     pub id: String,
-    /// Task description the episodes were recorded for.
-    #[serde(rename = "task_description")]
+    /// Task the episodes were recorded for.
     pub task: String,
-    /// Dataset format, such as `lerobot_v3`.
-    #[serde(rename = "dataset_format")]
+    /// Dataset format, such as `v3` or `v2.1`.
     pub format: String,
-    /// Display label of the robot embodiment, such as `so100`.
-    #[serde(rename = "embodiment_label")]
+    /// Display label of the robot embodiment, such as `so100`. Empty when the API lists
+    /// no embodiment of the dataset.
     pub embodiment: String,
-    /// Fingerprint that identifies the embodiment.
+    /// Fingerprint that identifies the embodiment: the `{e}` of `embodiments/{e}`.
     pub embodiment_fingerprint: String,
-    /// Camera names recorded in the episodes.
+    /// Camera names of the embodiment.
     pub cameras: Vec<String>,
-    /// Number of action dimensions.
+    /// Number of action dimensions of the embodiment.
     pub action_dim: u32,
-    /// Creation time as sent by the API, an ISO 8601 date-time.
+    /// Creation time as sent by the API, an RFC 3339 date-time.
     pub created_at: String,
-    /// Number of episodes in the dataset.
-    #[serde(rename = "episode_count")]
+    /// Number of episodes in the dataset, in any state.
     pub episodes: u64,
-    /// Number of episodes that passed quality control.
-    #[serde(rename = "accepted_count")]
+    /// Number of episodes in state `ACCEPTED`.
     pub accepted: u64,
+}
+
+/// A dataset as `GET /api/v1/datasets` sends it.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WireDataset {
+    name: String,
+    #[serde(default)]
+    task: String,
+    #[serde(default)]
+    format: String,
+    #[serde(default)]
+    embodiment: String,
+    #[serde(default)]
+    create_time: String,
+    #[serde(default)]
+    episode_counts: HashMap<String, u64>,
+}
+
+/// An embodiment as `GET /api/v1/embodiments` sends it.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WireEmbodiment {
+    name: String,
+    #[serde(default)]
+    display_name: String,
+    #[serde(default)]
+    cameras: Vec<String>,
+    #[serde(default)]
+    action_dim: u32,
+}
+
+/// The episode state whose count is [`Dataset::accepted`].
+const ACCEPTED: &str = "ACCEPTED";
+
+impl WireDataset {
+    /// The dataset with the label, cameras and action dimensions of its embodiment from
+    /// `embodiments`, keyed by resource name.
+    fn joined(self, embodiments: &HashMap<String, WireEmbodiment>) -> Dataset {
+        let embodiment = embodiments.get(&self.embodiment);
+        Dataset {
+            id: last_segment(&self.name).to_owned(),
+            task: self.task,
+            format: self.format,
+            embodiment: embodiment
+                .map(|e| e.display_name.clone())
+                .unwrap_or_default(),
+            embodiment_fingerprint: last_segment(&self.embodiment).to_owned(),
+            cameras: embodiment.map(|e| e.cameras.clone()).unwrap_or_default(),
+            action_dim: embodiment.map_or(0, |e| e.action_dim),
+            created_at: self.create_time,
+            episodes: self.episode_counts.values().sum(),
+            accepted: self.episode_counts.get(ACCEPTED).copied().unwrap_or(0),
+        }
+    }
 }
 
 /// Dataset endpoints. Created by [`Client::datasets`].
@@ -62,14 +119,16 @@ pub struct Datasets<'a> {
 }
 
 impl Datasets<'_> {
-    /// Returns every dataset visible to the authenticated user (`GET /api/v1/datasets`),
-    /// in the order the API returns them.
+    /// Returns every dataset visible to the authenticated user, in the order the API
+    /// returns them. Reads every page of `GET /api/v1/datasets` and of
+    /// `GET /api/v1/embodiments`, and takes the label, cameras and action dimensions of
+    /// each dataset from its embodiment.
     ///
     /// # Errors
     ///
     /// Returns [`Error::Auth`] when the token source produces no token or the API rejects
-    /// the token. Returns [`Error::UnexpectedResponse`] when the body is not a list of
-    /// datasets. Returns the other [`Error`] variants as for every request.
+    /// the token. Returns [`Error::UnexpectedResponse`] when a page is not a list of
+    /// datasets or embodiments. Returns the other [`Error`] variants as for every request.
     ///
     /// # Examples
     ///
@@ -87,9 +146,21 @@ impl Datasets<'_> {
     /// # Ok(()) }
     /// ```
     pub async fn list(&self) -> Result<Vec<Dataset>, Error> {
-        self.client
-            .execute(Method::GET, "/api/v1/datasets", None)
-            .await
+        let datasets_url = resource::url(self.client, ["datasets"])?;
+        let embodiments_url = resource::url(self.client, ["embodiments"])?;
+        let (datasets, embodiments) = futures_util::future::try_join(
+            resource::list_all::<WireDataset>(self.client, &datasets_url, "datasets"),
+            resource::list_all::<WireEmbodiment>(self.client, &embodiments_url, "embodiments"),
+        )
+        .await?;
+        let embodiments: HashMap<String, WireEmbodiment> = embodiments
+            .into_iter()
+            .map(|embodiment| (embodiment.name.clone(), embodiment))
+            .collect();
+        Ok(datasets
+            .into_iter()
+            .map(|dataset| dataset.joined(&embodiments))
+            .collect())
     }
 }
 

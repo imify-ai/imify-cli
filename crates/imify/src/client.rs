@@ -8,7 +8,7 @@ use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderValue, LOCATION};
 use reqwest::{Method, StatusCode, Url, redirect};
 use serde::de::DeserializeOwned;
 
-use crate::auth::TokenSource;
+use crate::auth::{Token, TokenSource};
 use crate::error::{ConnectFailed, from_response};
 use crate::retry::{self, RetryMode, RetryPolicy};
 use crate::{Error, VERSION};
@@ -84,18 +84,6 @@ impl Client {
         }
     }
 
-    /// Sends a request with an optional JSON body and decodes the JSON response as `T`,
-    /// retrying per the client's retry policy.
-    pub(crate) async fn execute<T: DeserializeOwned>(
-        &self,
-        method: Method,
-        path: &str,
-        body: Option<&serde_json::Value>,
-    ) -> Result<T, Error> {
-        let mode = RetryMode::from(&method);
-        self.execute_at(mode, method, self.url(path)?, body).await
-    }
-
     /// Sends a request to `url` with an optional JSON body and decodes the JSON response
     /// as `T`, retrying failures that `mode` allows.
     pub(crate) async fn execute_at<T: DeserializeOwned>(
@@ -105,19 +93,29 @@ impl Client {
         url: Url,
         body: Option<&serde_json::Value>,
     ) -> Result<T, Error> {
-        self.retry(
-            mode,
-            |_, _, _| {},
-            || {
-                self.send(
-                    Authorize::Yes,
-                    method.clone(),
-                    url.clone(),
-                    body,
-                    &decode_json,
-                )
-            },
-        )
+        self.execute_reporting(mode, method, url, body, |_, _, _| {})
+            .await
+    }
+
+    /// Like [`Client::execute_at`], and passes each retry to `on_retry` with its number
+    /// (starting at 1), the error and the delay before it.
+    pub(crate) async fn execute_reporting<T: DeserializeOwned>(
+        &self,
+        mode: RetryMode,
+        method: Method,
+        url: Url,
+        body: Option<&serde_json::Value>,
+        on_retry: impl FnMut(u32, &Error, Duration),
+    ) -> Result<T, Error> {
+        self.retry(mode, on_retry, || {
+            self.send(
+                Authorize::Yes,
+                method.clone(),
+                url.clone(),
+                body,
+                &decode_json,
+            )
+        })
         .await
     }
 
@@ -239,11 +237,9 @@ impl Client {
         self.read_timeout
     }
 
-    /// Returns `true` when `url` has the scheme, host and port of the base URL.
-    pub(crate) fn is_same_origin(&self, url: &Url) -> bool {
-        url.origin() == self.base_url.origin()
-    }
-
+    /// Sends a request and turns the response into `T` with `decode`. With
+    /// [`Authorize::Yes`], a 401 asks the token source once for a new token and repeats the
+    /// request with it.
     async fn send<T, D>(
         &self,
         authorize: Authorize,
@@ -255,34 +251,47 @@ impl Client {
     where
         D: Fn(StatusCode, &HeaderMap, &[u8]) -> Result<T, Error>,
     {
-        let mut request = self.http.request(method, url);
-        if authorize == Authorize::Yes
-            && let Some(authorization) = self.authorization().await?
-        {
-            request = request.header(AUTHORIZATION, authorization);
+        let mut token = match authorize {
+            Authorize::Yes => self.token().await?,
+            Authorize::No => None,
+        };
+        let mut renewed = false;
+        loop {
+            let mut request = self.http.request(method.clone(), url.clone());
+            if let Some(token) = &token {
+                request = request.header(AUTHORIZATION, bearer(token)?);
+            }
+            if let Some(body) = body {
+                request = request.json(body);
+            }
+            let response = request.send().await.map_err(network_error)?;
+            if response.status() == StatusCode::UNAUTHORIZED
+                && !renewed
+                && let Some(fresh) = self.renew(token.as_ref()).await?
+            {
+                token = Some(fresh);
+                renewed = true;
+                continue;
+            }
+            return decode_with(response, BodySize::Large, decode).await;
         }
-        if let Some(body) = body {
-            request = request.json(body);
-        }
-        let response = request.send().await.map_err(network_error)?;
-        decode_with(response, BodySize::Large, decode).await
     }
 
-    /// The `Authorization` header value from the token source, `None` without one.
-    pub(crate) async fn authorization(&self) -> Result<Option<HeaderValue>, Error> {
-        let Some(source) = &self.token_source else {
-            return Ok(None);
-        };
-        let token = source.token().await?;
-        let mut value =
-            HeaderValue::try_from(format!("Bearer {}", token.secret())).map_err(|_| {
-                Error::Auth {
-                    status: None,
-                    message: "token contains characters not allowed in an HTTP header".to_owned(),
-                }
-            })?;
-        value.set_sensitive(true);
-        Ok(Some(value))
+    /// The token from the token source, `None` without one.
+    async fn token(&self) -> Result<Option<Token>, Error> {
+        match &self.token_source {
+            Some(source) => source.token().await.map(Some),
+            None => Ok(None),
+        }
+    }
+
+    /// A new token after the API rejected `rejected`, `None` when the token source has
+    /// none or the request carried no token.
+    async fn renew(&self, rejected: Option<&Token>) -> Result<Option<Token>, Error> {
+        match (&self.token_source, rejected) {
+            (Some(source), Some(rejected)) => source.renew(rejected).await,
+            _ => Ok(None),
+        }
     }
 
     /// Returns the base URL of the API.
@@ -300,16 +309,22 @@ impl Client {
     }
 }
 
+/// The `Authorization` header value for `token`, marked as sensitive.
+fn bearer(token: &Token) -> Result<HeaderValue, Error> {
+    let mut value =
+        HeaderValue::try_from(format!("Bearer {}", token.secret())).map_err(|_| Error::Auth {
+            status: None,
+            message: "token contains characters not allowed in an HTTP header".to_owned(),
+        })?;
+    value.set_sensitive(true);
+    Ok(value)
+}
+
 /// Whether a request carries the token source's `Authorization` header.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Authorize {
     Yes,
     No,
-}
-
-/// Decodes a successful JSON response as `T` and maps any other response to an [`Error`].
-pub(crate) async fn decode<T: DeserializeOwned>(response: reqwest::Response) -> Result<T, Error> {
-    decode_with(response, BodySize::Large, &decode_json).await
 }
 
 /// Reads the response and turns it into `T` with `decode`. A success body is read as

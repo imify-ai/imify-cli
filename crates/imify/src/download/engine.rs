@@ -141,8 +141,9 @@ impl Downloader {
     /// Before any file is written:
     ///
     /// - [`Error::NotFound`] when the training run or checkpoint does not exist or has no
-    ///   files yet, and [`Error::Validation`] when the API offers no download for it.
-    /// - [`Error::UnexpectedResponse`] when the manifest's `total_size_bytes` is not the
+    ///   files yet, and [`Error::FailedPrecondition`] when the API offers no download for
+    ///   it.
+    /// - [`Error::UnexpectedResponse`] when the checkpoint's `sizeBytes` is not the
     ///   sum of its file sizes.
     /// - [`Error::Download`] with [`DownloadError::UnsafePath`] or
     ///   [`DownloadError::UnsafeUrl`] for a refused manifest entry, with

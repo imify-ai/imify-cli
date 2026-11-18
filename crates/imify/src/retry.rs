@@ -15,7 +15,9 @@ use crate::Error;
 ///
 /// The delay before retry `n` (counting from 0) is a random duration between zero and
 /// `min(max_backoff, initial_backoff * 2^n)`. A `Retry-After` delay sent with a rate
-/// limit replaces it, capped at `max_backoff`.
+/// limit or a server error replaces it, capped at `max_backoff`. A rate limit without
+/// `Retry-After`, as the firewall in front of the API sends it, waits
+/// `rate_limit_pause` instead.
 ///
 /// # Examples
 ///
@@ -39,8 +41,11 @@ pub struct RetryPolicy {
     pub max_retries: u32,
     /// Upper bound of the delay before the first retry. Default: 500 ms.
     pub initial_backoff: Duration,
-    /// Upper bound of any delay. Default: 30 s.
+    /// Upper bound of any delay except `rate_limit_pause`. Default: 30 s.
     pub max_backoff: Duration,
+    /// Delay after a rate limit without `Retry-After`. Default: 5 minutes, the period of
+    /// the firewall's rate rules.
+    pub rate_limit_pause: Duration,
 }
 
 impl RetryPolicy {
@@ -67,6 +72,7 @@ impl Default for RetryPolicy {
             max_retries: 3,
             initial_backoff: Duration::from_millis(500),
             max_backoff: Duration::from_secs(30),
+            rate_limit_pause: Duration::from_secs(300),
         }
     }
 }
@@ -108,7 +114,12 @@ pub(crate) fn delay(policy: &RetryPolicy, attempt: u32, error: &Error) -> Durati
     match error {
         Error::RateLimited {
             retry_after: Some(requested),
+        }
+        | Error::Server {
+            retry_after: Some(requested),
+            ..
         } => (*requested).min(policy.max_backoff),
+        Error::RateLimited { retry_after: None } => policy.rate_limit_pause,
         _ => full_jitter(backoff_ceiling(policy, attempt)),
     }
 }

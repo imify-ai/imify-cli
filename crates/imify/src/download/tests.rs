@@ -475,12 +475,34 @@ async fn a_storage_server_error_is_retried() {
 }
 
 #[tokio::test]
-async fn a_storage_rate_limit_pauses_and_is_retried() {
+async fn a_storage_slow_down_without_retry_after_is_retried() {
     let server = MockServer::start().await;
     mount_manifest(&server, &manifest_of(&server, &[("model.bin", WEIGHTS)])).await;
     Mock::given(method("GET"))
         .and(path("/storage/model.bin"))
         .respond_with(ResponseTemplate::new(503))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    mount_file(&server, "model.bin", WEIGHTS).await;
+    let target = tempfile::tempdir().unwrap();
+
+    downloader(&server)
+        .download(&source(), target.path())
+        .await
+        .unwrap();
+
+    assert_eq!(storage_requests(&server).await.len(), 2);
+    assert_eq!(fs::read(target.path().join("model.bin")).unwrap(), WEIGHTS);
+}
+
+#[tokio::test]
+async fn a_storage_rate_limit_with_retry_after_pauses_and_is_retried() {
+    let server = MockServer::start().await;
+    mount_manifest(&server, &manifest_of(&server, &[("model.bin", WEIGHTS)])).await;
+    Mock::given(method("GET"))
+        .and(path("/storage/model.bin"))
+        .respond_with(ResponseTemplate::new(503).insert_header("retry-after", "0"))
         .up_to_n_times(1)
         .mount(&server)
         .await;

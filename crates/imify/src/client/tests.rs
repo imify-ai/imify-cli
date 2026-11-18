@@ -25,6 +25,7 @@ fn fast_retries(max_retries: u32) -> RetryPolicy {
         max_retries,
         initial_backoff: Duration::from_millis(1),
         max_backoff: Duration::from_millis(1),
+        rate_limit_pause: Duration::from_millis(1),
     }
 }
 
@@ -43,8 +44,21 @@ fn client_with_token(server: &MockServer) -> Client {
         .unwrap()
 }
 
+/// Sends a request as the API calls of the SDK do, retried as its method allows.
+async fn execute<T: serde::de::DeserializeOwned>(
+    client: &Client,
+    method: Method,
+    path: &str,
+    body: Option<&serde_json::Value>,
+) -> Result<T, Error> {
+    let mode = RetryMode::from(&method);
+    client
+        .execute_at(mode, method, client.url(path)?, body)
+        .await
+}
+
 async fn get_dataset(client: &Client) -> Result<Dataset, Error> {
-    client.execute(Method::GET, "/v1/datasets/ds_1", None).await
+    execute(client, Method::GET, "/v1/datasets/ds_1", None).await
 }
 
 fn dataset_body() -> serde_json::Value {
@@ -57,6 +71,11 @@ async fn mount_dataset(server: &MockServer) {
         .respond_with(ResponseTemplate::new(200).set_body_json(dataset_body()))
         .mount(server)
         .await;
+}
+
+/// An AIP-193 error body.
+fn api_error(code: u16, message: &str) -> serde_json::Value {
+    json!({"error": {"code": code, "status": "UNKNOWN", "message": message, "details": []}})
 }
 
 async fn received(server: &MockServer) -> Vec<Request> {
@@ -188,7 +207,8 @@ async fn an_error_body_over_1_mib_is_dropped_and_the_error_carries_the_reason_ph
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .respond_with(
-            ResponseTemplate::new(404).set_body_json(json!({"detail": "x".repeat(1024 * 1024)})),
+            ResponseTemplate::new(404)
+                .set_body_json(json!({"error": {"message": "x".repeat(1024 * 1024)}})),
         )
         .mount(&server)
         .await;
@@ -205,7 +225,7 @@ async fn an_error_body_over_1_mib_is_dropped_and_the_error_carries_the_reason_ph
 async fn get_not_found_is_sent_once() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
-        .respond_with(ResponseTemplate::new(404).set_body_json(json!({"detail": "Not Found"})))
+        .respond_with(ResponseTemplate::new(404).set_body_json(api_error(404, "Not Found")))
         .mount(&server)
         .await;
 
@@ -223,14 +243,14 @@ async fn post_server_error_is_sent_once() {
         .mount(&server)
         .await;
 
-    let error = client(&server)
-        .execute::<Dataset>(
-            Method::POST,
-            "/v1/ingest/sessions",
-            Some(&json!({"name": "pick-place"})),
-        )
-        .await
-        .unwrap_err();
+    let error = execute::<Dataset>(
+        &client(&server),
+        Method::POST,
+        "/v1/recordings",
+        Some(&json!({"displayName": "pick-place"})),
+    )
+    .await
+    .unwrap_err();
 
     assert!(matches!(error, Error::Server { status: 503, .. }));
     assert_eq!(received(&server).await.len(), 1);
@@ -240,26 +260,26 @@ async fn post_server_error_is_sent_once() {
 async fn post_sends_the_json_body() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
-        .and(path("/v1/ingest/sessions"))
+        .and(path("/v1/recordings"))
         .and(header("content-type", "application/json"))
         .respond_with(ResponseTemplate::new(201).set_body_json(dataset_body()))
         .mount(&server)
         .await;
 
-    client(&server)
-        .execute::<Dataset>(
-            Method::POST,
-            "/v1/ingest/sessions",
-            Some(&json!({"name": "pick-place"})),
-        )
-        .await
-        .unwrap();
+    execute::<Dataset>(
+        &client(&server),
+        Method::POST,
+        "/v1/recordings",
+        Some(&json!({"displayName": "pick-place"})),
+    )
+    .await
+    .unwrap();
 
     assert_eq!(
         received(&server).await[0]
             .body_json::<serde_json::Value>()
             .unwrap(),
-        json!({"name": "pick-place"})
+        json!({"displayName": "pick-place"})
     );
 }
 
@@ -415,12 +435,9 @@ fn token_debug_does_not_contain_the_token() {
 async fn errors_do_not_contain_the_token() {
     let server = MockServer::start().await;
     for (status, body) in [
-        (401, json!({"detail": "Not authenticated"})),
-        (
-            422,
-            json!({"detail": [{"loc": ["body"], "msg": "Field required", "type": "missing"}]}),
-        ),
-        (503, json!({"detail": "Service Unavailable"})),
+        (401, api_error(401, "Not authenticated")),
+        (400, api_error(400, "Field required")),
+        (503, api_error(503, "Service Unavailable")),
     ] {
         server.reset().await;
         Mock::given(method("GET"))
@@ -573,4 +590,138 @@ async fn get_follows_at_most_five_redirects() {
         ),
         (true, 6)
     );
+}
+
+/// A token source that hands out `first` and, when the API rejects it, `renewed`. Counts
+/// the renewals.
+#[derive(Debug)]
+struct RenewingSource {
+    renewed: Option<&'static str>,
+    renewals: std::sync::atomic::AtomicU32,
+}
+
+impl RenewingSource {
+    fn new(renewed: Option<&'static str>) -> std::sync::Arc<Self> {
+        std::sync::Arc::new(Self {
+            renewed,
+            renewals: std::sync::atomic::AtomicU32::new(0),
+        })
+    }
+}
+
+impl TokenSource for std::sync::Arc<RenewingSource> {
+    fn token(&self) -> Pin<Box<dyn Future<Output = Result<Token, Error>> + Send + '_>> {
+        Box::pin(async { Ok(Token::new("first")) })
+    }
+
+    fn renew<'a>(
+        &'a self,
+        rejected: &'a Token,
+    ) -> Pin<Box<dyn Future<Output = Result<Option<Token>, Error>> + Send + 'a>> {
+        assert_eq!(rejected.secret(), "first");
+        self.renewals
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Box::pin(async { Ok(self.renewed.map(Token::new)) })
+    }
+}
+
+fn client_renewing(server: &MockServer, source: &std::sync::Arc<RenewingSource>) -> Client {
+    Client::builder(&server.uri())
+        .token_source(std::sync::Arc::clone(source))
+        .retry_policy(fast_retries(3))
+        .build()
+        .unwrap()
+}
+
+#[tokio::test]
+async fn a_401_is_repeated_once_with_the_renewed_token() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(header("authorization", "Bearer first"))
+        .respond_with(ResponseTemplate::new(401).set_body_json(api_error(401, "Token expired")))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(header("authorization", "Bearer second"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(dataset_body()))
+        .mount(&server)
+        .await;
+    let source = RenewingSource::new(Some("second"));
+
+    let dataset = get_dataset(&client_renewing(&server, &source)).await;
+
+    assert!(dataset.is_ok(), "{dataset:?}");
+    assert_eq!(received(&server).await.len(), 2);
+}
+
+#[tokio::test]
+async fn a_second_401_after_the_renewal_fails_with_auth() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(401).set_body_json(api_error(401, "Token expired")))
+        .mount(&server)
+        .await;
+    let source = RenewingSource::new(Some("second"));
+
+    let error = get_dataset(&client_renewing(&server, &source))
+        .await
+        .unwrap_err();
+
+    assert!(
+        matches!(
+            error,
+            Error::Auth {
+                status: Some(401),
+                ..
+            }
+        ),
+        "{error:?}"
+    );
+    assert_eq!(
+        (
+            received(&server).await.len(),
+            source.renewals.load(std::sync::atomic::Ordering::Relaxed)
+        ),
+        (2, 1)
+    );
+}
+
+#[tokio::test]
+async fn a_401_without_a_renewed_token_fails_with_auth_after_one_request() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(401).set_body_json(api_error(401, "Token expired")))
+        .mount(&server)
+        .await;
+    let source = RenewingSource::new(None);
+
+    let error = get_dataset(&client_renewing(&server, &source))
+        .await
+        .unwrap_err();
+
+    assert!(
+        matches!(
+            error,
+            Error::Auth {
+                status: Some(401),
+                ..
+            }
+        ),
+        "{error:?}"
+    );
+    assert_eq!(received(&server).await.len(), 1);
+}
+
+#[tokio::test]
+async fn a_403_without_json_is_sent_once() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(403).set_body_string("Forbidden"))
+        .mount(&server)
+        .await;
+
+    let error = get_dataset(&client(&server)).await.unwrap_err();
+
+    assert!(matches!(error, Error::PermissionDenied { .. }), "{error:?}");
+    assert_eq!(received(&server).await.len(), 1);
 }

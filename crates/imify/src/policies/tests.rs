@@ -1,5 +1,5 @@
 use serde_json::json;
-use wiremock::matchers::{header, method, path};
+use wiremock::matchers::{header, method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use super::*;
@@ -21,40 +21,36 @@ fn client(base_url: &str) -> Client {
 
 fn act_body() -> serde_json::Value {
     json!({
-        "id": ACT_ID,
-        "version_id": "ver-41d2",
-        "dataset_id": PICK_DATASET,
+        "name": format!("trainingRuns/{ACT_ID}"),
+        "datasetVersion": format!("datasets/{PICK_DATASET}/versions/v2-accepted"),
         "policy": "act",
-        "backend": "sagemaker",
-        "status": "succeeded",
+        "backend": "SAGEMAKER",
+        "state": "SUCCEEDED",
         "phase": "done",
         "step": 20000,
-        "total_steps": 20000,
-        "artifact_path": "policies/run-3c9e1a7f/",
-        "artifact_uri": "s3://bucket/policies/run-3c9e1a7f/",
+        "stepCount": 20000,
+        "imageUri": null,
         "error": null,
-        "created_at": "2026-10-01T09:30:00Z",
-        "started_at": "2026-10-01T09:31:12Z",
-        "finished_at": "2026-10-01T11:02:40Z"
+        "createTime": "2026-10-01T09:30:00Z",
+        "startTime": "2026-10-01T09:31:12Z",
+        "endTime": "2026-10-01T11:02:40Z"
     })
 }
 
 fn groot_body() -> serde_json::Value {
     json!({
-        "id": GROOT_ID,
-        "version_id": "ver-77a0",
-        "dataset_id": STACK_DATASET,
+        "name": format!("trainingRuns/{GROOT_ID}"),
+        "datasetVersion": format!("datasets/{STACK_DATASET}/versions/v1"),
         "policy": "groot_n1.7",
-        "backend": "local",
-        "status": "running",
+        "backend": "LOCAL",
+        "state": "RUNNING",
         "phase": "training",
         "step": 1200,
-        "total_steps": 30000,
-        "artifact_path": null,
+        "stepCount": 30000,
         "error": null,
-        "created_at": "2026-10-02T08:00:00Z",
-        "started_at": "2026-10-02T08:01:00Z",
-        "finished_at": null
+        "createTime": "2026-10-02T08:00:00Z",
+        "startTime": "2026-10-02T08:01:00Z",
+        "endTime": null
     })
 }
 
@@ -64,7 +60,7 @@ fn with(mut body: serde_json::Value, field: &str, value: serde_json::Value) -> s
 }
 
 fn run_url(id: &str, suffix: &str) -> String {
-    format!("/api/v1/training-runs/{id}{suffix}")
+    format!("/api/v1/trainingRuns/{id}{suffix}")
 }
 
 async fn api_answering(route: &str, response: ResponseTemplate) -> MockServer {
@@ -79,8 +75,8 @@ async fn api_answering(route: &str, response: ResponseTemplate) -> MockServer {
 
 async fn list_from(body: serde_json::Value, filter: &PolicyFilter) -> Result<Vec<Policy>, Error> {
     let server = api_answering(
-        "/api/v1/training-runs",
-        ResponseTemplate::new(200).set_body_json(body),
+        "/api/v1/trainingRuns",
+        ResponseTemplate::new(200).set_body_json(json!({ "trainingRuns": body })),
     )
     .await;
     client(&server.uri()).policies().list(filter).await
@@ -97,8 +93,15 @@ fn ids(policies: &[Policy]) -> Vec<&str> {
     policies.iter().map(|policy| policy.id.as_str()).collect()
 }
 
-fn not_found(detail: &str) -> ResponseTemplate {
-    ResponseTemplate::new(404).set_body_json(json!({ "detail": detail }))
+fn not_found(message: &str) -> ResponseTemplate {
+    ResponseTemplate::new(404)
+        .set_body_json(json!({"error": {"code": 404, "status": "NOT_FOUND", "message": message}}))
+}
+
+fn unauthenticated() -> ResponseTemplate {
+    ResponseTemplate::new(401).set_body_json(
+        json!({"error": {"code": 401, "status": "UNAUTHENTICATED", "message": "Invalid token"}}),
+    )
 }
 
 fn assert_not_found(error: &Error, expected: &str) {
@@ -112,9 +115,9 @@ fn assert_not_found(error: &Error, expected: &str) {
 async fn list_sends_get_with_the_bearer_token() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
-        .and(path("/api/v1/training-runs"))
+        .and(path("/api/v1/trainingRuns"))
         .and(header("authorization", format!("Bearer {TOKEN}").as_str()))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"trainingRuns": []})))
         .expect(1)
         .mount(&server)
         .await;
@@ -137,7 +140,8 @@ async fn list_decodes_every_exposed_field_from_its_wire_name() {
             policy_type: "act".into(),
             state: PolicyState::Ready,
             dataset_id: PICK_DATASET.into(),
-            dataset_version_id: "ver-41d2".into(),
+            dataset_version_id: "v2-accepted".into(),
+            dataset_version: format!("datasets/{PICK_DATASET}/versions/v2-accepted"),
             phase: "done".into(),
             step: 20000,
             total_steps: 20000,
@@ -150,26 +154,58 @@ async fn list_decodes_every_exposed_field_from_its_wire_name() {
 }
 
 #[tokio::test]
-async fn list_maps_each_known_status_to_its_state() {
+async fn list_maps_each_known_state_to_its_state() {
     let cases = [
-        ("queued", PolicyState::Queued),
-        ("running", PolicyState::Training),
-        ("succeeded", PolicyState::Ready),
-        ("failed", PolicyState::Failed),
+        ("QUEUED", PolicyState::Queued),
+        ("RUNNING", PolicyState::Training),
+        ("SUCCEEDED", PolicyState::Ready),
+        ("FAILED", PolicyState::Failed),
     ];
-    for (status, expected) in cases {
-        let policy = one_from(with(act_body(), "status", json!(status))).await;
+    for (state, expected) in cases {
+        let policy = one_from(with(act_body(), "state", json!(state))).await;
 
-        assert_eq!(policy.state, expected, "status {status}");
+        assert_eq!(policy.state, expected, "state {state}");
     }
 }
 
 #[tokio::test]
-async fn list_keeps_an_unknown_status_as_other() {
-    let policy = one_from(with(act_body(), "status", json!("cancelled"))).await;
+async fn list_keeps_an_unknown_state_as_other_in_lowercase() {
+    let policy = one_from(with(act_body(), "state", json!("CANCELLED"))).await;
 
     assert_eq!(policy.state, PolicyState::Other("cancelled".into()));
     assert_eq!(policy.state.as_str(), "cancelled");
+}
+
+#[tokio::test]
+async fn list_takes_the_message_of_the_error_status() {
+    let body = with(
+        act_body(),
+        "error",
+        json!({"code": 13, "message": "CUDA out of memory"}),
+    );
+
+    let policy = one_from(body).await;
+
+    assert_eq!(policy.error.as_deref(), Some("CUDA out of memory"));
+}
+
+#[tokio::test]
+async fn list_keeps_a_version_id_with_a_slash_whole() {
+    let body = with(
+        act_body(),
+        "datasetVersion",
+        json!(format!("datasets/{PICK_DATASET}/versions/2026/10 run")),
+    );
+
+    let policy = one_from(body).await;
+
+    assert_eq!(
+        (
+            policy.dataset_id.as_str(),
+            policy.dataset_version_id.as_str()
+        ),
+        (PICK_DATASET, "2026/10 run")
+    );
 }
 
 #[tokio::test]
@@ -191,8 +227,8 @@ async fn list_ignores_unknown_fields() {
 #[tokio::test]
 async fn list_decodes_null_times_and_error_as_none() {
     let mut body = act_body();
-    body["started_at"] = json!(null);
-    body["finished_at"] = json!(null);
+    body["startTime"] = json!(null);
+    body["endTime"] = json!(null);
     body["error"] = json!(null);
 
     let policy = one_from(body).await;
@@ -237,9 +273,13 @@ async fn list_with_a_dataset_filter_returns_only_policies_of_that_dataset() {
 #[tokio::test]
 async fn list_with_both_filters_returns_only_policies_matching_both() {
     let failed_pick = with(
-        with(groot_body(), "dataset_id", json!(PICK_DATASET)),
-        "status",
-        json!("failed"),
+        with(
+            groot_body(),
+            "datasetVersion",
+            json!(format!("datasets/{PICK_DATASET}/versions/v1")),
+        ),
+        "state",
+        json!("FAILED"),
     );
     let filter = PolicyFilter::new()
         .state(PolicyState::Ready)
@@ -289,7 +329,7 @@ async fn get_returns_not_found_for_an_unknown_id() {
 #[tokio::test]
 async fn get_sends_an_id_with_a_slash_as_one_encoded_segment() {
     let server = api_answering(
-        "/api/v1/training-runs/run%2F1",
+        "/api/v1/trainingRuns/run%2F1",
         ResponseTemplate::new(200).set_body_json(act_body()),
     )
     .await;
@@ -302,26 +342,71 @@ async fn get_sends_an_id_with_a_slash_as_one_encoded_segment() {
     assert!(policy.is_ok(), "{policy:?}");
 }
 
-#[tokio::test]
-async fn lineage_decodes_the_dataset_version_dataset_task_embodiment_and_episodes() {
+/// A server with the training run `ACT_ID`, its dataset version, dataset and embodiment,
+/// and the episodes of the version in two pages.
+async fn lineage_api() -> MockServer {
     let server = api_answering(
-        &run_url(ACT_ID, "/lineage"),
-        ResponseTemplate::new(200).set_body_json(json!({
-            "run_id": ACT_ID,
-            "policy": "act",
-            "backend": "sagemaker",
-            "status": "succeeded",
-            "version_id": "ver-41d2",
-            "version_name": "v2-accepted",
-            "dataset_id": PICK_DATASET,
-            "task_description": "Pick up the red cube",
-            "embodiment_label": "so100",
-            "embodiment_fingerprint": "f3a9c1",
-            "episode_count": 2,
-            "episode_ids": ["ep-0001", "ep-0002"]
-        })),
+        &run_url(ACT_ID, ""),
+        ResponseTemplate::new(200).set_body_json(act_body()),
     )
     .await;
+    let answers = [
+        (
+            format!("/api/v1/datasets/{PICK_DATASET}/versions/v2-accepted"),
+            json!({
+                "name": format!("datasets/{PICK_DATASET}/versions/v2-accepted"),
+                "uid": "ver-41d2",
+                "episodeCount": 3,
+                "createTime": "2026-09-30T00:00:00Z"
+            }),
+        ),
+        (
+            format!("/api/v1/datasets/{PICK_DATASET}"),
+            json!({
+                "name": format!("datasets/{PICK_DATASET}"),
+                "task": "Pick up the red cube",
+                "embodiment": "embodiments/f3a9c1"
+            }),
+        ),
+        (
+            "/api/v1/embodiments/f3a9c1".to_owned(),
+            json!({"name": "embodiments/f3a9c1", "displayName": "so100"}),
+        ),
+    ];
+    for (route, body) in answers {
+        Mock::given(method("GET"))
+            .and(path(route))
+            .respond_with(ResponseTemplate::new(200).set_body_json(body))
+            .mount(&server)
+            .await;
+    }
+    let version = format!("datasets/{PICK_DATASET}/versions/v2-accepted");
+    Mock::given(method("GET"))
+        .and(path("/api/v1/episodes"))
+        .and(query_param("datasetVersion", version.as_str()))
+        .and(query_param("pageToken", "2"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"episodes": [{"name": "episodes/ep-0001"}]})),
+        )
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/episodes"))
+        .and(query_param("datasetVersion", version.as_str()))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "episodes": [{"name": "episodes/ep-0003"}, {"name": "episodes/ep-0002"}],
+            "nextPageToken": "2"
+        })))
+        .mount(&server)
+        .await;
+    server
+}
+
+#[tokio::test]
+async fn lineage_reads_the_version_dataset_embodiment_and_every_episode_page() {
+    let server = lineage_api().await;
 
     let lineage = client(&server.uri())
         .policies()
@@ -333,25 +418,50 @@ async fn lineage_decodes_the_dataset_version_dataset_task_embodiment_and_episode
         lineage,
         Lineage {
             dataset_id: PICK_DATASET.into(),
-            dataset_version_id: "ver-41d2".into(),
-            dataset_version_name: "v2-accepted".into(),
+            dataset_version_id: "v2-accepted".into(),
             task: "Pick up the red cube".into(),
             embodiment: "so100".into(),
             embodiment_fingerprint: "f3a9c1".into(),
-            episodes: 2,
-            episode_ids: vec!["ep-0001".into(), "ep-0002".into()],
+            episodes: 3,
+            episode_ids: vec!["ep-0001".into(), "ep-0002".into(), "ep-0003".into()],
         }
     );
+}
+
+#[tokio::test]
+async fn lineage_returns_not_found_for_an_unknown_id() {
+    let server = api_answering(
+        &run_url("run-missing", ""),
+        not_found("Unknown training run"),
+    )
+    .await;
+
+    let error = client(&server.uri())
+        .policies()
+        .lineage(&PolicyId::new("run-missing"))
+        .await
+        .unwrap_err();
+
+    assert_not_found(&error, "Unknown training run");
 }
 
 #[tokio::test]
 async fn checkpoints_decodes_each_checkpoint_and_keeps_the_order_oldest_first() {
     let server = api_answering(
         &run_url(ACT_ID, "/checkpoints"),
-        ResponseTemplate::new(200).set_body_json(json!([
-            {"id": "010000", "size": 207_618_048, "last_modified": "2026-10-01T10:15:00Z"},
-            {"id": "020000", "size": 207_618_112, "last_modified": "2026-10-01T11:00:00Z"}
-        ])),
+        ResponseTemplate::new(200).set_body_json(json!({"checkpoints": [
+            {
+                "name": format!("trainingRuns/{ACT_ID}/checkpoints/010000"),
+                "sizeBytes": 207_618_048,
+                "updateTime": "2026-10-01T10:15:00Z"
+            },
+            {
+                "name": format!("trainingRuns/{ACT_ID}/checkpoints/020000"),
+                "sizeBytes": 207_618_112,
+                "updateTime": "2026-10-01T11:00:00Z",
+                "files": null
+            }
+        ]})),
     )
     .await;
 
@@ -450,8 +560,8 @@ async fn log_replaces_invalid_utf8_with_replacement_characters() {
 #[tokio::test]
 async fn list_requests_the_path_below_a_base_url_prefix() {
     let server = api_answering(
-        "/platform/api/v1/training-runs",
-        ResponseTemplate::new(200).set_body_json(json!([])),
+        "/platform/api/v1/trainingRuns",
+        ResponseTemplate::new(200).set_body_json(json!({})),
     )
     .await;
 
@@ -481,11 +591,7 @@ async fn get_requests_the_path_below_a_base_url_prefix() {
 
 #[tokio::test]
 async fn log_returns_auth_with_status_401_when_the_token_is_rejected() {
-    let server = api_answering(
-        &run_url(ACT_ID, "/log"),
-        ResponseTemplate::new(401).set_body_json(json!({"detail": "Invalid token"})),
-    )
-    .await;
+    let server = api_answering(&run_url(ACT_ID, "/log"), unauthenticated()).await;
 
     let error = client(&server.uri())
         .policies()
@@ -507,11 +613,7 @@ async fn log_returns_auth_with_status_401_when_the_token_is_rejected() {
 
 #[tokio::test]
 async fn list_returns_auth_with_status_401_when_the_token_is_rejected() {
-    let server = api_answering(
-        "/api/v1/training-runs",
-        ResponseTemplate::new(401).set_body_json(json!({"detail": "Invalid token"})),
-    )
-    .await;
+    let server = api_answering("/api/v1/trainingRuns", unauthenticated()).await;
 
     let error = client(&server.uri())
         .policies()
@@ -532,9 +634,9 @@ async fn list_returns_auth_with_status_401_when_the_token_is_rejected() {
 }
 
 #[tokio::test]
-async fn list_returns_unexpected_response_for_an_entry_without_status() {
+async fn list_returns_unexpected_response_for_an_entry_without_state() {
     let mut body = act_body();
-    body.as_object_mut().unwrap().remove("status");
+    body.as_object_mut().unwrap().remove("state");
 
     let error = list_from(json!([body]), &PolicyFilter::new())
         .await

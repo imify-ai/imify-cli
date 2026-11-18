@@ -81,9 +81,9 @@ pub trait CredentialStore: Send + Sync + fmt::Debug {
 
 /// A [`TokenSource`] that returns the ID token of a stored login.
 ///
-/// When less than 60 s remain before the ID token expires, it exchanges the refresh token
-/// for a new ID token and saves the result in the store. Concurrent requests wait for one
-/// refresh. `Debug` does not print the tokens.
+/// When less than 60 s remain before the ID token expires, or the API rejects the ID token
+/// with 401, it exchanges the refresh token for a new ID token and saves the result in the
+/// store. Concurrent requests wait for one refresh. `Debug` does not print the tokens.
 ///
 /// # Examples
 ///
@@ -144,6 +144,16 @@ impl StoredLogin {
         Ok(Token::new(credentials.id_token()))
     }
 
+    /// Refreshes the ID token after the API rejected `rejected`. Returns the current token
+    /// without a refresh when it is no longer `rejected`.
+    async fn renewed_token(&self, rejected: &Token) -> Result<Option<Token>, Error> {
+        let mut credentials = self.credentials.lock().await;
+        if credentials.id_token() == rejected.secret() {
+            *credentials = self.refresh(&credentials).await?;
+        }
+        Ok(Some(Token::new(credentials.id_token())))
+    }
+
     /// Returns credentials with a fresh ID token, saved in the store.
     async fn refresh(&self, current: &Credentials) -> Result<Credentials, Error> {
         let Some(refresh_token) = current.refresh_token() else {
@@ -202,6 +212,15 @@ impl StoredLogin {
 impl TokenSource for StoredLogin {
     fn token(&self) -> Pin<Box<dyn Future<Output = Result<Token, Error>> + Send + '_>> {
         Box::pin(self.current_token())
+    }
+
+    /// Refreshes the ID token even when it is not near its expiry, unless another request
+    /// renewed it since `rejected` was handed out.
+    fn renew<'a>(
+        &'a self,
+        rejected: &'a Token,
+    ) -> Pin<Box<dyn Future<Output = Result<Option<Token>, Error>> + Send + 'a>> {
+        Box::pin(self.renewed_token(rejected))
     }
 }
 

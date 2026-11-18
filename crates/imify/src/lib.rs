@@ -29,6 +29,7 @@ mod health;
 pub mod ingest;
 mod local_file;
 pub mod policies;
+mod resource;
 mod retry;
 #[cfg(feature = "self-update")]
 pub mod update;
@@ -37,7 +38,9 @@ pub mod validate;
 pub use account::User;
 pub use client::{Client, ClientBuilder};
 pub use discovery::OidcSettings;
-pub use error::{DownloadError, Error, FieldError, JournalError, LoginFailure};
+pub use error::{
+    DownloadError, Error, FieldError, JournalError, LoginFailure, UploadError, Violation,
+};
 pub use health::{Health, Readiness};
 pub use retry::RetryPolicy;
 

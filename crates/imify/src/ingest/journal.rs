@@ -1,13 +1,14 @@
-//! The resume journal: the files an upload stored in its session, one JSON Lines file
-//! per API base URL and dataset directory.
+//! The resume journal: the recording of an upload and the files storage has, one JSON
+//! Lines file per API base URL and dataset directory.
 //!
-//! The first line is a [`Header`] with the session id. Each further line is an [`Entry`]
-//! for one file the API stored. A partial last line, left by a crash, is ignored.
+//! The first line is a [`Header`] with the recording id, the `requestId` of its create
+//! and its settings. Each further line is an [`Entry`] for one file storage has, with the
+//! SHA-256 announced for it. A partial last line, left by a crash, is ignored.
 //!
 //! File system calls run on the blocking thread pool, so writing and flushing an entry
 //! does not hold up the tasks that send files.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write as _;
 use std::fs::{self, DirBuilder, File, OpenOptions};
 use std::io::{self, Write as _};
@@ -22,19 +23,19 @@ use rustix::fs::OFlags;
 use rustix::process::geteuid;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
-use tokio::io::AsyncReadExt;
 
 use super::plan::{PlannedFile, UploadPlan};
-use super::session::{NewSession, SessionId};
-use super::transport::{Digest, open_planned};
+use super::recording::{NewRecording, RecordingId, RequestId};
+use super::transport::Digest;
 use crate::{Error, JournalError, local_file};
 
-const VERSION: u32 = 1;
+/// The journal format: 2 since uploads go into recordings. Version 1 journals hold an
+/// ingest session of the old API.
+const VERSION: u32 = 2;
 /// Largest journal read.
 const MAX_JOURNAL_BYTES: u64 = 64 * 1024 * 1024;
 const DIR_MODE: u32 = 0o700;
 const FILE_MODE: u32 = 0o600;
-const HASH_CHUNK_SIZE: usize = 256 * 1024;
 
 /// The first line of a journal.
 #[derive(Debug, Serialize, Deserialize)]
@@ -42,9 +43,37 @@ struct Header {
     version: u32,
     api_url: String,
     root: PathBuf,
-    session: String,
-    name: String,
-    task_description: String,
+    /// The `{r}` of `recordings/{r}`.
+    recording: String,
+    /// The `requestId` the recording was created with.
+    request_id: String,
+    settings: Settings,
+}
+
+/// The settings of the journaled recording, as [`NewRecording`] holds them.
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+struct Settings {
+    display_name: String,
+    task: String,
+    robot: Option<String>,
+    operator: Option<String>,
+    site: Option<String>,
+    start_time: Option<String>,
+    labels: BTreeMap<String, String>,
+}
+
+impl From<&NewRecording> for Settings {
+    fn from(recording: &NewRecording) -> Self {
+        Self {
+            display_name: recording.display_name.clone(),
+            task: recording.task.clone(),
+            robot: recording.robot.clone(),
+            operator: recording.operator.clone(),
+            site: recording.site.clone(),
+            start_time: recording.start_time.clone(),
+            labels: recording.labels.clone(),
+        }
+    }
 }
 
 /// Only the version of a header, read before the rest so that another version is
@@ -54,7 +83,7 @@ struct Versioned {
     version: u32,
 }
 
-/// One file the API stored.
+/// One file storage has.
 #[derive(Debug, Serialize, Deserialize)]
 struct Entry {
     path: String,
@@ -141,21 +170,22 @@ impl JournalFile {
         Ok(Some(recorded))
     }
 
-    /// Writes a journal with only the header for `session` and opens it for appending.
-    /// The header is written to a temporary file first and renamed into place, so a
-    /// journal never exists without a header.
+    /// Writes a journal with only the header for `recording` and opens it for
+    /// appending. The header is written to a temporary file first and renamed into place,
+    /// so a journal never exists without a header.
     pub(crate) async fn create(
         &self,
-        session: &SessionId,
-        settings: &NewSession,
+        recording: &RecordingId,
+        request_id: &RequestId,
+        settings: &NewRecording,
     ) -> Result<JournalWriter, Error> {
         let header = Header {
             version: VERSION,
             api_url: self.api_url.clone(),
             root: self.root.clone(),
-            session: session.as_str().to_owned(),
-            name: settings.name.clone(),
-            task_description: settings.task_description.clone(),
+            recording: recording.as_str().to_owned(),
+            request_id: request_id.as_str().to_owned(),
+            settings: Settings::from(settings),
         };
         let journal = self.clone();
         run_blocking(&self.path, move || {
@@ -228,7 +258,9 @@ impl JournalFile {
         let complete = text.rfind('\n').map_or("", |end| &text[..end]);
         let mut lines = complete.split('\n').enumerate();
         let header = match lines.next() {
-            Some((_, line)) if !line.is_empty() => parse_header(line).map_err(corrupt)?,
+            Some((_, line)) if !line.is_empty() => {
+                parse_header(line).map_err(|reason| self.error(reason))?
+            }
             _ => return Err(corrupt("the header is missing".to_owned())),
         };
         let entries = lines
@@ -245,11 +277,14 @@ impl JournalFile {
     }
 }
 
-fn parse_header(line: &str) -> Result<Header, String> {
-    let header_error = |error: serde_json::Error| format!("line 1: {error}");
+fn parse_header(line: &str) -> Result<Header, JournalError> {
+    let header_error = |error: serde_json::Error| JournalError::Corrupt(format!("line 1: {error}"));
     let Versioned { version } = serde_json::from_str(line).map_err(header_error)?;
+    if version < VERSION {
+        return Err(JournalError::Outdated(version));
+    }
     if version != VERSION {
-        return Err(format!("unknown version {version}"));
+        return Err(JournalError::Corrupt(format!("unknown version {version}")));
     }
     serde_json::from_str(line).map_err(header_error)
 }
@@ -263,23 +298,22 @@ pub(crate) struct Recorded {
 }
 
 impl Recorded {
-    /// Returns the journaled session.
-    pub(crate) fn session(&self) -> SessionId {
-        SessionId::new(self.header.session.clone())
+    /// Returns the journaled recording.
+    pub(crate) fn recording(&self) -> RecordingId {
+        RecordingId::new(self.header.recording.clone())
     }
 
-    /// Returns the paths of the files of `plan` that the journal records as stored and
-    /// that did not change since. A file with the journaled size and modification time
-    /// is unchanged; with only another modification time, it is unchanged when its
-    /// SHA-256 equals the journaled one.
+    /// Returns the SHA-256 the journal records for the files of `plan` whose size and
+    /// modification time did not change since.
     ///
-    /// Fails with [`JournalError::Mismatch`] when `settings` has another name or task
-    /// description than the journaled session, or a journaled file is not in `plan`.
-    pub(crate) async fn stored_files(
+    /// Fails with [`JournalError::Mismatch`] when `settings` differ from the settings of
+    /// the journaled recording, or a journaled file is not in `plan`, and with
+    /// [`JournalError::Corrupt`] for an entry whose SHA-256 is not 64 hexadecimal digits.
+    pub(crate) fn unchanged_digests(
         &self,
         plan: &UploadPlan,
-        settings: &NewSession,
-    ) -> Result<HashSet<String>, Error> {
+        settings: &NewRecording,
+    ) -> Result<HashMap<String, Digest>, Error> {
         self.check_settings(settings)?;
         let planned: HashMap<&str, &PlannedFile> = plan
             .files()
@@ -291,34 +325,45 @@ impl Recorded {
             .iter()
             .map(|entry| (entry.path.as_str(), entry))
             .collect();
-        let mut journaled = Vec::with_capacity(latest.len());
+        let mut unchanged = HashMap::new();
         for (path, entry) in latest {
             let file = planned.get(path).ok_or_else(|| {
                 self.mismatch(format!("{path} is no longer in the dataset directory"))
             })?;
-            journaled.push((*file, entry));
-        }
-        let mut stored = HashSet::new();
-        for (file, entry) in journaled {
-            if is_unchanged(plan.root(), file, entry).await? {
-                stored.insert(file.path().to_owned());
+            let modified = nanos_since_epoch(file.modified());
+            if file.size() == entry.size && modified.is_some() && modified == entry.modified_ns {
+                let digest = parse_hex(&entry.sha256).ok_or_else(|| {
+                    journal_error(
+                        &self.path,
+                        JournalError::Corrupt(format!("{path} has an invalid SHA-256")),
+                    )
+                })?;
+                unchanged.insert(path.to_owned(), digest);
             }
         }
-        Ok(stored)
+        Ok(unchanged)
     }
 
-    fn check_settings(&self, settings: &NewSession) -> Result<(), Error> {
-        if self.header.name != settings.name {
+    fn check_settings(&self, settings: &NewRecording) -> Result<(), Error> {
+        let journaled = &self.header.settings;
+        let wanted = Settings::from(settings);
+        if journaled.display_name != wanted.display_name {
             return Err(self.mismatch(format!(
-                "the journaled session is named {:?}",
-                self.header.name
+                "the journaled recording is named {:?}",
+                journaled.display_name
             )));
         }
-        if self.header.task_description != settings.task_description {
+        if journaled.task != wanted.task {
             return Err(self.mismatch(format!(
-                "the journaled session has the task description {:?}",
-                self.header.task_description
+                "the journaled recording has the task {:?}",
+                journaled.task
             )));
+        }
+        if *journaled != wanted {
+            return Err(self.mismatch(
+                "the journaled recording has another robot, operator, site, start time or labels"
+                    .to_owned(),
+            ));
         }
         Ok(())
     }
@@ -328,35 +373,7 @@ impl Recorded {
     }
 }
 
-async fn is_unchanged(root: &Path, file: &PlannedFile, entry: &Entry) -> Result<bool, Error> {
-    if file.size() != entry.size {
-        return Ok(false);
-    }
-    let modified = nanos_since_epoch(file.modified());
-    if modified.is_some() && modified == entry.modified_ns {
-        return Ok(true);
-    }
-    Ok(hex(&file_sha256(file, &root.join(file.path())).await?) == entry.sha256)
-}
-
-async fn file_sha256(planned: &PlannedFile, path: &Path) -> Result<Digest, Error> {
-    let io_error = |source| Error::Io {
-        path: path.to_owned(),
-        source,
-    };
-    let mut file = open_planned(planned, path).await?;
-    let mut hasher = Sha256::new();
-    let mut buffer = vec![0; HASH_CHUNK_SIZE];
-    loop {
-        let read = file.read(&mut buffer).await.map_err(io_error)?;
-        if read == 0 {
-            return Ok(hasher.finalize().into());
-        }
-        hasher.update(&buffer[..read]);
-    }
-}
-
-/// Appends an entry for each stored file to a journal.
+/// Appends an entry for each file storage has to a journal.
 #[derive(Debug)]
 pub(crate) struct JournalWriter {
     path: PathBuf,
@@ -364,8 +381,8 @@ pub(crate) struct JournalWriter {
 }
 
 impl JournalWriter {
-    /// Records that the API stored `file` with the content `digest`. Returns once the
-    /// entry is on disk.
+    /// Records that storage has `file` with the content `digest`. Returns once the entry
+    /// is on disk.
     pub(crate) async fn append(&self, file: &PlannedFile, digest: &Digest) -> Result<(), Error> {
         let entry = Entry {
             path: file.path().to_owned(),
@@ -443,6 +460,18 @@ fn json_line(value: &impl Serialize) -> io::Result<Vec<u8>> {
 
 fn nanos_since_epoch(time: Option<SystemTime>) -> Option<u128> {
     Some(time?.duration_since(UNIX_EPOCH).ok()?.as_nanos())
+}
+
+/// Returns the digest of 64 hexadecimal digits, `None` for other text.
+fn parse_hex(text: &str) -> Option<Digest> {
+    if text.len() != 64 {
+        return None;
+    }
+    let mut digest = [0_u8; 32];
+    for (byte, pair) in digest.iter_mut().zip(text.as_bytes().chunks(2)) {
+        *byte = u8::from_str_radix(std::str::from_utf8(pair).ok()?, 16).ok()?;
+    }
+    Some(digest)
 }
 
 /// Returns `digest` as lower-case hexadecimal.

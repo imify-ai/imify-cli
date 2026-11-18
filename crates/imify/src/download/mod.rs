@@ -88,7 +88,7 @@ const DEFAULT_CONCURRENCY: NonZeroUsize = match NonZeroUsize::new(4) {
 #[non_exhaustive]
 pub enum DownloadSource {
     /// One checkpoint of a training run:
-    /// `GET /api/v1/training-runs/{policy}/checkpoints/{checkpoint}`.
+    /// `GET /api/v1/trainingRuns/{policy}/checkpoints/{checkpoint}`.
     Checkpoint {
         /// Id of the training run.
         policy: String,

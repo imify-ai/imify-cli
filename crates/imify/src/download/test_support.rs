@@ -19,7 +19,7 @@ use crate::{Client, Error, RetryPolicy};
 pub(super) const TOKEN: &str = "tok_7f3a9c-secret";
 pub(super) const POLICY: &str = "8d41c7";
 pub(super) const CHECKPOINT: &str = "step-20000";
-pub(super) const MANIFEST: &str = "/api/v1/training-runs/8d41c7/checkpoints/step-20000";
+pub(super) const MANIFEST: &str = "/api/v1/trainingRuns/8d41c7/checkpoints/step-20000";
 /// The query of every presigned URL in the fixtures.
 pub(super) const SIGNATURE: &str = "X-Amz-Signature=sig-0b7e4f-secret";
 
@@ -34,6 +34,7 @@ pub(super) fn client_with(server: &MockServer, max_retries: u32) -> Client {
             max_retries,
             initial_backoff: Duration::from_millis(1),
             max_backoff: Duration::from_millis(1),
+            rate_limit_pause: Duration::from_millis(1),
         })
         .build()
         .unwrap()
@@ -54,18 +55,28 @@ pub(super) fn storage_url(base: &str, name: &str) -> String {
     format!("{base}/storage/{name}?{SIGNATURE}")
 }
 
-/// A manifest entry for `relative_path` with `size`, served from `url`.
-pub(super) fn entry(relative_path: &str, url: &str, size: u64) -> Value {
-    json!({"relative_path": relative_path, "url": url, "size": size})
+/// A checkpoint file `path` with `size`, served from `url`.
+pub(super) fn entry(path: &str, url: &str, size: u64) -> Value {
+    json!({
+        "path": path,
+        "uri": url,
+        "sizeBytes": size,
+        "uriExpireTime": "2026-11-18T10:00:00Z",
+    })
 }
 
-/// A manifest whose `total_size_bytes` is the sum of the entry sizes.
+/// A checkpoint whose `sizeBytes` is the sum of the entry sizes.
 pub(super) fn manifest(entries: &[Value]) -> Value {
     let total: u64 = entries
         .iter()
-        .map(|entry| entry["size"].as_u64().unwrap())
+        .map(|entry| entry["sizeBytes"].as_u64().unwrap())
         .sum();
-    json!({"files": entries, "total_size_bytes": total})
+    json!({
+        "name": "trainingRuns/8d41c7/checkpoints/step-20000",
+        "sizeBytes": total,
+        "updateTime": "2026-11-18T09:00:00Z",
+        "files": entries,
+    })
 }
 
 /// A manifest of `files`, each served from `/storage/<path>` on `server`.

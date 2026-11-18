@@ -11,6 +11,7 @@ fn policy() -> RetryPolicy {
         max_retries: 3,
         initial_backoff: Duration::from_millis(100),
         max_backoff: Duration::from_secs(2),
+        rate_limit_pause: Duration::from_secs(300),
     }
 }
 
@@ -32,6 +33,7 @@ fn server_error() -> Error {
     Error::Server {
         status: 503,
         message: "Service Unavailable".into(),
+        retry_after: None,
     }
 }
 
@@ -69,7 +71,7 @@ fn get_is_retried_on_rate_limit() {
 }
 
 #[test]
-fn get_is_retried_on_edge_block() {
+fn get_is_retried_on_a_rate_limit_without_retry_after() {
     assert!(retries_first_attempt(&Method::GET, &rate_limited()));
 }
 
@@ -86,20 +88,27 @@ fn get_is_not_retried_on_client_errors() {
         Error::Validation {
             message: "Bad Request".into(),
             fields: Vec::new(),
+            reason: None,
         },
         Error::Auth {
             status: Some(401),
             message: "Not authenticated".into(),
         },
-        Error::Auth {
-            status: Some(403),
-            message: "Not enough permissions".into(),
+        Error::PermissionDenied {
+            message: "this network has no access to the API".into(),
+            reason: None,
         },
         Error::NotFound {
             message: "Not Found".into(),
         },
         Error::Conflict {
             message: "Conflict".into(),
+            reason: None,
+        },
+        Error::FailedPrecondition {
+            message: "Precondition Failed".into(),
+            reason: None,
+            violations: Vec::new(),
         },
     ];
 
@@ -186,6 +195,36 @@ fn retry_after_is_capped_at_max_backoff() {
 }
 
 #[test]
+fn rate_limit_without_retry_after_waits_the_rate_limit_pause() {
+    assert_eq!(
+        delay(&policy(), 0, &rate_limited()),
+        Duration::from_secs(300)
+    );
+}
+
+#[test]
+fn server_retry_after_sets_the_delay() {
+    let error = Error::Server {
+        status: 503,
+        message: "Service Unavailable".into(),
+        retry_after: Some(Duration::from_secs(1)),
+    };
+
+    assert_eq!(delay(&policy(), 0, &error), Duration::from_secs(1));
+}
+
+#[test]
+fn server_retry_after_is_capped_at_max_backoff() {
+    let error = Error::Server {
+        status: 503,
+        message: "Service Unavailable".into(),
+        retry_after: Some(Duration::from_secs(120)),
+    };
+
+    assert_eq!(delay(&policy(), 0, &error), Duration::from_secs(2));
+}
+
+#[test]
 fn none_policy_never_retries() {
     assert!(!should_retry(
         &RetryPolicy::none(),
@@ -203,9 +242,15 @@ fn default_policy_retries_three_times() {
         (
             policy.max_retries,
             policy.initial_backoff,
-            policy.max_backoff
+            policy.max_backoff,
+            policy.rate_limit_pause
         ),
-        (3, Duration::from_millis(500), Duration::from_secs(30))
+        (
+            3,
+            Duration::from_millis(500),
+            Duration::from_secs(30),
+            Duration::from_secs(300)
+        )
     );
 }
 
