@@ -206,7 +206,11 @@ fn throughput_is_measured_over_the_last_5_seconds_of_event_times() {
     );
 
     // 50 MiB between 10 s and 15 s; the sample at 1 s is outside the window.
-    assert_eq!(view.rate(), 10.0 * 1024.0 * 1024.0);
+    assert!(
+        (view.rate() - 10.0 * 1024.0 * 1024.0).abs() < 1e-6,
+        "{}",
+        view.rate()
+    );
 }
 
 #[test]
@@ -388,7 +392,11 @@ fn bytes_already_uploaded_do_not_count_toward_the_rate() {
     );
 
     // 20 MiB between the resume at 0 s and 2 s.
-    assert_eq!(view.rate(), 10.0 * 1024.0 * 1024.0);
+    assert!(
+        (view.rate() - 10.0 * 1024.0 * 1024.0).abs() < 1e-6,
+        "{}",
+        view.rate()
+    );
 }
 
 #[test]
