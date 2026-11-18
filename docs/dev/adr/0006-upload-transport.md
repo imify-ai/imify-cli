@@ -1,6 +1,6 @@
 # 0006. Streaming PUT upload with a local resume journal
 
-Status: Accepted
+Status: Superseded by 0017
 Date: 2026-10-16
 
 ## Context

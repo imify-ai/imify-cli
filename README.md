@@ -70,7 +70,7 @@ On macOS, use `shasum -a 256 --check` in place of `sha256sum --check`. `gh attes
 
 - `imify auth login`, `imify auth logout` and `imify auth whoami`: browser sign-in, with `--no-browser` for machines without one; the login is stored in the OS keychain or a user-only file. `IMIFY_TOKEN` for CI.
 - `imify datasets validate`: offline check of a LeRobot v3 or v2.1 dataset.
-- `imify datasets upload`: uploads a dataset into an ingest session; an interrupted upload continues where it stopped.
+- `imify datasets upload`: uploads a dataset into a recording, straight to storage; an interrupted upload continues where it stopped.
 - `imify datasets list`: lists datasets, with filters and sorting.
 - `imify doctor`: checks the configuration, the API, the clock and the token.
 - `imify config`: stores the API URL.

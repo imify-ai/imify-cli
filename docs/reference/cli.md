@@ -542,7 +542,7 @@ Usage: imify datasets [OPTIONS] <COMMAND>
 Commands:
   list      List the datasets visible to the access token's user
   validate  Check a local LeRobot dataset before an upload
-  upload    Upload a local LeRobot dataset into an ingest session
+  upload    Upload a local LeRobot dataset into a recording
   help      Print this message or the help of the given subcommand(s)
 
 Options:
@@ -586,7 +586,7 @@ Options:
           Keep datasets whose task contains TEXT, ignoring case
 
       --format <FORMAT>
-          Keep datasets with exactly this format, such as `lerobot_v3`
+          Keep datasets with exactly this format, such as `v3` or `v2.1`
 
   -q, --quiet
           Write the result only
@@ -671,9 +671,9 @@ Example:
 ## imify datasets upload
 
 ```text
-Upload a local LeRobot dataset into an ingest session.
+Upload a local LeRobot dataset into a recording.
 
-Validates the dataset first and uploads nothing when the report has an error. Uploads meta/, data/ and videos/, with meta/info.json first. Writes the ingest session to stdout. Ctrl-C stops the upload and leaves the session open. Running the same upload again continues that session and sends only the files it lacks.
+Validates the dataset first and uploads nothing when the report has an error. Uploads meta/, data/ and videos/ straight to storage. The recording is named after the directory. Writes the recording to stdout. Ctrl-C stops the upload and leaves the recording open. Running the same upload again continues that recording and sends only the files storage lacks.
 
 Usage: imify datasets upload [OPTIONS] --task <TEXT> <PATH>
 
@@ -688,20 +688,20 @@ Options:
       --task <TEXT>
           Task description of the recorded episodes
 
-      --dry-run
-          Validate and list the files to upload; needs no token and no network
-
   -q, --quiet
           Write the result only
 
-      --resume
-          Continue the interrupted upload of PATH; fail when there is none
+      --robot <SERIAL>
+          Serial number of the robot that recorded the episodes
+
+      --operator <ID>
+          Id of the operator who recorded the episodes; default: the signed-in user
 
   -v, --verbose...
           Log more detail to stderr: -v for debug, -vv for trace
 
-      --restart
-          Discard the interrupted upload of PATH and start a new ingest session
+      --site <ID>
+          Id of the site where the episodes were recorded
 
       --yes
           Confirm without prompting
@@ -709,17 +709,33 @@ Options:
       --no-color
           Disable color [env: NO_COLOR]
 
+      --start-time <TIME>
+          Start of the recording, an RFC 3339 date-time such as 2026-11-18T09:30:00Z
+
       --api-url <URL>
           API host [env: IMIFY_API_URL] [default: profile, then https://platform.imify.ai]
 
+      --label <KEY=VALUE>
+          Label of the recording; repeat for more labels
+
+      --dry-run
+          Validate and list the files to upload; needs no token and no network
+
       --profile <NAME>
           Settings profile in the config file [env: IMIFY_PROFILE] [default: default]
+
+      --resume
+          Continue the interrupted upload of PATH; fail when there is none
+
+      --restart
+          Discard the interrupted upload of PATH and start a new recording
 
   -h, --help
           Print help (see a summary with '-h')
 
 Examples:
   imify datasets upload ./pick-cube --task "Pick up the red cube"
+  imify datasets upload ./pick-cube --task "Pick up the red cube" --robot so100-0042 --label shift=night
   imify datasets upload ./pick-cube --task "Pick up the red cube" --dry-run
   imify datasets upload ./pick-cube --task "Pick up the red cube" --restart
 ```

@@ -28,7 +28,7 @@
         "type": "string"
       },
       "format": {
-        "description": "Dataset format, such as `lerobot_v3`.",
+        "description": "Dataset format, such as `v3` or `v2.1`.",
         "type": "string"
       },
       "embodiment": {

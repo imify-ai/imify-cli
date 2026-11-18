@@ -45,7 +45,7 @@ $ imify auth login --json
 | `host` | string | The API URL the login belongs to. |
 | `subject` | string | Stable user id. |
 | `name` | string | Display name or email address. |
-| `role` | string | Platform role. |
+| `role` | string or null | Platform role, `admin` or `reviewer`. `null` for a user in no role group: such a user has no access, and the text output shows `no access`. |
 | `storage` | string | `keychain` or `file`. |
 | `storage_fallback` | boolean | `true` when `auto` stored the login in the file because the machine has no keychain service. |
 
@@ -79,7 +79,7 @@ Schema: [`auth-logout.json`](../reference/schemas/auth-logout.json).
 
 Without either, a command fails with `auth_required`. `imify auth login` warns when `IMIFY_TOKEN` is set, because the variable takes precedence over the new login. When the API rejects `IMIFY_TOKEN` and a login is stored for the host, the `auth_rejected` hint is ``Unset `IMIFY_TOKEN` to use the stored login, or set it to a valid, unexpired token.``.
 
-A stored login holds an ID token and a refresh token. The CLI renews the ID token when less than 60 s remain before it expires. When the identity provider refuses the renewal, the command fails with `auth_expired`; run `imify auth login` again.
+A stored login holds an ID token and a refresh token. The CLI renews the ID token when less than 60 s remain before it expires. When the API rejects the ID token with 401, the CLI renews it once and repeats the request. When the identity provider refuses the renewal, the command fails with `auth_expired`; when the API rejects the renewed token too, it fails with `auth_rejected`. Run `imify auth login` again in both cases. A network error at the identity provider fails with `network`.
 
 ## Where the login is stored
 
