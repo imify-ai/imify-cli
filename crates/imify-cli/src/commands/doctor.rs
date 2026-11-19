@@ -651,7 +651,10 @@ async fn check_account(
     };
     let check = match result {
         Ok(user) => {
-            let check = Check::ok("account", format!("{} ({}).", user.name, user.role));
+            let check = Check::ok(
+                "account",
+                format!("{} ({}).", user.name, super::auth::role_text(&user)),
+            );
             report.user = Some(user);
             check
         }
@@ -701,7 +704,7 @@ impl Render for Report {
             "user": self.user.as_ref().map(|user| serde_json::json!({
                 "subject": user.subject,
                 "name": user.name,
-                "role": user.role,
+                "role": super::auth::role_value(user),
             })),
             "credential_store": self.credential_store.map(StoreChoice::as_str),
             "config_dir": self.config_dir.as_ref().map(|dir| dir.to_string_lossy()),

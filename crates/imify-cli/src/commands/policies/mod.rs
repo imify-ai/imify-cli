@@ -173,13 +173,7 @@ impl Render for PolicyDetails {
             ("Phase", policy.phase.clone()),
             ("Progress", progress(policy)),
             ("Dataset", lineage.dataset_id.clone()),
-            (
-                "Version",
-                format!(
-                    "{} ({})",
-                    lineage.dataset_version_name, lineage.dataset_version_id
-                ),
-            ),
+            ("Version", lineage.dataset_version_id.clone()),
             ("Task", lineage.task.clone()),
             ("Embodiment", lineage.embodiment.clone()),
             ("Episodes", lineage.episodes.to_string()),
@@ -228,7 +222,7 @@ fn lineage_json(lineage: &Lineage) -> serde_json::Value {
     serde_json::json!({
         "dataset_id": lineage.dataset_id,
         "dataset_version_id": lineage.dataset_version_id,
-        "dataset_version_name": lineage.dataset_version_name,
+        "dataset_version_name": lineage.dataset_version_id,
         "task": lineage.task,
         "embodiment": lineage.embodiment,
         "embodiment_fingerprint": lineage.embodiment_fingerprint,

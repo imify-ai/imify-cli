@@ -148,6 +148,7 @@
       }
     },
     "session_created": {
+      "description": "The recording exists. The type keeps its name from the ingest sessions of the API before recordings.",
       "type": "object",
       "required": [
         "type",
@@ -164,7 +165,7 @@
       }
     },
     "session_resumed": {
-      "description": "The upload continues the ingest session of an interrupted upload. Written instead of `session_created`.",
+      "description": "The upload continues the recording of an interrupted upload. Written instead of `session_created`. The type keeps its name from the ingest sessions of the API before recordings.",
       "type": "object",
       "required": [
         "type",
@@ -181,7 +182,7 @@
           "minLength": 1
         },
         "files_done": {
-          "description": "Files the session already stores; they are not sent again.",
+          "description": "Files storage already holds; they are not sent again.",
           "$ref": "#/$defs/count"
         },
         "bytes_done": {
@@ -275,7 +276,7 @@
       }
     },
     "completing": {
-      "description": "Every file is stored; the session is being completed.",
+      "description": "Storage holds every file; the recording is being completed.",
       "type": "object",
       "required": [
         "type"
@@ -293,6 +294,11 @@
         "dry_run",
         "name",
         "task",
+        "robot",
+        "operator",
+        "site",
+        "start_time",
+        "labels",
         "files",
         "bytes"
       ],
@@ -304,7 +310,7 @@
           "type": "boolean"
         },
         "name": {
-          "description": "Name of the ingest session: the name of the dataset directory.",
+          "description": "Name of the recording: the name of the dataset directory, cut to 128 characters.",
           "type": "string",
           "minLength": 1
         },
@@ -312,6 +318,41 @@
           "description": "The `--task` value.",
           "type": "string",
           "minLength": 1
+        },
+        "robot": {
+          "description": "The `--robot` value: serial number of the robot; null without it.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "operator": {
+          "description": "The `--operator` value with `--dry-run`. Otherwise the operator of the recording: the signed-in user without `--operator`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "site": {
+          "description": "The `--site` value; null without it.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "start_time": {
+          "description": "The `--start-time` value, an RFC 3339 date-time; null without it.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "labels": {
+          "description": "The `--label` values as an object of key and value.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
         },
         "files": {
           "$ref": "#/$defs/count"
@@ -331,6 +372,7 @@
       "then": {
         "required": [
           "session_id",
+          "dataset_id",
           "format",
           "robot_type",
           "fps",
@@ -340,11 +382,19 @@
         ],
         "properties": {
           "session_id": {
+            "description": "Id of the recording. The key keeps its name from the ingest sessions of the API before recordings.",
             "type": "string",
             "minLength": 1
           },
+          "dataset_id": {
+            "description": "Id of the dataset the episodes went into.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "format": {
-            "description": "Dataset format the API detected, such as `lerobot_v3`.",
+            "description": "Dataset format the API detected, such as `v3` or `v2.1`.",
             "type": [
               "string",
               "null"
@@ -363,19 +413,16 @@
             ]
           },
           "episodes": {
-            "type": [
-              "integer",
-              "null"
-            ],
+            "type": "integer",
             "minimum": 0
           },
           "status": {
-            "description": "`ready`, `uploading`, or another value of the API.",
+            "description": "`processing` or `ready` once the upload is complete, or another value of the API in lowercase.",
             "type": "string",
             "minLength": 1
           },
           "resumed": {
-            "description": "`true` when the upload continued the ingest session of an interrupted upload.",
+            "description": "`true` when the upload continued the recording of an interrupted upload.",
             "type": "boolean"
           }
         }

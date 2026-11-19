@@ -30,9 +30,9 @@ struct Truncated {
 /// again from its first byte. A new `.part` file is created only after the status and
 /// `Content-Length` are accepted.
 ///
-/// Storage statuses map as follows: 403 to [`DownloadError::UrlExpired`], 429 and 503 to
-/// [`Error::RateLimited`], other 5xx to [`Error::Server`], any other non-success status to
-/// [`DownloadError::Storage`]. No error carries the URL.
+/// Storage statuses map as follows: 403 to [`DownloadError::UrlExpired`], 429 and 503
+/// with `Retry-After` to [`Error::RateLimited`], other 429 and 5xx to [`Error::Server`],
+/// any other non-success status to [`DownloadError::Storage`]. No error carries the URL.
 pub(crate) async fn fetch(
     http: &reqwest::Client,
     url: &StorageUrl,
@@ -139,15 +139,16 @@ fn check_status(
     match status.as_u16() {
         _ if status.is_success() => Ok(()),
         403 => Err(failed(DownloadError::UrlExpired)),
-        429 | 503 => Err(Error::RateLimited {
+        429 | 503 if retry_after(headers).is_some() => Err(Error::RateLimited {
             retry_after: retry_after(headers),
         }),
-        code @ 500..=599 => Err(Error::Server {
+        code @ (429 | 500..=599) => Err(Error::Server {
             status: code,
             message: status
                 .canonical_reason()
                 .unwrap_or("server error")
                 .to_owned(),
+            retry_after: None,
         }),
         code => Err(failed(DownloadError::Storage { status: code })),
     }

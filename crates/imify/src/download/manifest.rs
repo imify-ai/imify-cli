@@ -4,27 +4,31 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::path::PathBuf;
 
-use reqwest::{Method, Url};
+use reqwest::Url;
 use serde::Deserialize;
 
 use super::DownloadSource;
 use crate::client::is_loopback;
-use crate::retry::RetryMode;
+use crate::policies::TRAINING_RUNS;
+use crate::resource;
 use crate::{Client, DownloadError, Error};
 
-const TRAINING_RUNS_PATH: &str = "api/v1/training-runs";
-
+/// `GET /api/v1/trainingRuns/{r}/checkpoints/{c}`: the checkpoint with its `files`.
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct WireManifest {
-    files: Vec<WireEntry>,
-    total_size_bytes: u64,
+    #[serde(default)]
+    files: Option<Vec<WireEntry>>,
+    size_bytes: u64,
 }
 
+/// One file of a checkpoint. `uri` is presigned and valid until `uriExpireTime`.
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct WireEntry {
-    relative_path: String,
-    url: String,
-    size: u64,
+    path: String,
+    uri: String,
+    size_bytes: u64,
 }
 
 /// A manifest whose entries passed every check.
@@ -101,57 +105,55 @@ impl Manifest {
 ///
 /// Returns [`Error::Download`] with [`DownloadError::UnsafePath`] or
 /// [`DownloadError::UnsafeUrl`] for a refused entry, and [`Error::UnexpectedResponse`]
-/// when `total_size_bytes` is not the sum of the sizes.
+/// when the checkpoint has no `files` or `sizeBytes` is not the sum of their sizes.
 pub(crate) async fn fetch(client: &Client, source: &DownloadSource) -> Result<Manifest, Error> {
-    let wire: WireManifest = client
-        .execute_at(
-            RetryMode::Idempotent,
-            Method::GET,
-            manifest_url(client, source)?,
-            None,
-        )
-        .await?;
+    let wire: WireManifest = resource::get(client, manifest_url(client, source)?).await?;
     check(wire)
 }
 
 fn manifest_url(client: &Client, source: &DownloadSource) -> Result<Url, Error> {
     let DownloadSource::Checkpoint { policy, checkpoint } = source;
-    let mut url = client.url(TRAINING_RUNS_PATH)?;
-    url.path_segments_mut()
-        .map_err(|()| Error::Config {
-            message: "base URL cannot have a path".to_owned(),
-        })?
-        .pop_if_empty()
-        .extend([policy.as_str(), "checkpoints", checkpoint.as_str()]);
-    Ok(url)
+    resource::url(
+        client,
+        [
+            TRAINING_RUNS,
+            policy.as_str(),
+            "checkpoints",
+            checkpoint.as_str(),
+        ],
+    )
 }
 
 fn check(wire: WireManifest) -> Result<Manifest, Error> {
-    let total = wire
-        .files
+    let Some(files) = wire.files else {
+        return Err(Error::UnexpectedResponse {
+            status: 200,
+            message: "the checkpoint lists no files".to_owned(),
+        });
+    };
+    let total = files
         .iter()
-        .try_fold(0_u64, |sum, entry| sum.checked_add(entry.size));
-    if total != Some(wire.total_size_bytes) {
+        .try_fold(0_u64, |sum, entry| sum.checked_add(entry.size_bytes));
+    if total != Some(wire.size_bytes) {
         return Err(Error::UnexpectedResponse {
             status: 200,
             message: format!(
-                "the manifest lists total_size_bytes {} for files of another total size",
-                wire.total_size_bytes
+                "the checkpoint lists sizeBytes {} for files of another total size",
+                wire.size_bytes
             ),
         });
     }
-    let entries = wire
-        .files
+    let entries = files
         .into_iter()
         .map(|entry| {
-            check_path(&entry.relative_path)
-                .and_then(|()| check_url(&entry.url))
+            check_path(&entry.path)
+                .and_then(|()| check_url(&entry.uri))
                 .map(|url| Entry {
                     url,
-                    size: entry.size,
-                    path: entry.relative_path.clone(),
+                    size: entry.size_bytes,
+                    path: entry.path.clone(),
                 })
-                .map_err(|reason| refused(&entry.relative_path, reason))
+                .map_err(|reason| refused(&entry.path, reason))
         })
         .collect::<Result<Vec<_>, _>>()?;
     check_collisions(&entries)?;

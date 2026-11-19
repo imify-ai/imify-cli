@@ -17,6 +17,7 @@ ignore = [
     { id = "RUSTSEC-2026-0370", reason = "zvariant: merged into zbus 6, no release of secret-service on zbus 6" },
     { id = "RUSTSEC-2026-0371", reason = "zbus_names: merged into zbus 6, no release of secret-service on zbus 6" },
     { id = "RUSTSEC-2026-0372", reason = "zvariant_derive: merged into zbus 6, no release of secret-service on zbus 6" },
+    { id = "RUSTSEC-2026-0543", reason = "chrono: unmaintained, comes with parquet, no release of parquet without it" },
 ]
 
 [licenses]

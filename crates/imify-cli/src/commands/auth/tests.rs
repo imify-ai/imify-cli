@@ -120,11 +120,11 @@ impl Hosts {
     async fn start_without_config_json() -> Self {
         let api = MockServer::start().await;
         Mock::given(method("GET"))
-            .and(path("/api/v1/me"))
+            .and(path("/api/v1/users/me"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "subject": "user-1234",
-                "name": "Ada Lovelace",
-                "role": "admin",
+                "name": "users/user-1234",
+                "displayName": "Ada Lovelace",
+                "role": "ADMIN",
             })))
             .mount(&api)
             .await;
@@ -378,7 +378,7 @@ async fn login_confirms_the_account_with_the_new_id_token() {
     let requests = hosts.api.received_requests().await.unwrap();
     let me = requests
         .iter()
-        .find(|request| request.url.path() == "/api/v1/me")
+        .find(|request| request.url.path() == "/api/v1/users/me")
         .unwrap();
     let authorization = me.headers.get("authorization").unwrap().to_str().unwrap();
     let stored = serde_json::to_value(hosts.stored().unwrap()).unwrap();

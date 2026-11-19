@@ -20,8 +20,8 @@
       "type": "string"
     },
     "role": {
-      "description": "Platform role, such as `admin`.",
-      "type": "string"
+      "description": "Platform role in lowercase, such as `admin` or `reviewer`; null for a user in no role group, who has no access.",
+      "type": ["string", "null"]
     },
     "storage": {
       "description": "Where the login is stored: the OS keychain, or a file readable only by the user.",

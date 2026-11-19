@@ -2,4 +2,4 @@
 source: crates/imify-cli/src/tui/upload/tests.rs
 expression: text
 ---
-Interrupted after 5 of 8 files. Ingest session 3f2c9a stays open.
+Interrupted after 5 of 8 files. Recording 3f2c9a stays open.

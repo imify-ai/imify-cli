@@ -9,7 +9,7 @@ One file per decision, numbered in order. A decision is changed by a new ADR tha
 | [0003](0003-output-contract.md) | Output contract for scripts and agents |
 | [0004](0004-authentication.md) | Browser login, environment token, platform tokens later |
 | [0005](0005-host-discovery-and-profiles.md) | Host discovery and profiles |
-| [0006](0006-upload-transport.md) | Streaming PUT upload with a local resume journal |
+| [0006](0006-upload-transport.md) | Streaming PUT upload with a local resume journal (superseded by 0017) |
 | [0007](0007-server-derived-dataset-identity.md) | Dataset identity is derived by the server |
 | [0008](0008-inline-tui.md) | Inline TUI only in the first release |
 | [0009](0009-sdk-types-and-api-contract.md) | Hand-written SDK types, contract-tested against OpenAPI (superseded by 0015) |
@@ -20,6 +20,7 @@ One file per decision, numbered in order. A decision is changed by a new ADR tha
 | [0014](0014-ci-gates-and-guarded-paths.md) | CI gates and guarded paths |
 | [0015](0015-generated-sdk-api-layer.md) | SDK API layer generated from the vendored OpenAPI document |
 | [0016](0016-self-update-and-update-check.md) | Self update and update check |
+| [0017](0017-direct-to-storage-upload.md) | Direct-to-storage upload into recordings |
 
 ## Template
 

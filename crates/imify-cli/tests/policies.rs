@@ -51,77 +51,136 @@ fn error_code(output: &Output) -> Option<String> {
     envelope["error"]["code"].as_str().map(str::to_owned)
 }
 
+/// A succeeded `act` run of the dataset version `v3` of `PICK_DATASET`, as the API sends
+/// it. The other runs change some of its fields.
 fn act_body() -> serde_json::Value {
     json!({
-        "id": ACT_ID,
-        "version_id": "ver-41d2",
-        "dataset_id": PICK_DATASET,
+        "name": format!("trainingRuns/{ACT_ID}"),
+        "datasetVersion": format!("datasets/{PICK_DATASET}/versions/v3"),
         "policy": "act",
-        "backend": "sagemaker",
-        "status": "succeeded",
+        "backend": "LOCAL",
+        "state": "SUCCEEDED",
         "phase": "done",
         "step": 20000,
-        "total_steps": 20000,
+        "stepCount": 20000,
+        "imageUri": null,
         "error": null,
-        "created_at": "2026-10-01T09:30:00Z",
-        "started_at": "2026-10-01T09:31:12Z",
-        "finished_at": "2026-10-01T11:02:40Z"
+        "createTime": "2026-10-01T09:30:00Z",
+        "startTime": "2026-10-01T09:31:12Z",
+        "endTime": "2026-10-01T11:02:40Z"
     })
+}
+
+/// `body` with the fields of `changes` replaced.
+fn with(mut body: serde_json::Value, changes: &serde_json::Value) -> serde_json::Value {
+    if let (Some(fields), Some(changes)) = (body.as_object_mut(), changes.as_object()) {
+        fields.extend(changes.clone());
+    }
+    body
 }
 
 fn groot_body() -> serde_json::Value {
-    json!({
-        "id": GROOT_ID,
-        "version_id": "ver-77a0",
-        "dataset_id": STACK_DATASET,
-        "policy": "groot_n1.7",
-        "backend": "local",
-        "status": "running",
-        "phase": "training",
-        "step": 1200,
-        "total_steps": 30000,
-        "error": null,
-        "created_at": "2026-10-02T08:00:00Z",
-        "started_at": "2026-10-02T08:01:00Z",
-        "finished_at": null
-    })
+    with(
+        act_body(),
+        &json!({
+            "name": format!("trainingRuns/{GROOT_ID}"),
+            "datasetVersion": format!("datasets/{STACK_DATASET}/versions/v1"),
+            "policy": "groot_n1.7",
+            "state": "RUNNING",
+            "phase": "training",
+            "step": 1200,
+            "stepCount": 30000,
+            "createTime": "2026-10-02T08:00:00Z",
+            "startTime": "2026-10-02T08:01:00Z",
+            "endTime": null
+        }),
+    )
 }
 
 fn queued_body() -> serde_json::Value {
-    json!({
-        "id": QUEUED_ID,
-        "version_id": "ver-41d2",
-        "dataset_id": PICK_DATASET,
-        "policy": "pi0.5",
-        "backend": "local",
-        "status": "provisioning",
-        "phase": "waiting",
-        "step": 0,
-        "total_steps": 10000,
-        "error": null,
-        "created_at": "2026-10-03T07:15:00Z",
-        "started_at": null,
-        "finished_at": null
-    })
+    with(
+        act_body(),
+        &json!({
+            "name": format!("trainingRuns/{QUEUED_ID}"),
+            "policy": "pi0.5",
+            "state": "PROVISIONING",
+            "phase": "waiting",
+            "step": 0,
+            "stepCount": 10000,
+            "createTime": "2026-10-03T07:15:00Z",
+            "startTime": null,
+            "endTime": null
+        }),
+    )
 }
 
-fn lineage_body() -> serde_json::Value {
-    json!({
-        "dataset_id": PICK_DATASET,
-        "version_id": "ver-41d2",
-        "version_name": "v3",
-        "task_description": "Pick up the red cube",
-        "embodiment_label": "so100",
-        "embodiment_fingerprint": "so100-f3a9c1",
-        "episode_count": 2,
-        "episode_ids": ["ep-0001", "ep-0002"]
-    })
+/// The AIP-193 error the API answers with `code`, `status` and `message`.
+fn api_error(code: u16, status: &str, message: &str) -> serde_json::Value {
+    json!({"error": {"code": code, "status": status, "message": message}})
+}
+
+/// Mounts the reads of the lineage of `ACT_ID`: its dataset version `v3`, its dataset, the
+/// embodiment and two episodes.
+async fn mount_lineage(server: &MockServer) {
+    let version = format!("datasets/{PICK_DATASET}/versions/v3");
+    mount_json(
+        server,
+        &format!("/api/v1/{version}"),
+        200,
+        json!({
+            "name": version,
+            "uid": "ver-41d2",
+            "episodeCount": 2,
+            "createTime": "2026-09-30T00:00:00Z"
+        }),
+    )
+    .await;
+    mount_json(
+        server,
+        &format!("/api/v1/datasets/{PICK_DATASET}"),
+        200,
+        json!({
+            "name": format!("datasets/{PICK_DATASET}"),
+            "task": "Pick up the red cube",
+            "embodiment": "embodiments/so100-f3a9c1"
+        }),
+    )
+    .await;
+    mount_json(
+        server,
+        "/api/v1/embodiments/so100-f3a9c1",
+        200,
+        json!({"name": "embodiments/so100-f3a9c1", "displayName": "so100"}),
+    )
+    .await;
+    mount_json(
+        server,
+        "/api/v1/episodes",
+        200,
+        json!({"episodes": [{"name": "episodes/ep-0002"}, {"name": "episodes/ep-0001"}]}),
+    )
+    .await;
+}
+
+/// Checkpoints as the List of the API sends them.
+fn checkpoint_page(checkpoints: &[(&str, u64, &str)]) -> serde_json::Value {
+    let checkpoints: Vec<serde_json::Value> = checkpoints
+        .iter()
+        .map(|(id, size, time)| {
+            json!({
+                "name": format!("trainingRuns/{ACT_ID}/checkpoints/{id}"),
+                "sizeBytes": size,
+                "updateTime": time
+            })
+        })
+        .collect();
+    json!({ "checkpoints": checkpoints })
 }
 
 fn checkpoints_body() -> serde_json::Value {
-    json!([
-        {"id": "010000", "size": 1_288_490_189_u64, "last_modified": "2026-10-01T10:15:02Z"},
-        {"id": "020000", "size": 1_288_490_189_u64, "last_modified": "2026-10-01T11:01:55Z"}
+    checkpoint_page(&[
+        ("010000", 1_288_490_189, "2026-10-01T10:15:02Z"),
+        ("020000", 1_288_490_189, "2026-10-01T11:01:55Z"),
     ])
 }
 
@@ -135,7 +194,13 @@ async fn mount_json(server: &MockServer, route: &str, status: u16, body: serde_j
 
 async fn api_with_policies(body: serde_json::Value) -> MockServer {
     let server = MockServer::start().await;
-    mount_json(&server, "/api/v1/training-runs", 200, body).await;
+    mount_json(
+        &server,
+        "/api/v1/trainingRuns",
+        200,
+        json!({ "trainingRuns": body }),
+    )
+    .await;
     server
 }
 
@@ -243,9 +308,9 @@ async fn policies_list_with_a_rejected_token_fails_with_auth_rejected() {
     let server = MockServer::start().await;
     mount_json(
         &server,
-        "/api/v1/training-runs",
+        "/api/v1/trainingRuns",
         401,
-        json!({"detail": "Invalid token"}),
+        api_error(401, "UNAUTHENTICATED", "Invalid token"),
     )
     .await;
 
@@ -258,9 +323,9 @@ async fn policies_list_with_a_rejected_token_fails_with_auth_rejected() {
 /// A server that knows the policy `ACT_ID` with its lineage and `checkpoints`.
 async fn api_with_act(checkpoints: serde_json::Value) -> MockServer {
     let server = MockServer::start().await;
-    let base = format!("/api/v1/training-runs/{ACT_ID}");
+    let base = format!("/api/v1/trainingRuns/{ACT_ID}");
     mount_json(&server, &base, 200, act_body()).await;
-    mount_json(&server, &format!("{base}/lineage"), 200, lineage_body()).await;
+    mount_lineage(&server).await;
     mount_json(&server, &format!("{base}/checkpoints"), 200, checkpoints).await;
     server
 }
@@ -287,7 +352,7 @@ async fn policies_show_json_prints_the_policy_its_lineage_and_its_checkpoints() 
 
 #[tokio::test(flavor = "multi_thread")]
 async fn policies_show_without_checkpoints_says_so() {
-    let server = api_with_act(json!([])).await;
+    let server = api_with_act(json!({})).await;
 
     let output = imify(&server, &["policies", "show", ACT_ID]);
 
@@ -304,9 +369,9 @@ async fn policies_show_of_an_unknown_policy_fails_with_not_found() {
     let server = MockServer::start().await;
     mount_json(
         &server,
-        "/api/v1/training-runs/run-unknown",
+        "/api/v1/trainingRuns/run-unknown",
         404,
-        json!({"detail": "Training run not found"}),
+        api_error(404, "NOT_FOUND", "Training run not found"),
     )
     .await;
 
@@ -349,11 +414,35 @@ fn checkpoint_files_size() -> usize {
 
 /// Checkpoints of `ACT_ID`, not ordered by step; `020000` holds `CHECKPOINT_FILES`.
 fn checkpoint_listing() -> serde_json::Value {
-    json!([
-        {"id": "005000", "size": 1024, "last_modified": "2026-10-01T09:45:00Z"},
-        {"id": "020000", "size": checkpoint_files_size(), "last_modified": "2026-10-01T11:01:55Z"},
-        {"id": "010000", "size": 1024, "last_modified": "2026-10-01T10:15:02Z"}
+    checkpoint_page(&[
+        ("005000", 1024, "2026-10-01T09:45:00Z"),
+        (
+            "020000",
+            checkpoint_files_size() as u64,
+            "2026-10-01T11:01:55Z",
+        ),
+        ("010000", 1024, "2026-10-01T10:15:02Z"),
     ])
+}
+
+/// The checkpoint `020000` with `files` and their total size.
+fn checkpoint_with_files(files: &[serde_json::Value], size: usize) -> serde_json::Value {
+    json!({
+        "name": format!("trainingRuns/{ACT_ID}/checkpoints/020000"),
+        "sizeBytes": size,
+        "updateTime": "2026-10-01T11:01:55Z",
+        "files": files
+    })
+}
+
+/// A file of a checkpoint served from `url`.
+fn checkpoint_file(path: &str, url: &str, size: usize) -> serde_json::Value {
+    json!({
+        "path": path,
+        "uri": url,
+        "sizeBytes": size,
+        "uriExpireTime": "2026-10-01T12:00:00Z"
+    })
 }
 
 /// An API that lists `checkpoints` for `ACT_ID` and serves the manifest of `020000`, and a
@@ -367,23 +456,26 @@ impl DownloadApi {
     async fn start(checkpoints: serde_json::Value) -> Self {
         let api = MockServer::start().await;
         let storage = MockServer::start().await;
-        let base = format!("/api/v1/training-runs/{ACT_ID}");
+        let base = format!("/api/v1/trainingRuns/{ACT_ID}");
         mount_json(&api, &format!("{base}/checkpoints"), 200, checkpoints).await;
         let files: Vec<serde_json::Value> = CHECKPOINT_FILES
             .iter()
             .map(|(relative_path, bytes)| {
-                json!({
-                    "relative_path": relative_path,
-                    "url": format!("{}/bucket/{relative_path}?X-Amz-Signature=sig", storage.uri()),
-                    "size": bytes.len(),
-                })
+                checkpoint_file(
+                    relative_path,
+                    &format!(
+                        "{}/bucket/{relative_path}?X-Amz-Signature=sig",
+                        storage.uri()
+                    ),
+                    bytes.len(),
+                )
             })
             .collect();
         mount_json(
             &api,
             &format!("{base}/checkpoints/020000"),
             200,
-            json!({"files": files, "total_size_bytes": checkpoint_files_size()}),
+            checkpoint_with_files(&files, checkpoint_files_size()),
         )
         .await;
         for (relative_path, bytes) in CHECKPOINT_FILES {
@@ -581,7 +673,7 @@ async fn policies_download_into_a_path_below_a_file_fails_with_io() {
 async fn policies_download_of_a_file_storage_does_not_have_fails_with_server() {
     let api = MockServer::start().await;
     let storage = MockServer::start().await;
-    let base = format!("/api/v1/training-runs/{ACT_ID}");
+    let base = format!("/api/v1/trainingRuns/{ACT_ID}");
     mount_json(
         &api,
         &format!("{base}/checkpoints"),
@@ -593,14 +685,14 @@ async fn policies_download_of_a_file_storage_does_not_have_fails_with_server() {
         &api,
         &format!("{base}/checkpoints/020000"),
         200,
-        json!({
-            "files": [{
-                "relative_path": "pretrained_model/config.json",
-                "url": format!("{}/bucket/missing?X-Amz-Signature=sig", storage.uri()),
-                "size": 16,
-            }],
-            "total_size_bytes": 16,
-        }),
+        checkpoint_with_files(
+            &[checkpoint_file(
+                "pretrained_model/config.json",
+                &format!("{}/bucket/missing?X-Amz-Signature=sig", storage.uri()),
+                16,
+            )],
+            16,
+        ),
     )
     .await;
     let dir = tempfile::tempdir().unwrap();
@@ -625,7 +717,7 @@ async fn policies_download_of_an_unknown_checkpoint_fails_with_not_found_and_dow
 
 #[tokio::test(flavor = "multi_thread")]
 async fn policies_download_latest_of_a_policy_without_checkpoints_fails_with_not_found() {
-    let api = DownloadApi::start(json!([])).await;
+    let api = DownloadApi::start(json!({})).await;
     let dir = tempfile::tempdir().unwrap();
 
     let output = download_in(dir.path(), &api.api, &[ACT_ID, "latest", "--json"]);
@@ -639,9 +731,9 @@ async fn policies_download_of_an_unknown_policy_fails_with_not_found() {
     let api = MockServer::start().await;
     mount_json(
         &api,
-        "/api/v1/training-runs/run-unknown/checkpoints",
+        "/api/v1/trainingRuns/run-unknown/checkpoints",
         404,
-        json!({"detail": "Training run not found"}),
+        api_error(404, "NOT_FOUND", "Training run not found"),
     )
     .await;
     let dir = tempfile::tempdir().unwrap();

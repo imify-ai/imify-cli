@@ -24,7 +24,7 @@ const PATH_MIN_WIDTH: usize = 20;
 const GAP: &str = "  ";
 const INDENT: &str = "  ";
 
-/// What the view shows: an upload into an ingest session, or a download into a directory.
+/// What the view shows: an upload into a recording, or a download into a directory.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Transfer {
     Upload,
@@ -37,7 +37,7 @@ enum Transfer {
 /// What the transfer is doing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Phase {
-    CreatingSession,
+    Preparing,
     Transferring,
     Completing,
     Finished { at: Duration },
@@ -68,7 +68,7 @@ pub struct UploadView {
     /// `None` when the number of files is not known before the transfer.
     total_files: Option<usize>,
     total_bytes: u64,
-    session: Option<String>,
+    recording: Option<String>,
     phase: Phase,
     pause: Option<Pause>,
     in_flight: Vec<FileInFlight>,
@@ -93,8 +93,8 @@ impl UploadView {
             name: name.into(),
             total_files: Some(total_files),
             total_bytes,
-            session: None,
-            phase: Phase::CreatingSession,
+            recording: None,
+            phase: Phase::Preparing,
             pause: None,
             in_flight: Vec::new(),
             finished_files: 0,
@@ -197,7 +197,7 @@ impl UploadView {
             (Phase::Transferring, Some(pause)) => {
                 format!("Paused (rate limited, {})", format::duration(pause.pause))
             }
-            (Phase::CreatingSession, _) => "Creating session".to_owned(),
+            (Phase::Preparing, _) => "Preparing".to_owned(),
             (Phase::Transferring, None) => match self.transfer {
                 Transfer::Upload => "Uploading".to_owned(),
                 Transfer::Download { .. } => "Downloading".to_owned(),
@@ -209,9 +209,9 @@ impl UploadView {
             Span::styled(label, self.theme.accent),
             Span::raw(format!("{GAP}{}", self.name)),
         ];
-        if let Some(session) = &self.session {
+        if let Some(recording) = &self.recording {
             spans.push(Span::styled(
-                format!("{GAP}session {session}"),
+                format!("{GAP}recording {recording}"),
                 self.theme.muted,
             ));
         }
@@ -315,7 +315,7 @@ impl UploadView {
                 self.theme.success,
             ),
             Phase::Failed => Line::styled(format!("Failed after {done}."), self.theme.error),
-            Phase::CreatingSession | Phase::Transferring | Phase::Completing => Line::styled(
+            Phase::Preparing | Phase::Transferring | Phase::Completing => Line::styled(
                 format!("Interrupted after {done}. Run the same command again to continue."),
                 self.theme.warning,
             ),
@@ -384,16 +384,16 @@ impl View for UploadView {
             self.pause = None;
         }
         match event.step {
-            UploadStep::SessionCreated { session } => {
-                self.session = Some(session);
+            UploadStep::RecordingCreated { recording } => {
+                self.recording = Some(recording);
                 self.phase = Phase::Transferring;
             }
-            UploadStep::SessionResumed {
-                session,
+            UploadStep::RecordingResumed {
+                recording,
                 files_done,
                 bytes_done,
             } => {
-                self.session = Some(session);
+                self.recording = Some(recording);
                 self.phase = Phase::Transferring;
                 self.finished_files += files_done;
                 self.finished_bytes += bytes_done;
@@ -455,11 +455,11 @@ impl View for UploadView {
         let line = match self.phase {
             Phase::Finished { at } => Line::styled(
                 format!(
-                    "Uploaded {} ({}) in {} to ingest session {}.",
+                    "Uploaded {} ({}) in {} to recording {}.",
                     files(self.finished_files),
                     format::bytes(self.finished_bytes),
                     format::duration(at),
-                    self.session.as_deref().unwrap_or_default()
+                    self.recording.as_deref().unwrap_or_default()
                 ),
                 self.theme.success,
             ),
@@ -471,15 +471,15 @@ impl View for UploadView {
                 ),
                 self.theme.error,
             ),
-            Phase::CreatingSession | Phase::Transferring | Phase::Completing => {
+            Phase::Preparing | Phase::Transferring | Phase::Completing => {
                 let interrupted = format!(
                     "Interrupted after {} of {}.",
                     self.finished_files,
                     files(total_files)
                 );
-                let text = match &self.session {
-                    Some(session) => {
-                        format!("{interrupted} Ingest session {session} stays open.")
+                let text = match &self.recording {
+                    Some(recording) => {
+                        format!("{interrupted} Recording {recording} stays open.")
                     }
                     None => interrupted,
                 };

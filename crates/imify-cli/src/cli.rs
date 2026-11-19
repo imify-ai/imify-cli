@@ -210,10 +210,11 @@ pub enum DatasetsCommand {
     )]
     Validate(ValidateArgs),
     #[command(
-        about = "Upload a local LeRobot dataset into an ingest session",
-        long_about = "Upload a local LeRobot dataset into an ingest session.\n\nValidates the dataset first and uploads nothing when the report has an error. Uploads meta/, data/ and videos/, with meta/info.json first. Writes the ingest session to stdout. Ctrl-C stops the upload and leaves the session open. Running the same upload again continues that session and sends only the files it lacks.",
+        about = "Upload a local LeRobot dataset into a recording",
+        long_about = "Upload a local LeRobot dataset into a recording.\n\nValidates the dataset first and uploads nothing when the report has an error. Uploads meta/, data/ and videos/ straight to storage. The recording is named after the directory. Writes the recording to stdout. Ctrl-C stops the upload and leaves the recording open. Running the same upload again continues that recording and sends only the files storage lacks.",
         after_help = "Examples:\n  \
             imify datasets upload ./pick-cube --task \"Pick up the red cube\"\n  \
+            imify datasets upload ./pick-cube --task \"Pick up the red cube\" --robot so100-0042 --label shift=night\n  \
             imify datasets upload ./pick-cube --task \"Pick up the red cube\" --dry-run\n  \
             imify datasets upload ./pick-cube --task \"Pick up the red cube\" --restart"
     )]
@@ -226,7 +227,7 @@ pub struct ListArgs {
     /// Keep datasets whose task contains TEXT, ignoring case
     #[arg(long, value_name = "TEXT")]
     pub task: Option<String>,
-    /// Keep datasets with exactly this format, such as `lerobot_v3`
+    /// Keep datasets with exactly this format, such as `v3` or `v2.1`
     #[arg(long)]
     pub format: Option<String>,
     /// Keep datasets with exactly this embodiment label, such as `so100`
@@ -266,13 +267,28 @@ pub struct UploadArgs {
     /// Task description of the recorded episodes
     #[arg(long, value_name = "TEXT", value_parser = not_blank)]
     pub task: String,
+    /// Serial number of the robot that recorded the episodes
+    #[arg(long, value_name = "SERIAL")]
+    pub robot: Option<String>,
+    /// Id of the operator who recorded the episodes; default: the signed-in user
+    #[arg(long, value_name = "ID")]
+    pub operator: Option<String>,
+    /// Id of the site where the episodes were recorded
+    #[arg(long, value_name = "ID")]
+    pub site: Option<String>,
+    /// Start of the recording, an RFC 3339 date-time such as 2026-11-18T09:30:00Z
+    #[arg(long, value_name = "TIME")]
+    pub start_time: Option<String>,
+    /// Label of the recording; repeat for more labels
+    #[arg(long = "label", value_name = "KEY=VALUE", value_parser = key_value)]
+    pub labels: Vec<(String, String)>,
     /// Validate and list the files to upload; needs no token and no network
     #[arg(long)]
     pub dry_run: bool,
     /// Continue the interrupted upload of PATH; fail when there is none
     #[arg(long, conflicts_with = "restart")]
     pub resume: bool,
-    /// Discard the interrupted upload of PATH and start a new ingest session
+    /// Discard the interrupted upload of PATH and start a new recording
     #[arg(long)]
     pub restart: bool,
 }
@@ -341,6 +357,14 @@ pub struct PoliciesShowArgs {
 }
 
 /// Accepts `value` unless it is empty or whitespace only.
+/// Splits `KEY=VALUE` at the first `=`.
+fn key_value(value: &str) -> Result<(String, String), &'static str> {
+    value
+        .split_once('=')
+        .map(|(key, value)| (key.to_owned(), value.to_owned()))
+        .ok_or("the value has no `=` between key and value")
+}
+
 fn not_blank(value: &str) -> Result<String, &'static str> {
     if value.trim().is_empty() {
         Err("the value is empty")

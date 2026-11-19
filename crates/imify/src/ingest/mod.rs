@@ -1,66 +1,71 @@
-//! Uploads datasets into ingest sessions.
+//! Uploads datasets into recordings.
 //!
 //! ```no_run
 //! # async fn run() -> Result<(), imify::Error> {
 //! use imify::Client;
 //! use imify::auth::StaticToken;
-//! use imify::ingest::{NewSession, UploadEvent, UploadPlan, Uploader};
+//! use imify::ingest::{NewRecording, UploadEvent, UploadPlan, Uploader};
 //!
 //! let client = Client::builder("https://api.example.com")
 //!     .token_source(StaticToken::new("<access token>"))
 //!     .build()?;
 //! let plan = UploadPlan::from_dir("datasets/pick-place")?;
-//! let session = Uploader::new(client)
+//! let recording = Uploader::new(client)
 //!     .on_event(|event| {
 //!         if let UploadEvent::FileFinished { path, size } = event {
 //!             println!("{path}: {size} bytes");
 //!         }
 //!     })
-//!     .upload(&plan, &NewSession::new("pick-place").task_description("Pick up the red cube"))
+//!     .upload(&plan, &NewRecording::new("pick-place").task("Pick up the red cube"))
 //!     .await?;
-//! println!("session {} is {:?}", session.id, session.status);
+//! println!("recording {} is {}", recording.id, recording.state);
 //! # Ok(()) }
 //! ```
 //!
-//! An upload creates a session, sends `meta/info.json`, sends the remaining files with
-//! bounded concurrency and completes the session. Each file is streamed from disk, so
-//! memory use does not grow with file size. Request starts of all files are spaced by
-//! [`UploadOptions::request_interval`]; a rate-limited response holds all starts for the
-//! requested delay.
+//! An upload computes the SHA-256 of every file, creates a recording, announces the files
+//! with their sizes and SHA-256, sends each file with one `PUT` straight to storage at the
+//! presigned URL the API returns, and completes the recording. File bytes never pass
+//! through the API, and requests to storage carry no `Authorization` header. Each file is
+//! streamed from disk, so memory use does not grow with file size. Request starts of all
+//! files are spaced by [`UploadOptions::request_interval`]. A rate-limited API request is
+//! reported in [`UploadEvent::RateLimited`] and sent again after the pause.
 //!
 //! # Resume
 //!
 //! ```no_run
 //! # async fn run(client: imify::Client) -> Result<(), imify::Error> {
-//! use imify::ingest::{NewSession, ResumePolicy, UploadPlan, Uploader};
+//! use imify::ingest::{NewRecording, ResumePolicy, UploadPlan, Uploader};
 //!
 //! let plan = UploadPlan::from_dir("datasets/pick-place")?;
-//! let session = Uploader::new(client)
+//! let recording = Uploader::new(client)
 //!     .journal("/home/robot/.local/state/imify/uploads", ResumePolicy::IfJournaled)
-//!     .upload(&plan, &NewSession::new("pick-place"))
+//!     .upload(&plan, &NewRecording::new("pick-place"))
 //!     .await?;
 //! # Ok(()) }
 //! ```
 //!
-//! With [`Uploader::journal`], [`Uploader::upload`] records each stored file in a journal
-//! file, one per API base URL and dataset directory. Running the same upload again
-//! continues the journaled session and sends only the files that are not journaled, or
-//! whose size or content changed since. The journal is deleted when the session is
-//! complete.
+//! With [`Uploader::journal`], [`Uploader::upload`] records the recording and each
+//! uploaded file in a journal file, one per API base URL and dataset directory. Running
+//! the same upload again continues the journaled recording: the API reports which files
+//! storage has, and only the others are sent. The journal is deleted when the recording
+//! is complete.
 
 use std::num::NonZeroUsize;
 use std::time::Duration;
 
+mod digest;
 mod engine;
+#[cfg(test)]
+mod fake_api;
 mod journal;
 pub(crate) mod pace;
 mod plan;
-mod session;
+mod recording;
 mod transport;
 
 pub use engine::Uploader;
 pub use plan::{PlannedFile, SkipReason, SkippedEntry, UploadPlan};
-pub use session::{NewSession, Session, SessionId, SessionStatus};
+pub use recording::{NewRecording, Recording, RecordingId, RecordingState, RequestId};
 
 const DEFAULT_CONCURRENCY: NonZeroUsize = match NonZeroUsize::new(4) {
     Some(value) => value,
@@ -119,21 +124,22 @@ impl Default for UploadOptions {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[non_exhaustive]
 pub enum ResumePolicy {
-    /// Continue the journaled session when a journal exists, otherwise start a new one.
+    /// Continue the journaled recording when a journal exists, otherwise start a new
+    /// one.
     #[default]
     IfJournaled,
-    /// Continue the journaled session. Fail with
+    /// Continue the journaled recording. Fail with
     /// [`JournalError::Missing`](crate::JournalError::Missing) when no journal exists.
     Required,
-    /// Delete an existing journal and start a new session. The journaled session stays
-    /// open on the server.
+    /// Delete an existing journal and start a new recording. The journaled recording
+    /// stays open on the server.
     Restart,
 }
 
 /// Progress of an upload, passed to the handler set with [`Uploader::on_event`].
 ///
 /// Events of one file arrive in order: `FileStarted`, any number of `FileProgress` and
-/// `FileRetrying`, then `FileFinished` when the file is stored.
+/// `FileRetrying`, then `FileFinished` when storage has the file.
 ///
 /// # Examples
 ///
@@ -156,17 +162,17 @@ pub enum ResumePolicy {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum UploadEvent {
-    /// The ingest session exists. It stays open when the upload fails later.
-    SessionCreated {
-        /// Id of the session.
-        session: SessionId,
+    /// The recording exists. It stays open when the upload fails later.
+    RecordingCreated {
+        /// Id of the recording.
+        recording: RecordingId,
     },
-    /// The upload continues a journaled session. Sent instead of `SessionCreated`.
-    SessionResumed {
-        /// Id of the session.
-        session: SessionId,
-        /// Files of the plan that the journal records as stored and that are not sent
-        /// again.
+    /// The upload continues a journaled recording. Sent instead of `RecordingCreated`.
+    RecordingResumed {
+        /// Id of the recording.
+        recording: RecordingId,
+        /// Files of the plan that storage has and that are not sent again. Every file
+        /// when the upload of the recording is done.
         files_done: usize,
         /// Total size of those files in bytes.
         bytes_done: u64,
@@ -194,19 +200,19 @@ pub enum UploadEvent {
         /// Description of the failure.
         reason: String,
     },
-    /// The API stored a file.
+    /// Storage has a file.
     FileFinished {
         /// Path relative to the dataset directory.
         path: String,
         /// Size in bytes.
         size: u64,
     },
-    /// The API rate-limited a request. No request starts during `pause`.
+    /// The API rate-limited a request. It is sent again after `pause`.
     RateLimited {
-        /// How long request starts are held.
+        /// How long the request waits.
         pause: Duration,
     },
-    /// The session is being completed.
+    /// The recording is being completed.
     Completing,
 }
 

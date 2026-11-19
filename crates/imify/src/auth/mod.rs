@@ -45,7 +45,9 @@ pub use stored::{CredentialStore, Revocation, StoredLogin, revoke};
 /// Supplies the access token the client sends as `Authorization: Bearer <token>`.
 ///
 /// The client asks for a token before every attempt of a request, so an implementation
-/// can refresh an expired token. The `Debug` implementation must not print the token.
+/// can refresh an expired token. When the API answers 401, the client asks
+/// [`TokenSource::renew`] once for a new token and repeats the request with it. The
+/// `Debug` implementation must not print the token.
 ///
 /// # Errors
 ///
@@ -83,6 +85,22 @@ pub trait TokenSource: Send + Sync + fmt::Debug {
     /// Returns [`Error::Auth`] when no token is available, or [`Error::Login`] when a
     /// refresh fails.
     fn token(&self) -> Pin<Box<dyn Future<Output = Result<Token, Error>> + Send + '_>>;
+
+    /// Returns a new token after the API rejected `rejected` with 401, or `None` when the
+    /// source has no other token. The client repeats the request once with the new token.
+    /// The default returns `None`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Login`] when the identity provider refuses the refresh, and
+    /// [`Error::Network`] when it cannot be reached.
+    fn renew<'a>(
+        &'a self,
+        rejected: &'a Token,
+    ) -> Pin<Box<dyn Future<Output = Result<Option<Token>, Error>> + Send + 'a>> {
+        let _ = rejected;
+        Box::pin(async { Ok(None) })
+    }
 }
 
 /// An access token. `Debug` prints `Token(<redacted>)`.

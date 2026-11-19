@@ -1,29 +1,26 @@
-//! How one file reaches the API.
+//! How one file reaches storage: one `PUT` to its presigned URL.
 
 use std::fmt;
 use std::future::Future;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::pin::{Pin, pin};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use futures_util::future::{self, Either};
 use futures_util::stream::{self, Stream, StreamExt};
-use reqwest::header::{AUTHORIZATION, CONTENT_LENGTH, CONTENT_TYPE, LOCATION};
-use reqwest::{Body, Response, Url};
-use serde::Deserialize;
-use sha2::{Digest as _, Sha256};
+use reqwest::header::{CONTENT_LENGTH, HeaderName, HeaderValue};
+use reqwest::{Body, Response, StatusCode, Url};
 use tokio::io::AsyncReadExt;
 use tokio::time::{Instant, sleep_until};
 use tokio_util::bytes::Bytes;
 use tokio_util::io::ReaderStream;
 
 use super::plan::PlannedFile;
-use super::session::{SessionId, session_url};
-use crate::client::{MAX_REDIRECTS, decode, may_follow_upload_redirect, network_error};
-use crate::{Client, Error};
+use crate::client::{network_error, read_small_body};
+use crate::{Client, Error, UploadError};
 
 /// Bytes read from disk and handed to the HTTP stack at once, per file in flight.
 const CHUNK_SIZE: usize = 256 * 1024;
@@ -36,31 +33,49 @@ pub(crate) type Digest = [u8; 32];
 /// Receives the bytes of the current request taken by the HTTP stack so far.
 pub(crate) type ProgressFn = Arc<dyn Fn(u64) + Send + Sync>;
 
+/// Where one file goes: the `uploadUri` and `uploadHeaders` of `files:batchCreate`.
+/// `Debug` names the origin of the URL only, since the URL carries a credential.
+#[derive(Clone)]
+pub(crate) struct UploadTarget {
+    pub(crate) uri: Url,
+    pub(crate) headers: Vec<(String, String)>,
+}
+
+impl fmt::Debug for UploadTarget {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("UploadTarget")
+            .field("origin", &self.uri.origin().ascii_serialization())
+            .field("headers", &self.headers)
+            .finish()
+    }
+}
+
 /// One attempt to upload one file of a plan.
 pub(crate) struct FileUpload<'a> {
-    pub(crate) session: &'a SessionId,
+    pub(crate) target: &'a UploadTarget,
     pub(crate) file: &'a PlannedFile,
     pub(crate) local_path: PathBuf,
     pub(crate) progress: ProgressFn,
 }
 
-/// Sends one file to an ingest session.
+/// Sends one file to storage.
 pub(crate) trait Transport: Send + Sync + fmt::Debug {
-    /// Sends the file once, without retries, and returns the SHA-256 of the bytes the
-    /// API stored.
-    fn put<'a>(&'a self, upload: &'a FileUpload<'a>) -> BoxFuture<'a, Result<Digest, Error>>;
+    /// Sends the file once, without retries.
+    ///
+    /// Fails with [`Error::Upload`] and [`UploadError::UrlExpired`] when storage answers
+    /// 403, [`UploadError::ChecksumMismatch`] for `BadDigest`, and
+    /// [`UploadError::Storage`] for another client error. A 429 or 5xx of storage fails
+    /// with [`Error::Server`], so the caller retries it.
+    fn put<'a>(&'a self, upload: &'a FileUpload<'a>) -> BoxFuture<'a, Result<(), Error>>;
 }
 
-/// Sends each file as one streamed `PUT` request to the API.
+/// Sends each file as one streamed `PUT` request to its presigned storage URL. The
+/// request carries `Content-Length` and the headers of the target, never an
+/// `Authorization` header.
 #[derive(Debug, Clone)]
 pub(crate) struct StreamingPut {
     client: Client,
-}
-
-#[derive(Deserialize)]
-struct StoredFile {
-    path: String,
-    size: u64,
 }
 
 impl StreamingPut {
@@ -68,63 +83,106 @@ impl StreamingPut {
         Self { client }
     }
 
-    async fn put_following_redirects(&self, upload: &FileUpload<'_>) -> Result<Digest, Error> {
-        let segments = std::iter::once("files").chain(upload.file.path().split('/'));
-        let mut url = session_url(&self.client, upload.session, segments)?;
-        let mut redirects = 0;
-        loop {
-            let (response, tracker) = self.put_once(upload, &url).await?;
-            if redirects < MAX_REDIRECTS
-                && let Some(next) = redirect_target(&url, &response)
-            {
-                url = next;
-                redirects += 1;
-                continue;
-            }
-            let limit = self.client.read_timeout();
-            tokio::time::timeout(limit, check_stored(upload.file, response))
-                .await
-                .map_err(|_| stalled(limit))??;
-            return Ok(tracker.digest());
+    async fn put_to_storage(&self, upload: &FileUpload<'_>) -> Result<(), Error> {
+        let response = self.put_once(upload).await?;
+        if response.status().is_success() {
+            return Ok(());
         }
+        let limit = self.client.read_timeout();
+        tokio::time::timeout(limit, storage_error(upload.file, response))
+            .await
+            .map_err(|_| stalled(limit))?
     }
 
-    async fn put_once(
-        &self,
-        upload: &FileUpload<'_>,
-        url: &Url,
-    ) -> Result<(Response, Arc<Tracker>), Error> {
-        let size = upload.file.size();
+    async fn put_once(&self, upload: &FileUpload<'_>) -> Result<Response, Error> {
         let tracker = Arc::new(Tracker::new());
         let body = file_body(upload, Arc::clone(&tracker)).await?;
         let mut request = self
             .client
             .upload_http()
-            .put(url.clone())
-            .header(CONTENT_TYPE, "application/octet-stream")
-            .header(CONTENT_LENGTH, size)
+            .put(upload.target.uri.clone())
+            .header(CONTENT_LENGTH, upload.file.size())
             .body(body);
-        if self.client.is_same_origin(url)
-            && let Some(authorization) = self.client.authorization().await?
-        {
-            request = request.header(AUTHORIZATION, authorization);
+        for (name, value) in &upload.target.headers {
+            let (Ok(name), Ok(value)) = (
+                HeaderName::try_from(name.as_str()),
+                HeaderValue::try_from(value.as_str()),
+            ) else {
+                return Err(Error::UnexpectedResponse {
+                    status: 200,
+                    message: format!(
+                        "the upload header {name:?} of {} is not a valid HTTP header",
+                        upload.file.path()
+                    ),
+                });
+            };
+            request = request.header(name, value);
         }
         tracker.activity.touch();
         let sent = watch(self.client.read_timeout(), &tracker.activity, async {
-            request.send().await.map_err(network_error)
+            // The presigned URL carries a credential: the error must not name it.
+            request
+                .send()
+                .await
+                .map_err(|error| network_error(error.without_url()))
         })
         .await;
         if tracker.truncated.load(Ordering::Relaxed) {
             return Err(changed_size(upload));
         }
-        Ok((sent?, tracker))
+        sent
     }
 }
 
 impl Transport for StreamingPut {
-    fn put<'a>(&'a self, upload: &'a FileUpload<'a>) -> BoxFuture<'a, Result<Digest, Error>> {
-        Box::pin(self.put_following_redirects(upload))
+    fn put<'a>(&'a self, upload: &'a FileUpload<'a>) -> BoxFuture<'a, Result<(), Error>> {
+        Box::pin(self.put_to_storage(upload))
     }
+}
+
+/// The error for a `PUT` that storage refused. Storage answers in the S3 XML shape; its
+/// `Code` tells a mismatching checksum from other client errors.
+async fn storage_error(file: &PlannedFile, response: Response) -> Result<(), Error> {
+    let status = response.status();
+    let body = read_small_body(response).await.unwrap_or_default();
+    let code = s3_code(&String::from_utf8_lossy(&body));
+    let refused = |reason| Error::Upload {
+        path: file.path().to_owned(),
+        reason,
+    };
+    Err(match status {
+        StatusCode::FORBIDDEN => refused(UploadError::UrlExpired),
+        StatusCode::BAD_REQUEST if code.as_deref() == Some("BadDigest") => {
+            refused(UploadError::ChecksumMismatch)
+        }
+        StatusCode::TOO_MANY_REQUESTS => storage_busy(status, code),
+        _ if status.is_server_error() => storage_busy(status, code),
+        _ => refused(UploadError::Storage {
+            status: status.as_u16(),
+            code,
+        }),
+    })
+}
+
+/// The retryable error for a 429 or 5xx of storage, such as `503 SlowDown`.
+fn storage_busy(status: StatusCode, code: Option<String>) -> Error {
+    Error::Server {
+        status: status.as_u16(),
+        message: format!(
+            "storage answered {}{}",
+            status.as_u16(),
+            code.map(|code| format!(" {code}")).unwrap_or_default()
+        ),
+        retry_after: None,
+    }
+}
+
+/// The text of the first `<Code>` element of an S3 error body.
+fn s3_code(body: &str) -> Option<String> {
+    let start = body.find("<Code>")? + "<Code>".len();
+    let end = start + body[start..].find("</Code>")?;
+    let code = body[start..end].trim();
+    (!code.is_empty() && code.len() <= 64).then(|| code.to_owned())
 }
 
 async fn file_body(upload: &FileUpload<'_>, tracker: Arc<Tracker>) -> Result<Body, Error> {
@@ -184,37 +242,11 @@ fn changed_size(upload: &FileUpload<'_>) -> Error {
     }
 }
 
-fn redirect_target(current: &Url, response: &Response) -> Option<Url> {
-    let location = response.headers().get(LOCATION)?.to_str().ok()?;
-    let next = current.join(location).ok()?;
-    may_follow_upload_redirect(response.status(), current, &next).then_some(next)
-}
-
-async fn check_stored(file: &PlannedFile, response: Response) -> Result<(), Error> {
-    let status = response.status().as_u16();
-    let stored: StoredFile = decode(response).await?;
-    if stored.path == file.path() && stored.size == file.size() {
-        Ok(())
-    } else {
-        Err(Error::UnexpectedResponse {
-            status,
-            message: format!(
-                "API stored {} with {} bytes, expected {} with {} bytes",
-                stored.path,
-                stored.size,
-                file.path(),
-                file.size()
-            ),
-        })
-    }
-}
-
 /// Upload state shared between the request body and the request.
 struct Tracker {
     sent: AtomicU64,
     truncated: AtomicBool,
     activity: Activity,
-    hasher: Mutex<Sha256>,
 }
 
 impl Tracker {
@@ -223,29 +255,14 @@ impl Tracker {
             sent: AtomicU64::new(0),
             truncated: AtomicBool::new(false),
             activity: Activity::new(),
-            hasher: Mutex::new(Sha256::new()),
         }
     }
 
     /// Records `bytes` as sent and returns the number of bytes sent in total.
     fn add(&self, bytes: &[u8]) -> u64 {
         self.activity.touch();
-        self.hasher
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .update(bytes);
         let count = bytes.len() as u64;
         self.sent.fetch_add(count, Ordering::Relaxed) + count
-    }
-
-    /// Returns the SHA-256 of the bytes sent so far.
-    fn digest(&self) -> Digest {
-        self.hasher
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone()
-            .finalize()
-            .into()
     }
 }
 

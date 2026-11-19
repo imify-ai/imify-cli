@@ -1,8 +1,7 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::fs;
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, SystemTime};
 
@@ -10,12 +9,17 @@ use imify_test_support::{DatasetBuilder, Format, SyntheticDataset};
 use serde_json::json;
 use sha2::{Digest as _, Sha256};
 use tempfile::TempDir;
-use transport::{BoxFuture, Digest};
+use transport::BoxFuture;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use super::*;
+use crate::ingest::fake_api::{
+    self, BATCH_CREATE, COMPLETE, RECORDING, RECORDING_PATH, RECORDINGS, Storage,
+};
 use crate::ingest::transport;
+
+const INFO_FILE: &str = "meta/info.json";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Step {
@@ -23,21 +27,42 @@ enum Step {
     Finished(String),
 }
 
-/// A transport that records when each file starts and finishes, without network I/O.
+/// A transport that records when each file starts and finishes, without network I/O. A
+/// file it sends is held by `storage`; a file with planned failures fails with the next.
 #[derive(Debug, Default)]
 struct RecordingTransport {
     steps: Mutex<Vec<Step>>,
     in_flight: AtomicUsize,
     max_in_flight: AtomicUsize,
-    rejected: HashMap<String, String>,
+    failures: Mutex<HashMap<String, VecDeque<UploadError>>>,
+    storage: Storage,
 }
 
 impl RecordingTransport {
-    fn rejecting(path: &str) -> Self {
+    fn new(storage: &Storage) -> Self {
         Self {
-            rejected: HashMap::from([(path.to_owned(), "path rejected".to_owned())]),
+            storage: storage.clone(),
             ..Self::default()
         }
+    }
+
+    /// Fails each attempt of `path` with the next of `failures`.
+    fn failing(self, path: &str, failures: &[UploadError]) -> Self {
+        self.failures
+            .lock()
+            .unwrap()
+            .insert(path.to_owned(), failures.iter().cloned().collect());
+        self
+    }
+
+    fn rejecting(storage: &Storage, path: &str) -> Self {
+        Self::new(storage).failing(
+            path,
+            &[UploadError::Storage {
+                status: 400,
+                code: Some("InvalidRequest".into()),
+            }],
+        )
     }
 
     fn steps(&self) -> Vec<Step> {
@@ -56,10 +81,9 @@ impl RecordingTransport {
 }
 
 impl Transport for RecordingTransport {
-    fn put<'a>(&'a self, upload: &'a FileUpload<'a>) -> BoxFuture<'a, Result<Digest, Error>> {
+    fn put<'a>(&'a self, upload: &'a FileUpload<'a>) -> BoxFuture<'a, Result<(), Error>> {
         Box::pin(async move {
             let path = upload.file.path().to_owned();
-            let digest = Sha256::digest(fs::read(&upload.local_path).unwrap()).into();
             self.steps.lock().unwrap().push(Step::Started(path.clone()));
             let now = self.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
             self.max_in_flight.fetch_max(now, Ordering::SeqCst);
@@ -71,13 +95,17 @@ impl Transport for RecordingTransport {
                 .lock()
                 .unwrap()
                 .push(Step::Finished(path.clone()));
-            match self.rejected.get(&path) {
-                Some(message) => Err(Error::Validation {
-                    message: message.clone(),
-                    fields: Vec::new(),
-                }),
-                None => Ok(digest),
+            let failure = self
+                .failures
+                .lock()
+                .unwrap()
+                .get_mut(&path)
+                .and_then(VecDeque::pop_front);
+            if let Some(reason) = failure {
+                return Err(Error::Upload { path, reason });
             }
+            self.storage.store(&path);
+            Ok(())
         })
     }
 }
@@ -116,10 +144,6 @@ fn uploader(base_url: &str, transport: &Arc<RecordingTransport>, concurrency: us
     Uploader::with_transport(client, transport).options(options(concurrency))
 }
 
-fn offline_uploader(transport: &Arc<RecordingTransport>, concurrency: usize) -> Uploader {
-    uploader("http://127.0.0.1:9", transport, concurrency)
-}
-
 fn recorder() -> (
     Arc<Mutex<Vec<UploadEvent>>>,
     impl Fn(&UploadEvent) + Send + Sync,
@@ -131,68 +155,40 @@ fn recorder() -> (
     })
 }
 
-fn session_body(status: &str) -> serde_json::Value {
-    json!({
-        "id": "3f2c9a",
-        "name": "pick-place",
-        "dataset_format": null,
-        "robot_type": null,
-        "fps": null,
-        "total_episodes": null,
-        "status": status,
-        "task_description": "",
-        "created_at": "2026-10-16T09:30:00Z"
-    })
-}
-
-async fn session_server() -> MockServer {
+/// A recordings API whose upload URLs point to `https://storage.example.com`.
+async fn api(storage: &Storage) -> MockServer {
     let server = MockServer::start().await;
-    Mock::given(method("POST"))
-        .and(path("/api/v1/ingest/sessions"))
-        .respond_with(ResponseTemplate::new(201).set_body_json(session_body("uploading")))
-        .mount(&server)
-        .await;
-    Mock::given(method("POST"))
-        .and(path("/api/v1/ingest/sessions/3f2c9a/complete"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(session_body("ready")))
-        .mount(&server)
-        .await;
+    fake_api::mount(&server, storage, "https://storage.example.com/bucket").await;
     server
 }
 
-fn session_id() -> SessionId {
-    SessionId::new("3f2c9a")
+fn recording_id() -> RecordingId {
+    RecordingId::new(RECORDING)
 }
 
-#[tokio::test]
-async fn no_other_file_starts_before_the_info_file_has_finished() {
-    let root = dataset(&["data/a", "data/b", "videos/c"]);
-    let plan = UploadPlan::from_dir(root.path()).unwrap();
-    let transport = Arc::new(RecordingTransport::default());
+fn new_recording() -> NewRecording {
+    NewRecording::new("pick-place").task("Pick up the red cube")
+}
 
-    offline_uploader(&transport, 4)
-        .send_files(&session_id(), &plan)
-        .await
-        .unwrap();
+async fn request_count(server: &MockServer, wanted: &str) -> usize {
+    fake_api::requests_to(server, wanted).await.len()
+}
 
-    assert_eq!(
-        transport.steps()[..2],
-        [
-            Step::Started(INFO_FILE.to_owned()),
-            Step::Finished(INFO_FILE.to_owned())
-        ]
-    );
+fn sha256_hex(content: &[u8]) -> String {
+    hex(&Sha256::digest(content).into())
 }
 
 #[tokio::test]
 async fn no_more_than_concurrency_files_are_in_flight() {
+    let storage = Storage::default();
+    let server = api(&storage).await;
     let files = data_files(12);
     let root = dataset(&files.iter().map(String::as_str).collect::<Vec<_>>());
     let plan = UploadPlan::from_dir(root.path()).unwrap();
-    let transport = Arc::new(RecordingTransport::default());
+    let transport = Arc::new(RecordingTransport::new(&storage));
 
-    offline_uploader(&transport, 3)
-        .send_files(&session_id(), &plan)
+    uploader(&server.uri(), &transport, 3)
+        .send_files(&recording_id(), &plan)
         .await
         .unwrap();
 
@@ -200,36 +196,68 @@ async fn no_more_than_concurrency_files_are_in_flight() {
 }
 
 #[tokio::test]
-async fn plan_without_the_info_file_starts_with_the_other_files() {
-    let root = dataset(&["data/a", "data/b"]);
-    let mut plan = UploadPlan::from_dir(root.path()).unwrap();
-    plan.retain(|file| file.path() != INFO_FILE);
-    let transport = Arc::new(RecordingTransport::default());
+async fn send_files_announces_every_file_with_its_sha256() {
+    let storage = Storage::default();
+    let server = api(&storage).await;
+    let root = dataset(&["data/a", "videos/b"]);
+    let plan = UploadPlan::from_dir(root.path()).unwrap();
+    let transport = Arc::new(RecordingTransport::new(&storage));
 
-    offline_uploader(&transport, 4)
-        .send_files(&session_id(), &plan)
+    uploader(&server.uri(), &transport, 2)
+        .send_files(&recording_id(), &plan)
         .await
         .unwrap();
 
-    let mut started = transport.started();
-    started.sort();
-    assert_eq!(started, ["data/a", "data/b"]);
+    let announced = storage.announced();
+    let digest = sha256_hex(b"0123456789");
+    assert_eq!(
+        (
+            announced.len(),
+            announced.values().all(|sha256| *sha256 == digest)
+        ),
+        (3, true)
+    );
+}
+
+#[tokio::test]
+async fn send_files_sends_only_the_files_storage_lacks() {
+    let storage = Storage::default();
+    storage.store("data/a");
+    let server = api(&storage).await;
+    let root = dataset(&["data/a", "data/b"]);
+    let plan = UploadPlan::from_dir(root.path()).unwrap();
+    let transport = Arc::new(RecordingTransport::new(&storage));
+
+    uploader(&server.uri(), &transport, 1)
+        .send_files(&recording_id(), &plan)
+        .await
+        .unwrap();
+
+    assert_eq!(transport.started(), [INFO_FILE, "data/b"]);
 }
 
 #[tokio::test]
 async fn failing_file_ends_send_files_and_starts_no_further_files() {
+    let storage = Storage::default();
+    let server = api(&storage).await;
     let root = dataset(&["data/a", "data/b", "data/c"]);
     let plan = UploadPlan::from_dir(root.path()).unwrap();
-    let transport = Arc::new(RecordingTransport::rejecting("data/b"));
+    let transport = Arc::new(RecordingTransport::rejecting(&storage, "data/b"));
 
-    let error = offline_uploader(&transport, 1)
-        .send_files(&session_id(), &plan)
+    let error = uploader(&server.uri(), &transport, 1)
+        .send_files(&recording_id(), &plan)
         .await
         .unwrap_err();
 
     assert_eq!(
         (
-            matches!(error, Error::Validation { ref message, .. } if message == "path rejected"),
+            matches!(
+                error,
+                Error::Upload {
+                    reason: UploadError::Storage { status: 400, .. },
+                    ..
+                }
+            ),
             transport.started()
         ),
         (
@@ -240,15 +268,135 @@ async fn failing_file_ends_send_files_and_starts_no_further_files() {
 }
 
 #[tokio::test]
-async fn events_of_one_file_arrive_started_progress_finished() {
-    let root = dataset(&["data/a"]);
+async fn an_expired_url_is_renewed_once_and_the_file_sent_again() {
+    let storage = Storage::default();
+    let server = api(&storage).await;
+    let root = dataset(&[]);
     let plan = UploadPlan::from_dir(root.path()).unwrap();
-    let transport = Arc::new(RecordingTransport::default());
+    let transport =
+        Arc::new(RecordingTransport::new(&storage).failing(INFO_FILE, &[UploadError::UrlExpired]));
+
+    uploader(&server.uri(), &transport, 1)
+        .send_files(&recording_id(), &plan)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        (
+            transport.started().len(),
+            request_count(&server, BATCH_CREATE).await,
+            storage.holds(INFO_FILE)
+        ),
+        (2, 2, true)
+    );
+}
+
+#[tokio::test]
+async fn a_url_rejected_again_after_the_renewal_fails_with_url_expired() {
+    let storage = Storage::default();
+    let server = api(&storage).await;
+    let root = dataset(&[]);
+    let plan = UploadPlan::from_dir(root.path()).unwrap();
+    let transport = Arc::new(RecordingTransport::new(&storage).failing(
+        INFO_FILE,
+        &[UploadError::UrlExpired, UploadError::UrlExpired],
+    ));
+
+    let error = uploader(&server.uri(), &transport, 1)
+        .send_files(&recording_id(), &plan)
+        .await
+        .unwrap_err();
+
+    assert!(
+        matches!(
+            error,
+            Error::Upload {
+                reason: UploadError::UrlExpired,
+                ..
+            }
+        ),
+        "{error:?}"
+    );
+    assert_eq!(transport.started().len(), 2);
+}
+
+#[tokio::test]
+async fn a_checksum_mismatch_reads_the_file_once_more_then_fails() {
+    let storage = Storage::default();
+    let server = api(&storage).await;
+    let root = dataset(&[]);
+    let plan = UploadPlan::from_dir(root.path()).unwrap();
+    let transport = Arc::new(RecordingTransport::new(&storage).failing(
+        INFO_FILE,
+        &[UploadError::ChecksumMismatch, UploadError::ChecksumMismatch],
+    ));
+
+    let error = uploader(&server.uri(), &transport, 1)
+        .send_files(&recording_id(), &plan)
+        .await
+        .unwrap_err();
+
+    assert!(
+        matches!(
+            error,
+            Error::Upload {
+                reason: UploadError::ChecksumMismatch,
+                ..
+            }
+        ),
+        "{error:?}"
+    );
+    assert_eq!(
+        (
+            transport.started().len(),
+            request_count(&server, BATCH_CREATE).await
+        ),
+        (2, 1)
+    );
+}
+
+#[tokio::test]
+async fn a_renewal_and_a_second_read_each_report_the_file_retrying() {
+    let storage = Storage::default();
+    let server = api(&storage).await;
+    let root = dataset(&[]);
+    let plan = UploadPlan::from_dir(root.path()).unwrap();
+    let transport = Arc::new(RecordingTransport::new(&storage).failing(
+        INFO_FILE,
+        &[UploadError::UrlExpired, UploadError::ChecksumMismatch],
+    ));
     let (events, handler) = recorder();
 
-    offline_uploader(&transport, 4)
+    uploader(&server.uri(), &transport, 1)
         .on_event(handler)
-        .send_files(&session_id(), &plan)
+        .send_files(&recording_id(), &plan)
+        .await
+        .unwrap();
+
+    let attempts: Vec<u32> = events
+        .lock()
+        .unwrap()
+        .iter()
+        .filter_map(|event| match event {
+            UploadEvent::FileRetrying { attempt, .. } => Some(*attempt),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(attempts, [1, 2]);
+}
+
+#[tokio::test]
+async fn events_of_one_file_arrive_started_progress_finished() {
+    let storage = Storage::default();
+    let server = api(&storage).await;
+    let root = dataset(&["data/a"]);
+    let plan = UploadPlan::from_dir(root.path()).unwrap();
+    let transport = Arc::new(RecordingTransport::new(&storage));
+    let (events, handler) = recorder();
+
+    uploader(&server.uri(), &transport, 4)
+        .on_event(handler)
+        .send_files(&recording_id(), &plan)
         .await
         .unwrap();
 
@@ -286,16 +434,17 @@ async fn events_of_one_file_arrive_started_progress_finished() {
 }
 
 #[tokio::test]
-async fn upload_reports_the_session_before_files_and_completion_after_them() {
-    let server = session_server().await;
+async fn upload_reports_the_recording_before_files_and_completion_after_them() {
+    let storage = Storage::default();
+    let server = api(&storage).await;
     let root = dataset(&["data/a", "data/b"]);
     let plan = UploadPlan::from_dir(root.path()).unwrap();
-    let transport = Arc::new(RecordingTransport::default());
+    let transport = Arc::new(RecordingTransport::new(&storage));
     let (events, handler) = recorder();
 
     uploader(&server.uri(), &transport, 2)
         .on_event(handler)
-        .upload(&plan, &NewSession::new("pick-place"))
+        .upload(&plan, &new_recording())
         .await
         .unwrap();
 
@@ -307,7 +456,7 @@ async fn upload_reports_the_session_before_files_and_completion_after_them() {
         .unwrap();
     assert_eq!(
         (
-            position(|event| matches!(event, UploadEvent::SessionCreated { .. })),
+            position(|event| matches!(event, UploadEvent::RecordingCreated { .. })),
             position(|event| matches!(event, UploadEvent::Completing)),
         ),
         (0, last_finished + 1)
@@ -315,20 +464,132 @@ async fn upload_reports_the_session_before_files_and_completion_after_them() {
 }
 
 #[tokio::test]
-async fn upload_does_not_complete_when_a_file_fails() {
-    let server = session_server().await;
+async fn upload_returns_the_completed_recording() {
+    let storage = Storage::default();
+    let server = api(&storage).await;
     let root = dataset(&["data/a"]);
+    let transport = Arc::new(RecordingTransport::new(&storage));
+
+    let recording = uploader(&server.uri(), &transport, 2)
+        .upload(
+            &UploadPlan::from_dir(root.path()).unwrap(),
+            &new_recording(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        (
+            recording.id,
+            recording.state,
+            recording.dataset_id.as_deref(),
+            recording.episode_count
+        ),
+        (recording_id(), RecordingState::Ready, Some("d-41"), 2)
+    );
+}
+
+#[tokio::test]
+async fn upload_does_not_complete_when_a_file_fails() {
+    let storage = Storage::default();
+    let server = api(&storage).await;
+    let root = dataset(&[]);
     let plan = UploadPlan::from_dir(root.path()).unwrap();
-    let transport = Arc::new(RecordingTransport::rejecting("data/a"));
+    let transport = Arc::new(RecordingTransport::rejecting(&storage, INFO_FILE));
 
     let result = uploader(&server.uri(), &transport, 2)
-        .upload(&plan, &NewSession::new("pick-place"))
+        .upload(&plan, &new_recording())
         .await;
 
-    let requests = server.received_requests().await.unwrap();
+    let paths: Vec<String> = server
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .map(|request| request.url.path().to_owned())
+        .collect();
     assert_eq!(
-        (result.is_err(), requests.len(), requests[0].url.path()),
-        (true, 1, "/api/v1/ingest/sessions")
+        (result.is_err(), paths),
+        (true, vec![RECORDINGS.to_owned(), BATCH_CREATE.to_owned()])
+    );
+}
+
+#[tokio::test]
+async fn upload_of_a_recording_created_as_done_sends_no_file() {
+    let storage = Storage::default();
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path(RECORDINGS))
+        .respond_with(ResponseTemplate::new(201).set_body_json(fake_api::recording("PROCESSING")))
+        .mount(&server)
+        .await;
+    let root = dataset(&["data/a"]);
+    let transport = Arc::new(RecordingTransport::new(&storage));
+
+    let recording = uploader(&server.uri(), &transport, 2)
+        .upload(
+            &UploadPlan::from_dir(root.path()).unwrap(),
+            &new_recording(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        (
+            recording.state,
+            transport.started(),
+            server.received_requests().await.unwrap().len()
+        ),
+        (RecordingState::Processing, Vec::<String>::new(), 1)
+    );
+}
+
+#[tokio::test]
+async fn upload_with_a_setting_outside_the_limits_fails_before_any_request() {
+    let storage = Storage::default();
+    let server = api(&storage).await;
+    let root = dataset(&[]);
+    let transport = Arc::new(RecordingTransport::new(&storage));
+
+    let error = uploader(&server.uri(), &transport, 2)
+        .upload(
+            &UploadPlan::from_dir(root.path()).unwrap(),
+            &new_recording().label("Shift", "night"),
+        )
+        .await
+        .unwrap_err();
+
+    assert!(matches!(error, Error::Validation { .. }), "{error:?}");
+    assert_eq!(server.received_requests().await.unwrap().len(), 0);
+}
+
+#[tokio::test]
+async fn upload_creates_the_recording_with_a_new_uuid_request_id() {
+    let storage = Storage::default();
+    let server = api(&storage).await;
+    let root = dataset(&[]);
+    let transport = Arc::new(RecordingTransport::new(&storage));
+    let upload = uploader(&server.uri(), &transport, 2);
+    let plan = UploadPlan::from_dir(root.path()).unwrap();
+
+    upload.upload(&plan, &new_recording()).await.unwrap();
+    upload.upload(&plan, &new_recording()).await.unwrap();
+
+    let ids: Vec<String> = fake_api::requests_to(&server, RECORDINGS)
+        .await
+        .iter()
+        .map(|request| {
+            let body: serde_json::Value = request.body_json().unwrap();
+            body["requestId"].as_str().unwrap().to_owned()
+        })
+        .collect();
+    assert!(
+        ids.len() == 2
+            && ids[0] != ids[1]
+            && ids
+                .iter()
+                .all(|id| id.len() == 36 && id.as_bytes()[14] == b'4'),
+        "{ids:?}"
     );
 }
 
@@ -336,15 +597,17 @@ async fn upload_does_not_complete_when_a_file_fails() {
 fn debug_prints_the_options() {
     let transport = Arc::new(RecordingTransport::default());
 
-    let debug = format!("{:?}", offline_uploader(&transport, 2));
+    let debug = format!("{:?}", uploader("http://127.0.0.1:9", &transport, 2));
 
     assert!(debug.starts_with("Uploader { options: UploadOptions { concurrency: 2"));
 }
 
-/// A two-episode v3.0 dataset and a journal directory beside it.
+/// A two-episode v3.0 dataset, a journal directory beside it and the storage of a fake
+/// API.
 struct Resumable {
     dataset: SyntheticDataset,
     journals: TempDir,
+    storage: Storage,
 }
 
 impl Resumable {
@@ -355,7 +618,12 @@ impl Resumable {
                 .build()
                 .unwrap(),
             journals: tempfile::tempdir().unwrap(),
+            storage: Storage::default(),
         }
+    }
+
+    async fn api(&self) -> MockServer {
+        api(&self.storage).await
     }
 
     fn plan(&self) -> UploadPlan {
@@ -393,12 +661,12 @@ impl Resumable {
         server: &MockServer,
         transport: RecordingTransport,
         policy: ResumePolicy,
-        session: &NewSession,
-    ) -> (Result<Session, Error>, Vec<String>) {
+        recording: &NewRecording,
+    ) -> (Result<Recording, Error>, Vec<String>) {
         let transport = Arc::new(transport);
         let result = self
             .uploader(server, &transport, policy)
-            .upload(&self.plan(), session)
+            .upload(&self.plan(), recording)
             .await;
         (result, transport.started())
     }
@@ -408,9 +676,9 @@ impl Resumable {
         let (result, _) = self
             .upload(
                 server,
-                RecordingTransport::rejecting(&self.last_path()),
+                RecordingTransport::rejecting(&self.storage, &self.last_path()),
                 ResumePolicy::IfJournaled,
-                &NewSession::new("pick-place"),
+                &new_recording(),
             )
             .await;
         assert!(result.is_err());
@@ -420,12 +688,12 @@ impl Resumable {
         &self,
         server: &MockServer,
         policy: ResumePolicy,
-    ) -> (Result<Session, Error>, Vec<String>) {
+    ) -> (Result<Recording, Error>, Vec<String>) {
         self.upload(
             server,
-            RecordingTransport::default(),
+            RecordingTransport::new(&self.storage),
             policy,
-            &NewSession::new("pick-place"),
+            &new_recording(),
         )
         .await
     }
@@ -449,115 +717,8 @@ impl Resumable {
     }
 }
 
-async fn request_count(server: &MockServer, wanted: &str) -> usize {
-    server
-        .received_requests()
-        .await
-        .unwrap()
-        .iter()
-        .filter(|request| request.url.path() == wanted)
-        .count()
-}
-
-const SESSIONS: &str = "/api/v1/ingest/sessions";
-const COMPLETE: &str = "/api/v1/ingest/sessions/3f2c9a/complete";
-
-fn is_journal_error(result: &Result<Session, Error>, wanted: fn(&JournalError) -> bool) -> bool {
+fn is_journal_error(result: &Result<Recording, Error>, wanted: fn(&JournalError) -> bool) -> bool {
     matches!(result, Err(Error::Journal { reason, .. }) if wanted(reason))
-}
-
-#[tokio::test]
-async fn failed_upload_keeps_a_journal_of_the_session_and_the_files_stored_before_the_failure() {
-    let server = session_server().await;
-    let resumable = Resumable::new();
-
-    resumable.fail_on_last_file(&server).await;
-
-    let lines = resumable.journal_lines();
-    let journaled: Vec<&str> = lines[1..]
-        .iter()
-        .map(|entry| entry["path"].as_str().unwrap())
-        .collect();
-    let mut stored = resumable.paths();
-    stored.pop();
-    assert_eq!(
-        (lines[0]["session"].as_str(), journaled),
-        (Some("3f2c9a"), stored.iter().map(String::as_str).collect())
-    );
-}
-
-#[tokio::test]
-async fn upload_whose_session_cannot_be_created_leaves_no_journal() {
-    let server = MockServer::start().await;
-    Mock::given(method("POST"))
-        .and(path(SESSIONS))
-        .respond_with(ResponseTemplate::new(422).set_body_json(json!({ "detail": "invalid name" })))
-        .mount(&server)
-        .await;
-    let resumable = Resumable::new();
-
-    let (result, _) = resumable.rerun(&server, ResumePolicy::IfJournaled).await;
-
-    assert_eq!((result.is_err(), resumable.journal_files()), (true, vec![]));
-}
-
-#[tokio::test]
-async fn rerun_after_a_failure_sends_only_the_unjournaled_files_to_the_journaled_session() {
-    let server = session_server().await;
-    let resumable = Resumable::new();
-    resumable.fail_on_last_file(&server).await;
-
-    let (result, started) = resumable.rerun(&server, ResumePolicy::IfJournaled).await;
-
-    assert_eq!(
-        (
-            result.ok().map(|session| session.id),
-            started,
-            request_count(&server, SESSIONS).await
-        ),
-        (Some(session_id()), vec![resumable.last_path()], 1)
-    );
-}
-
-#[tokio::test]
-async fn rerun_reports_the_session_resumed_with_the_files_and_bytes_not_sent_again() {
-    let server = session_server().await;
-    let resumable = Resumable::new();
-    resumable.fail_on_last_file(&server).await;
-    let plan = resumable.plan();
-    let (done, _) = plan.files().split_at(plan.files().len() - 1);
-    let (events, handler) = recorder();
-    let transport = Arc::new(RecordingTransport::default());
-
-    resumable
-        .uploader(&server, &transport, ResumePolicy::IfJournaled)
-        .on_event(handler)
-        .upload(&plan, &NewSession::new("pick-place"))
-        .await
-        .unwrap();
-
-    assert_eq!(
-        events.lock().unwrap()[0],
-        UploadEvent::SessionResumed {
-            session: session_id(),
-            files_done: done.len(),
-            bytes_done: done.iter().map(PlannedFile::size).sum(),
-        }
-    );
-}
-
-#[tokio::test]
-async fn journaled_file_whose_size_changed_is_sent_again() {
-    let server = session_server().await;
-    let resumable = Resumable::new();
-    resumable.fail_on_last_file(&server).await;
-    let mut info = fs::read(resumable.file(INFO_FILE)).unwrap();
-    info.push(b'\n');
-    fs::write(resumable.file(INFO_FILE), info).unwrap();
-
-    let (_, started) = resumable.rerun(&server, ResumePolicy::IfJournaled).await;
-
-    assert_eq!(started, [INFO_FILE.to_owned(), resumable.last_path()]);
 }
 
 fn set_modified(path: &Path, seconds_since_epoch: u64) {
@@ -570,30 +731,104 @@ fn set_modified(path: &Path, seconds_since_epoch: u64) {
 }
 
 #[tokio::test]
-async fn journaled_file_whose_mtime_changed_and_content_did_not_is_not_sent_again() {
-    let server = session_server().await;
+async fn failed_upload_keeps_a_journal_of_the_recording_and_the_files_uploaded_before() {
     let resumable = Resumable::new();
+    let server = resumable.api().await;
+
     resumable.fail_on_last_file(&server).await;
-    set_modified(&resumable.file(INFO_FILE), 1_000_000);
 
-    let (_, started) = resumable.rerun(&server, ResumePolicy::IfJournaled).await;
-
-    assert_eq!(started, [resumable.last_path()]);
+    let lines = resumable.journal_lines();
+    let journaled: Vec<&str> = lines[1..]
+        .iter()
+        .map(|entry| entry["path"].as_str().unwrap())
+        .collect();
+    let mut uploaded = resumable.paths();
+    uploaded.pop();
+    assert_eq!(
+        (
+            lines[0]["version"].as_u64(),
+            lines[0]["recording"].as_str(),
+            lines[0]["request_id"].as_str().map(str::len),
+            lines[0]["settings"]["task"].as_str(),
+            journaled
+        ),
+        (
+            Some(2),
+            Some(RECORDING),
+            Some(36),
+            Some("Pick up the red cube"),
+            uploaded.iter().map(String::as_str).collect()
+        )
+    );
 }
 
 #[tokio::test]
-async fn journaled_file_whose_mtime_and_content_changed_at_the_same_size_is_sent_again() {
-    let server = session_server().await;
+async fn upload_whose_recording_cannot_be_created_leaves_no_journal() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path(RECORDINGS))
+        .respond_with(fake_api::api_error(400, "INVALID_ARGUMENT", "INVALID_TASK"))
+        .mount(&server)
+        .await;
     let resumable = Resumable::new();
+
+    let (result, _) = resumable.rerun(&server, ResumePolicy::IfJournaled).await;
+
+    assert_eq!((result.is_err(), resumable.journal_files()), (true, vec![]));
+}
+
+#[tokio::test]
+async fn rerun_after_a_failure_sends_only_the_files_storage_lacks_to_the_same_recording() {
+    let resumable = Resumable::new();
+    let server = resumable.api().await;
     resumable.fail_on_last_file(&server).await;
-    let info = resumable.file(INFO_FILE);
-    let changed: Vec<u8> = fs::read(&info)
-        .unwrap()
-        .iter()
-        .map(|byte| if *byte == b'3' { b'4' } else { *byte })
-        .collect();
-    fs::write(&info, changed).unwrap();
-    set_modified(&info, 1_000_000);
+
+    let (result, started) = resumable.rerun(&server, ResumePolicy::IfJournaled).await;
+
+    assert_eq!(
+        (
+            result.ok().map(|recording| recording.id),
+            started,
+            request_count(&server, RECORDINGS).await,
+            request_count(&server, RECORDING_PATH).await
+        ),
+        (Some(recording_id()), vec![resumable.last_path()], 1, 1)
+    );
+}
+
+#[tokio::test]
+async fn rerun_reports_the_recording_resumed_with_the_files_storage_holds() {
+    let resumable = Resumable::new();
+    let server = resumable.api().await;
+    resumable.fail_on_last_file(&server).await;
+    let plan = resumable.plan();
+    let (done, _) = plan.files().split_at(plan.files().len() - 1);
+    let (events, handler) = recorder();
+    let transport = Arc::new(RecordingTransport::new(&resumable.storage));
+
+    resumable
+        .uploader(&server, &transport, ResumePolicy::IfJournaled)
+        .on_event(handler)
+        .upload(&plan, &new_recording())
+        .await
+        .unwrap();
+
+    assert_eq!(
+        events.lock().unwrap()[0],
+        UploadEvent::RecordingResumed {
+            recording: recording_id(),
+            files_done: done.len(),
+            bytes_done: done.iter().map(PlannedFile::size).sum(),
+        }
+    );
+}
+
+#[tokio::test]
+async fn rerun_sends_a_journaled_file_again_that_storage_lacks() {
+    let resumable = Resumable::new();
+    let server = resumable.api().await;
+    resumable.fail_on_last_file(&server).await;
+    resumable.storage.forget(INFO_FILE);
 
     let (_, started) = resumable.rerun(&server, ResumePolicy::IfJournaled).await;
 
@@ -601,9 +836,91 @@ async fn journaled_file_whose_mtime_and_content_changed_at_the_same_size_is_sent
 }
 
 #[tokio::test]
-async fn journaled_file_that_is_gone_fails_with_mismatch_before_any_request() {
-    let server = session_server().await;
+async fn rerun_announces_the_journaled_sha256_of_a_file_with_unchanged_size_and_mtime() {
     let resumable = Resumable::new();
+    let server = resumable.api().await;
+    resumable.fail_on_last_file(&server).await;
+    let info = resumable.file(INFO_FILE);
+    let original = fs::read(&info).unwrap();
+    let modified = fs::metadata(&info).unwrap().modified().unwrap();
+    let changed: Vec<u8> = original
+        .iter()
+        .map(|byte| if *byte == b'3' { b'4' } else { *byte })
+        .collect();
+    fs::write(&info, changed).unwrap();
+    fs::File::options()
+        .write(true)
+        .open(&info)
+        .unwrap()
+        .set_modified(modified)
+        .unwrap();
+
+    let (result, _) = resumable.rerun(&server, ResumePolicy::IfJournaled).await;
+
+    assert!(result.is_ok(), "{result:?}");
+    assert_eq!(
+        resumable.storage.announced()[INFO_FILE],
+        sha256_hex(&original)
+    );
+}
+
+#[tokio::test]
+async fn rerun_announces_a_new_sha256_for_a_journaled_file_whose_mtime_changed() {
+    let resumable = Resumable::new();
+    let server = resumable.api().await;
+    resumable.fail_on_last_file(&server).await;
+    let info = resumable.file(INFO_FILE);
+    let changed: Vec<u8> = fs::read(&info)
+        .unwrap()
+        .iter()
+        .map(|byte| if *byte == b'3' { b'4' } else { *byte })
+        .collect();
+    fs::write(&info, &changed).unwrap();
+    set_modified(&info, 1_000_000);
+
+    let (result, _) = resumable.rerun(&server, ResumePolicy::IfJournaled).await;
+
+    assert!(result.is_ok(), "{result:?}");
+    assert_eq!(
+        resumable.storage.announced()[INFO_FILE],
+        sha256_hex(&changed)
+    );
+}
+
+#[tokio::test]
+async fn rerun_of_a_recording_whose_upload_is_done_returns_it_and_deletes_the_journal() {
+    let resumable = Resumable::new();
+    let server = resumable.api().await;
+    resumable.fail_on_last_file(&server).await;
+    Mock::given(method("GET"))
+        .and(path(RECORDING_PATH))
+        .respond_with(ResponseTemplate::new(200).set_body_json(fake_api::recording("READY")))
+        .with_priority(1)
+        .mount(&server)
+        .await;
+
+    let (result, started) = resumable.rerun(&server, ResumePolicy::IfJournaled).await;
+
+    assert_eq!(
+        (
+            result.ok().map(|recording| recording.state),
+            started,
+            request_count(&server, COMPLETE).await,
+            resumable.journal_files()
+        ),
+        (
+            Some(RecordingState::Ready),
+            Vec::<String>::new(),
+            0,
+            Vec::<PathBuf>::new()
+        )
+    );
+}
+
+#[tokio::test]
+async fn journaled_file_that_is_gone_fails_with_mismatch_before_any_request() {
+    let resumable = Resumable::new();
+    let server = resumable.api().await;
     resumable.fail_on_last_file(&server).await;
     let requests = server.received_requests().await.unwrap().len();
     let gone = resumable.paths()[1].clone();
@@ -624,26 +941,60 @@ async fn journaled_file_that_is_gone_fails_with_mismatch_before_any_request() {
 }
 
 #[tokio::test]
-async fn journal_of_another_task_description_fails_with_mismatch_before_any_request() {
-    let server = session_server().await;
+async fn journal_of_other_settings_fails_with_mismatch_before_any_request() {
     let resumable = Resumable::new();
+    let server = resumable.api().await;
     resumable.fail_on_last_file(&server).await;
     let requests = server.received_requests().await.unwrap().len();
 
-    let (result, _) = resumable
-        .upload(
-            &server,
-            RecordingTransport::default(),
-            ResumePolicy::IfJournaled,
-            &NewSession::new("pick-place").task_description("Stack the cups"),
-        )
-        .await;
+    for other in [
+        new_recording().task("Stack the cups"),
+        new_recording().robot("so100-0042"),
+    ] {
+        let (result, _) = resumable
+            .upload(
+                &server,
+                RecordingTransport::new(&resumable.storage),
+                ResumePolicy::IfJournaled,
+                &other,
+            )
+            .await;
+
+        assert!(
+            is_journal_error(&result, |reason| matches!(
+                reason,
+                JournalError::Mismatch(_)
+            )),
+            "{result:?}"
+        );
+    }
+    assert_eq!(server.received_requests().await.unwrap().len(), requests);
+}
+
+#[tokio::test]
+async fn journal_of_an_older_version_fails_with_outdated_before_any_request() {
+    let resumable = Resumable::new();
+    let server = resumable.api().await;
+    resumable.fail_on_last_file(&server).await;
+    let [journal] = &resumable.journal_files()[..] else {
+        panic!("expected one journal");
+    };
+    let header = json!({
+        "version": 1,
+        "session": "3f2c9a",
+        "name": "pick-place",
+        "task_description": "Pick up the red cube"
+    });
+    fs::write(journal, format!("{header}\n")).unwrap();
+    let requests = server.received_requests().await.unwrap().len();
+
+    let (result, _) = resumable.rerun(&server, ResumePolicy::IfJournaled).await;
 
     assert_eq!(
         (
             is_journal_error(&result, |reason| matches!(
                 reason,
-                JournalError::Mismatch(_)
+                JournalError::Outdated(1)
             )),
             server.received_requests().await.unwrap().len()
         ),
@@ -653,8 +1004,8 @@ async fn journal_of_another_task_description_fails_with_mismatch_before_any_requ
 
 #[tokio::test]
 async fn required_resume_without_a_journal_fails_with_missing_before_any_request() {
-    let server = session_server().await;
     let resumable = Resumable::new();
+    let server = resumable.api().await;
 
     let (result, _) = resumable.rerun(&server, ResumePolicy::Required).await;
 
@@ -668,30 +1019,24 @@ async fn required_resume_without_a_journal_fails_with_missing_before_any_request
 }
 
 #[tokio::test]
-async fn restart_ignores_the_journal_and_creates_a_new_session() {
-    let server = session_server().await;
+async fn restart_ignores_the_journal_and_creates_a_new_recording() {
     let resumable = Resumable::new();
+    let server = resumable.api().await;
     resumable.fail_on_last_file(&server).await;
 
-    let (_, started) = resumable.rerun(&server, ResumePolicy::Restart).await;
+    let (result, _) = resumable.rerun(&server, ResumePolicy::Restart).await;
 
-    assert_eq!(
-        (started, request_count(&server, SESSIONS).await),
-        (resumable.paths(), 2)
-    );
+    assert!(result.is_ok(), "{result:?}");
+    assert_eq!(request_count(&server, RECORDINGS).await, 2);
 }
 
 #[tokio::test]
 async fn restart_deletes_the_journal() {
     let server = MockServer::start().await;
-    Mock::given(method("POST"))
-        .and(path(SESSIONS))
-        .respond_with(ResponseTemplate::new(201).set_body_json(session_body("uploading")))
-        .up_to_n_times(1)
-        .mount(&server)
-        .await;
     let resumable = Resumable::new();
+    fake_api::mount(&server, &resumable.storage, "https://storage.example.com").await;
     resumable.fail_on_last_file(&server).await;
+    server.reset().await;
 
     let (result, _) = resumable.rerun(&server, ResumePolicy::Restart).await;
 
@@ -714,14 +1059,15 @@ fn is_journaled(journals: &Path, path: &str) -> bool {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn every_file_is_journaled_before_its_file_finished_event_with_concurrency_4() {
-    let server = session_server().await;
+    let storage = Storage::default();
+    let server = api(&storage).await;
     let files = data_files(16);
     let root = dataset(&files.iter().map(String::as_str).collect::<Vec<_>>());
     let journals = tempfile::tempdir().unwrap();
     let journal_dir = journals.path().to_owned();
     let finished = Arc::new(Mutex::new(Vec::new()));
     let sink = Arc::clone(&finished);
-    let transport = Arc::new(RecordingTransport::default());
+    let transport = Arc::new(RecordingTransport::new(&storage));
 
     uploader(&server.uri(), &transport, 4)
         .journal(journals.path(), ResumePolicy::IfJournaled)
@@ -733,7 +1079,7 @@ async fn every_file_is_journaled_before_its_file_finished_event_with_concurrency
         })
         .upload(
             &UploadPlan::from_dir(root.path()).unwrap(),
-            &NewSession::new("pick-place"),
+            &new_recording(),
         )
         .await
         .unwrap();
@@ -752,8 +1098,8 @@ async fn every_file_is_journaled_before_its_file_finished_event_with_concurrency
 
 #[tokio::test]
 async fn successful_complete_deletes_the_journal() {
-    let server = session_server().await;
     let resumable = Resumable::new();
+    let server = resumable.api().await;
 
     let (result, _) = resumable.rerun(&server, ResumePolicy::IfJournaled).await;
 
@@ -762,25 +1108,20 @@ async fn successful_complete_deletes_the_journal() {
 
 #[tokio::test]
 async fn failed_complete_keeps_the_journal_and_the_rerun_only_completes() {
+    let resumable = Resumable::new();
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path(COMPLETE))
-        .respond_with(ResponseTemplate::new(422).set_body_json(json!({ "detail": "not yet" })))
+        .respond_with(fake_api::api_error(
+            412,
+            "FAILED_PRECONDITION",
+            "FILES_NOT_UPLOADED",
+        ))
         .up_to_n_times(1)
         .with_priority(1)
         .mount(&server)
         .await;
-    Mock::given(method("POST"))
-        .and(path(SESSIONS))
-        .respond_with(ResponseTemplate::new(201).set_body_json(session_body("uploading")))
-        .mount(&server)
-        .await;
-    Mock::given(method("POST"))
-        .and(path(COMPLETE))
-        .respond_with(ResponseTemplate::new(200).set_body_json(session_body("ready")))
-        .mount(&server)
-        .await;
-    let resumable = Resumable::new();
+    fake_api::mount(&server, &resumable.storage, "https://storage.example.com").await;
     let (failed, _) = resumable.rerun(&server, ResumePolicy::IfJournaled).await;
     let kept = resumable.journal_files().len();
 
@@ -788,11 +1129,11 @@ async fn failed_complete_keeps_the_journal_and_the_rerun_only_completes() {
 
     assert_eq!(
         (
-            failed.is_err(),
+            matches!(failed, Err(Error::FailedPrecondition { .. })),
             kept,
             result.is_ok(),
             started,
-            request_count(&server, SESSIONS).await,
+            request_count(&server, RECORDINGS).await,
             request_count(&server, COMPLETE).await
         ),
         (true, 1, true, Vec::<String>::new(), 1, 2)
@@ -801,16 +1142,17 @@ async fn failed_complete_keeps_the_journal_and_the_rerun_only_completes() {
 
 #[tokio::test]
 async fn journal_directory_that_cannot_be_created_fails_with_io_before_any_request() {
-    let server = session_server().await;
+    let storage = Storage::default();
+    let server = api(&storage).await;
     let dataset = DatasetBuilder::new(Format::V3_0).build().unwrap();
     let blocker = tempfile::NamedTempFile::new().unwrap();
-    let transport = Arc::new(RecordingTransport::default());
+    let transport = Arc::new(RecordingTransport::new(&storage));
 
     let result = uploader(&server.uri(), &transport, 1)
         .journal(blocker.path().join("uploads"), ResumePolicy::IfJournaled)
         .upload(
             &UploadPlan::from_dir(dataset.root()).unwrap(),
-            &NewSession::new("pick-place"),
+            &new_recording(),
         )
         .await;
 
@@ -825,14 +1167,15 @@ async fn journal_directory_that_cannot_be_created_fails_with_io_before_any_reque
 
 #[tokio::test]
 async fn upload_without_a_journal_writes_no_file() {
-    let server = session_server().await;
+    let storage = Storage::default();
+    let server = api(&storage).await;
     let dataset = DatasetBuilder::new(Format::V3_0).build().unwrap();
-    let transport = Arc::new(RecordingTransport::default());
+    let transport = Arc::new(RecordingTransport::new(&storage));
 
     uploader(&server.uri(), &transport, 1)
         .upload(
             &UploadPlan::from_dir(dataset.root()).unwrap(),
-            &NewSession::new("pick-place"),
+            &new_recording(),
         )
         .await
         .unwrap();

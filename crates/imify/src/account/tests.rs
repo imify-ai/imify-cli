@@ -16,7 +16,7 @@ fn client(base_url: &str) -> Client {
 }
 
 fn user_body() -> serde_json::Value {
-    json!({"subject": "user-1234", "name": "Ada Lovelace", "role": "admin"})
+    json!({"name": "users/user-1234", "displayName": "Ada Lovelace", "role": "ADMIN"})
 }
 
 async fn mount_me(server: &MockServer, route: &str, response: ResponseTemplate) {
@@ -31,7 +31,7 @@ async fn mount_me(server: &MockServer, route: &str, response: ResponseTemplate) 
 async fn me_sends_get_with_the_bearer_token() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
-        .and(path("/api/v1/me"))
+        .and(path("/api/v1/users/me"))
         .and(header("authorization", format!("Bearer {TOKEN}").as_str()))
         .respond_with(ResponseTemplate::new(200).set_body_json(user_body()))
         .expect(1)
@@ -48,7 +48,7 @@ async fn me_decodes_the_user_and_ignores_unknown_fields() {
     body["organization"] = json!("robotics-lab");
     mount_me(
         &server,
-        "/api/v1/me",
+        "/api/v1/users/me",
         ResponseTemplate::new(200).set_body_json(body),
     )
     .await;
@@ -60,9 +60,26 @@ async fn me_decodes_the_user_and_ignores_unknown_fields() {
         User {
             subject: "user-1234".into(),
             name: "Ada Lovelace".into(),
-            role: "admin".into(),
+            role: Some("ADMIN".into()),
         }
     );
+}
+
+#[tokio::test]
+async fn me_decodes_a_null_role_as_none() {
+    let server = MockServer::start().await;
+    let mut body = user_body();
+    body["role"] = serde_json::Value::Null;
+    mount_me(
+        &server,
+        "/api/v1/users/me",
+        ResponseTemplate::new(200).set_body_json(body),
+    )
+    .await;
+
+    let user = client(&server.uri()).me().await.unwrap();
+
+    assert_eq!(user.role, None);
 }
 
 #[tokio::test]
@@ -70,7 +87,7 @@ async fn me_requests_the_path_below_a_base_url_prefix() {
     let server = MockServer::start().await;
     mount_me(
         &server,
-        "/platform/api/v1/me",
+        "/platform/api/v1/users/me",
         ResponseTemplate::new(200).set_body_json(user_body()),
     )
     .await;
@@ -85,8 +102,10 @@ async fn me_returns_auth_with_status_401_that_does_not_contain_the_token() {
     let server = MockServer::start().await;
     mount_me(
         &server,
-        "/api/v1/me",
-        ResponseTemplate::new(401).set_body_json(json!({"detail": "Invalid token"})),
+        "/api/v1/users/me",
+        ResponseTemplate::new(401).set_body_json(
+            json!({"error": {"code": 401, "status": "UNAUTHENTICATED", "message": "Invalid token"}}),
+        ),
     )
     .await;
 

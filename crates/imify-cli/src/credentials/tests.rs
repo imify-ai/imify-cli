@@ -558,3 +558,60 @@ fn location_names_the_keychain_or_the_file_path() {
         ["the keychain", "/home/robot/.config/imify/credentials.json"]
     );
 }
+
+/// A keychain backend that records whether it was dropped on a thread that drives an async
+/// runtime, as the Secret Service backend must not be.
+#[derive(Debug)]
+struct RuntimeSensitiveStore {
+    dropped_in_runtime: std::sync::Arc<std::sync::Mutex<Option<bool>>>,
+}
+
+impl keyring_core::api::CredentialStoreApi for RuntimeSensitiveStore {
+    fn vendor(&self) -> String {
+        "test".to_owned()
+    }
+
+    fn id(&self) -> String {
+        "runtime-sensitive".to_owned()
+    }
+
+    fn build(
+        &self,
+        _service: &str,
+        _user: &str,
+        _modifiers: Option<&std::collections::HashMap<&str, &str>>,
+    ) -> keyring_core::Result<keyring_core::Entry> {
+        Err(keyring_core::Error::NoEntry)
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
+impl Drop for RuntimeSensitiveStore {
+    fn drop(&mut self) {
+        *self.dropped_in_runtime.lock().unwrap() =
+            Some(tokio::runtime::Handle::try_current().is_ok());
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_opened_keychain_dropped_in_the_runtime_drops_its_backend_outside_of_it() {
+    let dropped_in_runtime = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let recorder = std::sync::Arc::clone(&dropped_in_runtime);
+    let keychain = Keychain::opened_by(move || {
+        let backend: std::sync::Arc<keyring_core::CredentialStore> =
+            std::sync::Arc::new(RuntimeSensitiveStore {
+                dropped_in_runtime: std::sync::Arc::clone(&recorder),
+            });
+        Ok(backend)
+    });
+    let store = KeychainStore::new(keychain, HOST);
+    // Any operation opens the backend; this one fails, since the test backend has no entries.
+    let _ = store.try_load();
+
+    drop(store);
+
+    assert_eq!(*dropped_in_runtime.lock().unwrap(), Some(false));
+}

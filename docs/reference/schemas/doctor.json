@@ -87,7 +87,7 @@
       "properties": {
         "subject": {"type": "string"},
         "name": {"type": "string"},
-        "role": {"type": "string"}
+        "role": {"type": ["string", "null"]}
       }
     },
     "credential_store": {

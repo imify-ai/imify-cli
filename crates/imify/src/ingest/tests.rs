@@ -1,27 +1,28 @@
-//! The upload flow against a mock API, through the public interface only.
+//! The upload flow against a mock API and a mock storage, through the public interface
+//! only.
 
 use std::fs;
 use std::num::NonZeroUsize;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use serde_json::json;
+use serde_json::{Value, json};
 use tempfile::TempDir;
-use wiremock::matchers::{header, method, path, path_regex};
-use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
+use wiremock::matchers::{method, path, path_regex};
+use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 
 use crate::auth::StaticToken;
-use crate::ingest::{
-    NewSession, SessionId, SessionStatus, UploadEvent, UploadOptions, UploadPlan, Uploader,
+use crate::ingest::fake_api::{
+    self, BATCH_CREATE, COMPLETE, CREDENTIAL, RECORDING, RECORDINGS, Storage,
 };
-use crate::{Client, Error, RetryPolicy};
+use crate::ingest::{
+    NewRecording, RecordingId, RecordingState, RequestId, UploadEvent, UploadOptions, UploadPlan,
+    Uploader,
+};
+use crate::{Client, Error, RetryPolicy, UploadError};
 
 const TOKEN: &str = "tok_7f3a9c-secret";
-const SESSION: &str = "3f2c9a";
-const SESSIONS: &str = "/api/v1/ingest/sessions";
-const FILES: &str = "/api/v1/ingest/sessions/3f2c9a/files/";
-const COMPLETE: &str = "/api/v1/ingest/sessions/3f2c9a/complete";
 const INFO: &[u8] = br#"{"codebase_version": "v3.0", "fps": 30}"#;
 
 fn retries(max_retries: u32, max_backoff: Duration) -> RetryPolicy {
@@ -29,6 +30,7 @@ fn retries(max_retries: u32, max_backoff: Duration) -> RetryPolicy {
         max_retries,
         initial_backoff: Duration::from_millis(1),
         max_backoff,
+        rate_limit_pause: Duration::from_millis(1),
     }
 }
 
@@ -44,15 +46,15 @@ fn client(server: &MockServer) -> Client {
     client_with(&server.uri(), retries(3, Duration::from_millis(1)))
 }
 
-fn options(concurrency: usize, request_interval: Duration) -> UploadOptions {
+fn options(concurrency: usize) -> UploadOptions {
     UploadOptions {
         concurrency: NonZeroUsize::new(concurrency).unwrap(),
-        request_interval,
+        request_interval: Duration::ZERO,
     }
 }
 
 fn uploader(client: Client) -> Uploader {
-    Uploader::new(client).options(options(4, Duration::ZERO))
+    Uploader::new(client).options(options(4))
 }
 
 fn write(root: &Path, path: &str, content: &[u8]) {
@@ -78,104 +80,31 @@ fn plan_of(root: &TempDir, files: &[&str]) -> UploadPlan {
     plan
 }
 
-fn session_body(status: &str) -> serde_json::Value {
-    json!({
-        "id": SESSION,
-        "name": "pick-place",
-        "dataset_format": null,
-        "robot_type": null,
-        "fps": null,
-        "total_episodes": null,
-        "status": status,
-        "task_description": "Pick up the red cube",
-        "created_at": "2026-10-16T09:30:00Z"
-    })
+fn new_recording() -> NewRecording {
+    NewRecording::new("pick-place").task("Pick up the red cube")
 }
 
-fn new_session() -> NewSession {
-    NewSession::new("pick-place").task_description("Pick up the red cube")
+fn recording_id() -> RecordingId {
+    RecordingId::new(RECORDING)
 }
 
-fn session_id() -> SessionId {
-    SessionId::new(SESSION)
-}
-
-fn percent_decode(text: &str) -> String {
-    let bytes = text.as_bytes();
-    let mut decoded = Vec::with_capacity(bytes.len());
-    let mut index = 0;
-    while index < bytes.len() {
-        if bytes[index] == b'%' {
-            let hex = std::str::from_utf8(&bytes[index + 1..index + 3]).unwrap();
-            decoded.push(u8::from_str_radix(hex, 16).unwrap());
-            index += 3;
-        } else {
-            decoded.push(bytes[index]);
-            index += 1;
-        }
-    }
-    String::from_utf8(decoded).unwrap()
-}
-
-/// Answers a file `PUT` the way the API does: with the stored path and size.
-struct Store;
-
-impl Respond for Store {
-    fn respond(&self, request: &Request) -> ResponseTemplate {
-        let encoded = request.url.path().strip_prefix(FILES).unwrap_or_default();
-        ResponseTemplate::new(200).set_body_json(json!({
-            "path": percent_decode(encoded),
-            "size": request.body.len(),
-        }))
-    }
-}
-
-/// Records when each request arrives, then answers with `inner`.
-struct Timed<R> {
-    arrivals: Arc<Mutex<Vec<(String, Instant)>>>,
-    inner: R,
-}
-
-impl<R: Respond> Respond for Timed<R> {
-    fn respond(&self, request: &Request) -> ResponseTemplate {
-        self.arrivals
-            .lock()
-            .unwrap()
-            .push((request.url.path().to_owned(), Instant::now()));
-        self.inner.respond(request)
-    }
-}
-
-async fn mount_store(server: &MockServer) {
-    Mock::given(method("PUT"))
-        .and(path_regex("^/api/v1/ingest/sessions/3f2c9a/files/"))
-        .respond_with(Store)
-        .mount(server)
-        .await;
-}
-
-async fn mount_sessions(server: &MockServer) {
-    Mock::given(method("POST"))
-        .and(path(SESSIONS))
-        .respond_with(ResponseTemplate::new(201).set_body_json(session_body("uploading")))
-        .mount(server)
-        .await;
-    Mock::given(method("POST"))
-        .and(path(COMPLETE))
-        .respond_with(ResponseTemplate::new(200).set_body_json(session_body("ready")))
-        .mount(server)
-        .await;
+/// A mock API with its storage below `/storage/`.
+async fn api(storage: &Storage) -> MockServer {
+    let server = MockServer::start().await;
+    fake_api::mount_with_storage(&server, storage).await;
+    server
 }
 
 async fn received(server: &MockServer) -> Vec<Request> {
     server.received_requests().await.unwrap()
 }
 
-async fn received_at(server: &MockServer, wanted: &str) -> Vec<Request> {
+/// The storage `PUT` requests `server` received.
+async fn storage_puts(server: &MockServer) -> Vec<Request> {
     received(server)
         .await
         .into_iter()
-        .filter(|request| request.url.path() == wanted)
+        .filter(|request| request.url.path().starts_with("/storage/"))
         .collect()
 }
 
@@ -190,418 +119,440 @@ fn recorder() -> (
     })
 }
 
-fn validation_detail(detail: &str) -> ResponseTemplate {
-    ResponseTemplate::new(400).set_body_json(json!({ "detail": detail }))
+/// Mounts `response` for the first `times` storage `PUT` requests of `file_path`.
+async fn storage_answers(
+    server: &MockServer,
+    file_path: &str,
+    response: ResponseTemplate,
+    times: u64,
+) {
+    Mock::given(method("PUT"))
+        .and(path(format!("/storage/{file_path}")))
+        .respond_with(response)
+        .up_to_n_times(times)
+        .with_priority(1)
+        .mount(server)
+        .await;
+}
+
+fn s3_error(status: u16, code: &str) -> ResponseTemplate {
+    ResponseTemplate::new(status).set_body_string(format!("<Error><Code>{code}</Code></Error>"))
 }
 
 #[tokio::test]
-async fn create_session_sends_name_and_task_description() {
-    let server = MockServer::start().await;
-    mount_sessions(&server).await;
+async fn create_recording_sends_the_settings_and_the_request_id() {
+    let server = api(&Storage::default()).await;
+    let request_id = RequestId::new("0b6f3c2e-8d1a-4f7e-9a51-2c4d6e8f0a13");
 
-    let session = uploader(client(&server))
-        .create_session(&new_session())
+    let recording = uploader(client(&server))
+        .create_recording(&new_recording().robot("so100-0042"), &request_id)
         .await
         .unwrap();
 
+    let body: Value = received(&server).await[0].body_json().unwrap();
+    assert_eq!(
+        (recording.id, recording.state, body),
+        (
+            recording_id(),
+            RecordingState::Uploading,
+            json!({
+                "requestId": "0b6f3c2e-8d1a-4f7e-9a51-2c4d6e8f0a13",
+                "displayName": "pick-place",
+                "task": "Pick up the red cube",
+                "robot": "so100-0042"
+            })
+        )
+    );
+}
+
+#[tokio::test]
+async fn create_recording_answered_503_is_sent_again_with_the_same_request_id() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path(RECORDINGS))
+        .respond_with(ResponseTemplate::new(503))
+        .up_to_n_times(1)
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    fake_api::mount_with_storage(&server, &Storage::default()).await;
+
+    uploader(client(&server))
+        .create_recording(&new_recording(), &RequestId::new("r-1"))
+        .await
+        .unwrap();
+
+    let ids: Vec<Value> = received(&server)
+        .await
+        .iter()
+        .map(|request| request.body_json::<Value>().unwrap()["requestId"].clone())
+        .collect();
+    assert_eq!(ids, [json!("r-1"), json!("r-1")]);
+}
+
+#[tokio::test]
+async fn create_recording_follows_a_same_origin_307_as_post_with_body_and_token() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path(RECORDINGS))
+        .respond_with(ResponseTemplate::new(307).insert_header("location", "/v2/recordings"))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v2/recordings"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(fake_api::recording("UPLOADING")))
+        .mount(&server)
+        .await;
+
+    uploader(client(&server))
+        .create_recording(&new_recording(), &RequestId::new("r-1"))
+        .await
+        .unwrap();
+
+    let redirected = &received(&server).await[1];
     assert_eq!(
         (
-            received(&server).await[0]
-                .body_json::<serde_json::Value>()
-                .unwrap(),
-            session.id,
-            session.status
+            redirected.headers["authorization"].to_str().unwrap(),
+            redirected.body_json::<Value>().unwrap()["displayName"].clone()
         ),
-        (
-            json!({"name": "pick-place", "task_description": "Pick up the red cube"}),
-            session_id(),
-            SessionStatus::Uploading
-        )
+        (format!("Bearer {TOKEN}").as_str(), json!("pick-place"))
     );
 }
 
 #[tokio::test]
-async fn create_session_follows_a_same_origin_307_as_post_with_body_and_token() {
+async fn create_recording_302_is_not_followed() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
-        .and(path(SESSIONS))
-        .respond_with(ResponseTemplate::new(307).insert_header("location", "/v2/sessions"))
-        .mount(&server)
-        .await;
-    Mock::given(method("POST"))
-        .and(path("/v2/sessions"))
-        .and(header("authorization", format!("Bearer {TOKEN}").as_str()))
-        .respond_with(ResponseTemplate::new(201).set_body_json(session_body("uploading")))
-        .mount(&server)
-        .await;
-
-    uploader(client(&server))
-        .create_session(&new_session())
-        .await
-        .unwrap();
-
-    assert_eq!(
-        received_at(&server, "/v2/sessions").await[0]
-            .body_json::<serde_json::Value>()
-            .unwrap(),
-        json!({"name": "pick-place", "task_description": "Pick up the red cube"})
-    );
-}
-
-#[tokio::test]
-async fn create_session_307_to_another_port_arrives_without_token() {
-    let server = MockServer::start().await;
-    let other = MockServer::start().await;
-    Mock::given(method("POST"))
-        .and(path(SESSIONS))
-        .respond_with(
-            ResponseTemplate::new(307)
-                .insert_header("location", format!("{}/sessions", other.uri()).as_str()),
-        )
-        .mount(&server)
-        .await;
-    Mock::given(method("POST"))
-        .respond_with(ResponseTemplate::new(201).set_body_json(session_body("uploading")))
-        .mount(&other)
-        .await;
-
-    uploader(client(&server))
-        .create_session(&new_session())
-        .await
-        .unwrap();
-
-    assert!(
-        !received(&other).await[0]
-            .headers
-            .contains_key("authorization")
-    );
-}
-
-#[tokio::test]
-async fn create_session_302_is_not_followed() {
-    let server = MockServer::start().await;
-    Mock::given(method("POST"))
-        .and(path(SESSIONS))
-        .respond_with(ResponseTemplate::new(302).insert_header("location", "/elsewhere"))
+        .respond_with(ResponseTemplate::new(302).insert_header("location", "/login"))
         .mount(&server)
         .await;
 
     let error = uploader(client(&server))
-        .create_session(&new_session())
+        .create_recording(&new_recording(), &RequestId::new("r-1"))
         .await
         .unwrap_err();
 
-    assert!(matches!(
-        error,
-        Error::UnexpectedResponse { status: 302, ref message } if message.contains("/elsewhere")
-    ));
-}
-
-#[tokio::test]
-async fn file_put_answered_307_is_sent_again_with_the_full_body() {
-    let server = MockServer::start().await;
-    Mock::given(method("PUT"))
-        .and(path(format!("{FILES}data/a")))
-        .respond_with(ResponseTemplate::new(307).insert_header("location", "/moved/data/a"))
-        .mount(&server)
-        .await;
-    Mock::given(method("PUT"))
-        .and(path("/moved/data/a"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(json!({"path": "data/a", "size": 5})),
-        )
-        .mount(&server)
-        .await;
-    let root = dataset(&[("data/a", b"abcde")]);
-
-    uploader(client(&server))
-        .send_files(&session_id(), &plan_of(&root, &["data/a"]))
-        .await
-        .unwrap();
-
-    assert_eq!(
-        received_at(&server, "/moved/data/a").await[0].body,
-        b"abcde"
-    );
-}
-
-#[tokio::test]
-async fn file_put_to_another_origin_after_307_carries_no_token() {
-    let server = MockServer::start().await;
-    let other = MockServer::start().await;
-    Mock::given(method("PUT"))
-        .respond_with(
-            ResponseTemplate::new(307)
-                .insert_header("location", format!("{}/data/a", other.uri()).as_str()),
-        )
-        .mount(&server)
-        .await;
-    Mock::given(method("PUT"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(json!({"path": "data/a", "size": 5})),
-        )
-        .mount(&other)
-        .await;
-    let root = dataset(&[("data/a", b"abcde")]);
-
-    uploader(client(&server))
-        .send_files(&session_id(), &plan_of(&root, &["data/a"]))
-        .await
-        .unwrap();
-
     assert!(
-        !received(&other).await[0]
-            .headers
-            .contains_key("authorization")
+        matches!(error, Error::UnexpectedResponse { status: 302, .. }),
+        "{error:?}"
     );
 }
 
 #[tokio::test]
-async fn file_put_goes_to_the_percent_encoded_file_path() {
-    let server = MockServer::start().await;
-    mount_store(&server).await;
-    let root = dataset(&[("data/chunk 000/file-000.parquet", b"rows")]);
+async fn upload_creates_announces_puts_to_storage_and_completes() {
+    let storage = Storage::default();
+    let server = api(&storage).await;
+    let root = dataset(&[("data/a", b"abcde"), ("videos/b.mp4", b"fghij")]);
 
-    uploader(client(&server))
-        .send_files(
-            &session_id(),
-            &plan_of(&root, &["data/chunk 000/file-000.parquet"]),
+    let recording = uploader(client(&server))
+        .upload(
+            &UploadPlan::from_dir(root.path()).unwrap(),
+            &new_recording(),
         )
         .await
         .unwrap();
 
+    let mut order: Vec<String> = received(&server)
+        .await
+        .into_iter()
+        .map(|request| format!("{} {}", request.method, request.url.path()))
+        .collect();
+    order[2..5].sort();
     assert_eq!(
-        received(&server).await[0].url.path(),
-        "/api/v1/ingest/sessions/3f2c9a/files/data/chunk%20000/file-000.parquet"
+        (recording.state, order),
+        (
+            RecordingState::Ready,
+            vec![
+                format!("POST {RECORDINGS}"),
+                format!("POST {BATCH_CREATE}"),
+                "PUT /storage/data/a".to_owned(),
+                "PUT /storage/meta/info.json".to_owned(),
+                "PUT /storage/videos/b.mp4".to_owned(),
+                format!("POST {COMPLETE}"),
+            ]
+        )
     );
 }
 
 #[tokio::test]
-async fn file_put_carries_content_type_and_content_length() {
-    let server = MockServer::start().await;
-    mount_store(&server).await;
+async fn announcement_names_the_recording_size_and_sha256_of_each_file() {
+    let server = api(&Storage::default()).await;
     let root = dataset(&[("data/a", b"abcde")]);
 
     uploader(client(&server))
-        .send_files(&session_id(), &plan_of(&root, &["data/a"]))
+        .send_files(&recording_id(), &plan_of(&root, &["data/a"]))
         .await
         .unwrap();
 
-    let request = &received(&server).await[0];
+    let body: Value = fake_api::requests_to(&server, BATCH_CREATE).await[0]
+        .body_json()
+        .unwrap();
+    assert_eq!(
+        body,
+        json!({"requests": [{
+            "parent": "recordings/3f2c9a",
+            "file": {
+                "path": "data/a",
+                "sizeBytes": 5,
+                "sha256": "36bbe50ed96841d10443bcb670d6554f0a34b761be67ec9c4a8ad2c0c44ca42c"
+            }
+        }]})
+    );
+}
+
+#[tokio::test]
+async fn more_than_1000_files_are_announced_in_several_calls() {
+    let storage = Storage::default();
+    let server = api(&storage).await;
+    let files: Vec<(String, &[u8])> = (0..1001)
+        .map(|index| (format!("data/f-{index:04}"), &b"x"[..]))
+        .collect();
+    let refs: Vec<(&str, &[u8])> = files
+        .iter()
+        .map(|(path, content)| (path.as_str(), *content))
+        .collect();
+    let root = dataset(&refs);
+
+    uploader(client(&server))
+        .send_files(&recording_id(), &UploadPlan::from_dir(root.path()).unwrap())
+        .await
+        .unwrap();
+
+    let sizes: Vec<usize> = fake_api::requests_to(&server, BATCH_CREATE)
+        .await
+        .iter()
+        .map(|request| {
+            request.body_json::<Value>().unwrap()["requests"]
+                .as_array()
+                .unwrap()
+                .len()
+        })
+        .collect();
+    assert_eq!(sizes, [1000, 2]);
+}
+
+#[tokio::test]
+async fn storage_puts_carry_the_upload_headers_and_no_token() {
+    let server = api(&Storage::default()).await;
+    let root = dataset(&[("data/a", b"abcde")]);
+
+    uploader(client(&server))
+        .send_files(&recording_id(), &plan_of(&root, &["data/a"]))
+        .await
+        .unwrap();
+
+    let put = &storage_puts(&server).await[0];
     assert_eq!(
         (
-            request.headers["content-type"].to_str().unwrap(),
-            request.headers["content-length"].to_str().unwrap(),
-            request.headers["authorization"].to_str().unwrap()
+            put.headers.get("authorization"),
+            put.headers["x-amz-checksum-sha256"].to_str().unwrap(),
+            put.headers["content-length"].to_str().unwrap(),
+            put.url.query(),
         ),
-        (
-            "application/octet-stream",
-            "5",
-            format!("Bearer {TOKEN}").as_str()
-        )
+        (None, "c2hhMjU2", "5", Some(CREDENTIAL))
     );
 }
 
 #[tokio::test]
 async fn large_file_arrives_byte_identical() {
-    let server = MockServer::start().await;
-    mount_store(&server).await;
-    let content: Vec<u8> = (0..3 * 1024 * 1024_u32)
+    let server = api(&Storage::default()).await;
+    let content: Vec<u8> = (0..3 * 1024 * 1024)
         .map(|index| u8::try_from(index % 251).unwrap())
         .collect();
     let root = dataset(&[("videos/front.mp4", &content)]);
 
     uploader(client(&server))
-        .send_files(&session_id(), &plan_of(&root, &["videos/front.mp4"]))
+        .send_files(&recording_id(), &plan_of(&root, &["videos/front.mp4"]))
         .await
         .unwrap();
 
-    assert_eq!(received(&server).await[0].body, content);
-}
-
-#[tokio::test]
-async fn put_response_with_a_different_size_returns_unexpected_response() {
-    let server = MockServer::start().await;
-    Mock::given(method("PUT"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(json!({"path": "data/a", "size": 4})),
-        )
-        .mount(&server)
-        .await;
-    let root = dataset(&[("data/a", b"abcde")]);
-
-    let error = uploader(client(&server))
-        .send_files(&session_id(), &plan_of(&root, &["data/a"]))
-        .await
-        .unwrap_err();
-
-    assert!(matches!(
-        error,
-        Error::UnexpectedResponse { status: 200, .. }
-    ));
+    assert_eq!(storage_puts(&server).await[0].body, content);
 }
 
 #[tokio::test]
 async fn put_answered_503_then_200_is_sent_twice_with_the_full_body() {
-    let server = MockServer::start().await;
-    Mock::given(method("PUT"))
-        .respond_with(ResponseTemplate::new(503))
-        .up_to_n_times(1)
-        .with_priority(1)
-        .mount(&server)
-        .await;
-    mount_store(&server).await;
+    let server = api(&Storage::default()).await;
+    storage_answers(&server, "data/a", s3_error(503, "SlowDown"), 1).await;
     let root = dataset(&[("data/a", b"abcde")]);
-    let (events, handler) = recorder();
 
     uploader(client(&server))
-        .on_event(handler)
-        .send_files(&session_id(), &plan_of(&root, &["data/a"]))
+        .send_files(&recording_id(), &plan_of(&root, &["data/a"]))
         .await
         .unwrap();
 
-    let bodies: Vec<Vec<u8>> = received(&server)
+    let bodies: Vec<Vec<u8>> = storage_puts(&server)
         .await
         .into_iter()
         .map(|request| request.body)
         .collect();
-    let retries = events
-        .lock()
-        .unwrap()
-        .iter()
-        .filter(|event| matches!(event, UploadEvent::FileRetrying { .. }))
-        .count();
+    assert_eq!(bodies, [b"abcde".to_vec(), b"abcde".to_vec()]);
+}
+
+#[tokio::test]
+async fn put_answered_403_is_announced_again_and_sent_to_the_fresh_url() {
+    let storage = Storage::default();
+    let server = api(&storage).await;
+    storage_answers(&server, "data/a", s3_error(403, "AccessDenied"), 1).await;
+    let root = dataset(&[("data/a", b"abcde")]);
+
+    uploader(client(&server))
+        .send_files(&recording_id(), &plan_of(&root, &["data/a"]))
+        .await
+        .unwrap();
+
     assert_eq!(
-        (bodies, retries),
-        (vec![b"abcde".to_vec(), b"abcde".to_vec()], 1)
+        (
+            fake_api::requests_to(&server, BATCH_CREATE).await.len(),
+            storage_puts(&server).await.len(),
+            storage.holds("data/a")
+        ),
+        (2, 2, true)
     );
 }
 
 #[tokio::test]
-async fn put_answered_503_on_every_attempt_returns_server_error_after_all_retries() {
-    let server = MockServer::start().await;
-    Mock::given(method("PUT"))
-        .respond_with(ResponseTemplate::new(503))
-        .mount(&server)
-        .await;
+async fn put_answered_403_twice_fails_with_url_expired() {
+    let server = api(&Storage::default()).await;
+    storage_answers(&server, "data/a", s3_error(403, "AccessDenied"), 2).await;
     let root = dataset(&[("data/a", b"abcde")]);
 
     let error = uploader(client(&server))
-        .send_files(&session_id(), &plan_of(&root, &["data/a"]))
+        .send_files(&recording_id(), &plan_of(&root, &["data/a"]))
+        .await
+        .unwrap_err();
+
+    assert!(
+        matches!(
+            error,
+            Error::Upload {
+                reason: UploadError::UrlExpired,
+                ..
+            }
+        ),
+        "{error:?}"
+    );
+}
+
+#[tokio::test]
+async fn put_answered_bad_digest_twice_fails_with_checksum_mismatch() {
+    let server = api(&Storage::default()).await;
+    storage_answers(&server, "data/a", s3_error(400, "BadDigest"), 2).await;
+    let root = dataset(&[("data/a", b"abcde")]);
+
+    let error = uploader(client(&server))
+        .send_files(&recording_id(), &plan_of(&root, &["data/a"]))
         .await
         .unwrap_err();
 
     assert_eq!(
         (
-            matches!(error, Error::Server { status: 503, .. }),
-            received(&server).await.len()
+            matches!(
+                error,
+                Error::Upload {
+                    reason: UploadError::ChecksumMismatch,
+                    ..
+                }
+            ),
+            storage_puts(&server).await.len()
         ),
-        (true, 4)
+        (true, 2)
     );
 }
 
 #[tokio::test]
-async fn put_answered_400_returns_validation_and_is_not_retried() {
+async fn events_and_errors_never_show_the_credential_of_an_upload_url() {
+    let server = api(&Storage::default()).await;
+    storage_answers(&server, "data/a", s3_error(403, "AccessDenied"), 2).await;
+    let root = dataset(&[("data/a", b"abcde")]);
+    let (events, handler) = recorder();
+
+    let error = uploader(client(&server))
+        .on_event(handler)
+        .send_files(&recording_id(), &plan_of(&root, &["data/a"]))
+        .await
+        .unwrap_err();
+
+    let shown = format!("{error} {error:?} {:?}", events.lock().unwrap());
+    assert!(!shown.contains("AKIA-secret"), "{shown}");
+}
+
+#[tokio::test]
+async fn an_upload_url_on_plain_http_of_another_host_is_refused_before_any_put() {
+    let storage = Storage::default();
     let server = MockServer::start().await;
-    Mock::given(method("PUT"))
-        .respond_with(validation_detail("Session is not accepting uploads"))
+    fake_api::mount(&server, &storage, "http://storage.example.com").await;
+    let root = dataset(&[("data/a", b"abcde")]);
+
+    let error = uploader(client(&server))
+        .send_files(&recording_id(), &plan_of(&root, &["data/a"]))
+        .await
+        .unwrap_err();
+
+    assert!(
+        matches!(error, Error::UnexpectedResponse { status: 200, .. }),
+        "{error:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_file_conflict_of_the_announcement_fails_with_its_reason() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path(BATCH_CREATE))
+        .respond_with(fake_api::api_error(409, "ALREADY_EXISTS", "FILE_CONFLICT"))
         .mount(&server)
         .await;
     let root = dataset(&[("data/a", b"abcde")]);
 
     let error = uploader(client(&server))
-        .send_files(&session_id(), &plan_of(&root, &["data/a"]))
+        .send_files(&recording_id(), &plan_of(&root, &["data/a"]))
         .await
         .unwrap_err();
 
-    assert_eq!(
-        (
-            matches!(error, Error::Validation { ref message, .. } if message == "Session is not accepting uploads"),
-            received(&server).await.len()
-        ),
-        (true, 1)
+    assert!(
+        matches!(&error, Error::Conflict { reason: Some(reason), .. } if reason == "FILE_CONFLICT"),
+        "{error:?}"
     );
 }
 
 #[tokio::test]
-async fn info_file_answered_400_sends_no_other_file() {
+async fn a_rate_limited_announcement_reports_the_pause_and_is_sent_again() {
     let server = MockServer::start().await;
-    Mock::given(method("PUT"))
-        .and(path(format!("{FILES}meta/info.json")))
-        .respond_with(validation_detail("Unsupported dataset format"))
-        .mount(&server)
-        .await;
-    mount_store(&server).await;
-    let root = dataset(&[("data/a", b"abcde"), ("data/b", b"fghij")]);
-
-    let result = uploader(client(&server))
-        .send_files(&session_id(), &UploadPlan::from_dir(root.path()).unwrap())
-        .await;
-
-    assert_eq!((result.is_err(), received(&server).await.len()), (true, 1));
-}
-
-#[tokio::test]
-async fn rate_limit_on_one_file_delays_the_start_of_other_files() {
-    let server = MockServer::start().await;
-    let arrivals = Arc::new(Mutex::new(Vec::new()));
-    Mock::given(method("PUT"))
-        .and(path(format!("{FILES}data/a")))
-        .respond_with(Timed {
-            arrivals: Arc::clone(&arrivals),
-            inner: ResponseTemplate::new(429).insert_header("retry-after", "1"),
-        })
+    Mock::given(method("POST"))
+        .and(path(BATCH_CREATE))
+        .respond_with(ResponseTemplate::new(429).insert_header("retry-after", "1"))
         .up_to_n_times(1)
         .with_priority(1)
         .mount(&server)
         .await;
-    Mock::given(method("PUT"))
-        .respond_with(Timed {
-            arrivals: Arc::clone(&arrivals),
-            inner: Store,
-        })
-        .mount(&server)
-        .await;
-    let root = dataset(&[("data/a", b"abcde"), ("data/b", b"fghij")]);
+    fake_api::mount_with_storage(&server, &Storage::default()).await;
+    let root = dataset(&[("data/a", b"abcde")]);
     let (events, handler) = recorder();
 
     Uploader::new(client_with(
         &server.uri(),
         retries(3, Duration::from_secs(2)),
     ))
-    .options(options(2, Duration::from_millis(200)))
+    .options(options(2))
     .on_event(handler)
-    .send_files(&session_id(), &UploadPlan::from_dir(root.path()).unwrap())
+    .send_files(&recording_id(), &plan_of(&root, &["data/a"]))
     .await
     .unwrap();
 
-    let arrivals = arrivals.lock().unwrap().clone();
-    let first_arrival = |wanted: &str| {
-        arrivals
-            .iter()
-            .find(|(path, _)| path.ends_with(wanted))
-            .unwrap()
-            .1
-    };
-    let gap = first_arrival("data/b").duration_since(first_arrival("data/a"));
-    assert!(
-        events.lock().unwrap().contains(&UploadEvent::RateLimited {
-            pause: Duration::from_secs(1)
-        }) && gap >= Duration::from_millis(900),
-        "{gap:?}"
-    );
+    assert!(events.lock().unwrap().contains(&UploadEvent::RateLimited {
+        pause: Duration::from_secs(1)
+    }));
 }
 
 #[tokio::test]
 async fn file_removed_after_planning_returns_io_without_a_request() {
-    let server = MockServer::start().await;
-    mount_store(&server).await;
+    let server = api(&Storage::default()).await;
     let root = dataset(&[("data/a", b"abcde")]);
     let plan = plan_of(&root, &["data/a"]);
     fs::remove_file(root.path().join("data/a")).unwrap();
 
     let error = uploader(client(&server))
-        .send_files(&session_id(), &plan)
+        .upload(&plan, &new_recording())
         .await
         .unwrap_err();
 
@@ -616,18 +567,17 @@ async fn file_removed_after_planning_returns_io_without_a_request() {
 
 #[tokio::test]
 async fn file_whose_size_changed_after_planning_returns_io() {
-    let server = MockServer::start().await;
-    mount_store(&server).await;
+    let server = api(&Storage::default()).await;
     let root = dataset(&[("data/a", b"abcde")]);
     let plan = plan_of(&root, &["data/a"]);
     write(root.path(), "data/a", b"abcdefgh");
 
     let error = uploader(client(&server))
-        .send_files(&session_id(), &plan)
+        .send_files(&recording_id(), &plan)
         .await
         .unwrap_err();
 
-    assert!(matches!(error, Error::Io { .. }));
+    assert!(matches!(error, Error::Io { .. }), "{error:?}");
 }
 
 #[tokio::test]
@@ -640,68 +590,70 @@ async fn complete_answered_503_then_200_is_sent_twice_and_returns_ready() {
         .with_priority(1)
         .mount(&server)
         .await;
-    mount_sessions(&server).await;
+    fake_api::mount_with_storage(&server, &Storage::default()).await;
 
-    let session = uploader(client(&server))
-        .complete(&session_id())
+    let recording = uploader(client(&server))
+        .complete(&recording_id())
         .await
         .unwrap();
 
     assert_eq!(
-        (session.status, received(&server).await.len()),
-        (SessionStatus::Ready, 2)
+        (recording.state, received(&server).await.len()),
+        (RecordingState::Ready, 2)
     );
 }
 
 #[tokio::test]
-async fn complete_answered_400_returns_validation() {
+async fn complete_answered_412_names_the_files_that_are_not_uploaded() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
-        .and(path(COMPLETE))
-        .respond_with(validation_detail("meta/episodes is missing"))
+        .and(path_regex(":complete$"))
+        .respond_with(ResponseTemplate::new(412).set_body_json(json!({"error": {
+            "code": 412,
+            "status": "FAILED_PRECONDITION",
+            "message": "1 file is not uploaded",
+            "details": [
+                {"@type": "type.googleapis.com/google.rpc.ErrorInfo", "reason": "FILES_NOT_UPLOADED"},
+                {
+                    "@type": "type.googleapis.com/google.rpc.PreconditionFailure",
+                    "violations": [{"type": "FILE_NOT_UPLOADED", "subject": "data/a", "description": "not uploaded"}]
+                }
+            ]
+        }})))
         .mount(&server)
         .await;
 
     let error = uploader(client(&server))
-        .complete(&session_id())
+        .complete(&recording_id())
         .await
         .unwrap_err();
 
-    assert!(matches!(
-        error,
-        Error::Validation { ref message, .. } if message == "meta/episodes is missing"
-    ));
+    assert!(
+        matches!(&error, Error::FailedPrecondition { violations, .. } if violations[0].subject == "data/a"),
+        "{error:?}"
+    );
 }
 
 #[tokio::test]
-async fn upload_creates_sends_info_then_files_then_completes() {
+async fn complete_answered_invalid_dataset_returns_validation_with_the_reason() {
     let server = MockServer::start().await;
-    mount_sessions(&server).await;
-    mount_store(&server).await;
-    let root = dataset(&[("data/a", b"abcde"), ("videos/b.mp4", b"fghij")]);
+    Mock::given(method("POST"))
+        .and(path(COMPLETE))
+        .respond_with(fake_api::api_error(
+            400,
+            "INVALID_ARGUMENT",
+            "INVALID_DATASET",
+        ))
+        .mount(&server)
+        .await;
 
-    let session = uploader(client(&server))
-        .upload(&UploadPlan::from_dir(root.path()).unwrap(), &new_session())
+    let error = uploader(client(&server))
+        .complete(&recording_id())
         .await
-        .unwrap();
+        .unwrap_err();
 
-    let mut order: Vec<String> = received(&server)
-        .await
-        .into_iter()
-        .map(|request| format!("{} {}", request.method, request.url.path()))
-        .collect();
-    order[2..4].sort();
-    assert_eq!(
-        (session.status, order),
-        (
-            SessionStatus::Ready,
-            vec![
-                format!("POST {SESSIONS}"),
-                format!("PUT {FILES}meta/info.json"),
-                format!("PUT {FILES}data/a"),
-                format!("PUT {FILES}videos/b.mp4"),
-                format!("POST {COMPLETE}"),
-            ]
-        )
+    assert!(
+        matches!(&error, Error::Validation { reason: Some(reason), .. } if reason == "INVALID_DATASET"),
+        "{error:?}"
     );
 }

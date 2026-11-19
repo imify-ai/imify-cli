@@ -5,6 +5,7 @@ use wiremock::matchers::{header, method, path};
 use wiremock::{Mock, ResponseTemplate};
 
 use super::*;
+use crate::auth::Token;
 use crate::auth::testing::{
     ID_TOKEN_SUBJECT, MemoryStore, MockProvider, REFRESH_TOKEN, claims, client, jwt,
 };
@@ -280,13 +281,13 @@ async fn the_client_sends_the_stored_id_token_as_bearer_token() {
     let credentials = provider.credentials(3600, Some(REFRESH_TOKEN));
     let store = MemoryStore::holding(credentials.clone());
     Mock::given(method("GET"))
-        .and(path("/api/v1/me"))
+        .and(path("/api/v1/users/me"))
         .and(header(
             "authorization",
             format!("Bearer {}", credentials.id_token()).as_str(),
         ))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "subject": "user-1234", "name": "Ada Lovelace", "role": "admin"
+            "name": "users/user-1234", "displayName": "Ada Lovelace", "role": "ADMIN"
         })))
         .expect(1)
         .mount(&provider.server)
@@ -297,6 +298,112 @@ async fn the_client_sends_the_stored_id_token_as_bearer_token() {
         .unwrap();
 
     api.me().await.unwrap();
+}
+
+#[tokio::test]
+async fn renew_refreshes_an_id_token_that_is_not_near_its_expiry() {
+    let provider = MockProvider::start().await;
+    let credentials = provider.credentials(3600, Some(REFRESH_TOKEN));
+    let store = MemoryStore::holding(credentials.clone());
+    let new_id_token = provider.id_token(None, 7200);
+    provider
+        .mount_token_response(json!({"id_token": new_id_token}))
+        .await;
+    let login = stored_login(&store).await;
+
+    let renewed = login
+        .renew(&Token::new(credentials.id_token()))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        (
+            renewed.map(|token| token.secret().to_owned()),
+            store.stored().unwrap().id_token().to_owned()
+        ),
+        (Some(new_id_token.clone()), new_id_token)
+    );
+}
+
+#[tokio::test]
+async fn renew_of_a_token_already_renewed_returns_the_current_one_without_a_request() {
+    let provider = MockProvider::start().await;
+    let credentials = provider.credentials(3600, Some(REFRESH_TOKEN));
+    let store = MemoryStore::holding(credentials.clone());
+    let login = stored_login(&store).await;
+
+    let renewed = login.renew(&Token::new("an-older-token")).await.unwrap();
+
+    assert_eq!(
+        (
+            renewed.map(|token| token.secret().to_owned()),
+            provider.token_requests().await.len()
+        ),
+        (Some(credentials.id_token().to_owned()), 0)
+    );
+}
+
+#[tokio::test]
+async fn renew_refused_with_invalid_grant_fails_with_expired() {
+    let provider = MockProvider::start().await;
+    let credentials = provider.credentials(3600, Some(REFRESH_TOKEN));
+    let store = MemoryStore::holding(credentials.clone());
+    provider
+        .mount_token(ResponseTemplate::new(400).set_body_json(json!({"error": "invalid_grant"})))
+        .await;
+    let login = stored_login(&store).await;
+
+    let result = login.renew(&Token::new(credentials.id_token())).await;
+
+    assert!(
+        matches!(
+            result,
+            Err(Error::Login {
+                reason: LoginFailure::Expired,
+                ..
+            })
+        ),
+        "{result:?}"
+    );
+}
+
+#[tokio::test]
+async fn the_client_repeats_a_request_rejected_with_401_with_the_refreshed_token() {
+    let provider = MockProvider::start().await;
+    let credentials = provider.credentials(3600, Some(REFRESH_TOKEN));
+    let store = MemoryStore::holding(credentials.clone());
+    let new_id_token = provider.id_token(None, 7200);
+    provider
+        .mount_token_response(json!({"id_token": new_id_token}))
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/users/me"))
+        .and(header(
+            "authorization",
+            format!("Bearer {}", credentials.id_token()).as_str(),
+        ))
+        .respond_with(ResponseTemplate::new(401))
+        .mount(&provider.server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/users/me"))
+        .and(header(
+            "authorization",
+            format!("Bearer {new_id_token}").as_str(),
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "name": "users/user-1234", "displayName": "Ada Lovelace", "role": null
+        })))
+        .mount(&provider.server)
+        .await;
+    let api = Client::builder(&provider.issuer())
+        .token_source(stored_login(&store).await)
+        .build()
+        .unwrap();
+
+    let user = api.me().await;
+
+    assert!(user.is_ok(), "{user:?}");
 }
 
 #[tokio::test]

@@ -11,7 +11,7 @@ let client = Client::builder("https://api.example.com")
     .build()?;
 ```
 
-`Client` sends `User-Agent: imify-cli/<version>` and `Authorization: Bearer <token>` with every request. It retries a failed request up to 3 times with exponential backoff: `GET`, `HEAD`, `PUT`, `DELETE` and completing an ingest session on network errors and server errors (5xx), every request on connection failures and rate limits (429). `RetryPolicy` changes the limits. It follows redirects with status 307 and 308 only. Every failure is an `imify::Error` variant, such as `Auth`, `NotFound`, `Validation` or `RateLimited`.
+`Client` sends `User-Agent: imify-cli/<version>` and `Authorization: Bearer <token>` with every request to the API at `/api/v1`. It retries a failed request up to 3 times with exponential backoff: `GET`, `HEAD`, `PUT`, `DELETE` and the requests of an upload on network errors and server errors (5xx), every request on connection failures and rate limits (429). A `Retry-After` sets the delay; a rate limit without it waits 5 minutes. `RetryPolicy` changes the limits. A 401 asks the token source once for a new token and repeats the request. It follows redirects with status 307 and 308 only. Every failure is an `imify::Error` variant, such as `Auth`, `NotFound`, `Validation` or `RateLimited`. The message is the `message` of the API's error body, and `reason` is the `reason` of its `ErrorInfo` detail.
 
 ## Sign in
 
@@ -29,27 +29,27 @@ let source = StoredLogin::load(store).await?.expect("credentials were saved");
 let client = Client::builder("https://api.example.com").token_source(source).build()?;
 ```
 
-`oidc_settings` reads the issuer and client id from the host's protected resource metadata (RFC 9728), and from its `config.json` when the host publishes no metadata. `LoopbackLogin` runs the authorization code flow with PKCE and receives the redirect on `http://localhost:<port>/callback`, on port 28753, 28754 or 28755. It accepts only the redirect that carries the login's `state` and answers others with 400. `PasteLogin` takes the pasted redirect URL instead. `Credentials` hold the ID token, which is the bearer token, the refresh token and the user's subject. `store` is an `Arc<dyn CredentialStore>` you implement. `StoredLogin` refreshes the ID token when less than 60 s remain before it expires, and saves the result; a refreshed ID token must name the same subject. `revoke` revokes the refresh token at logout.
+`oidc_settings` reads the issuer and client id from the host's protected resource metadata (RFC 9728), and from its `config.json` when the host publishes no metadata. `LoopbackLogin` runs the authorization code flow with PKCE and receives the redirect on `http://localhost:<port>/callback`, on port 28753, 28754 or 28755. It accepts only the redirect that carries the login's `state` and answers others with 400. `PasteLogin` takes the pasted redirect URL instead. `Credentials` hold the ID token, which is the bearer token, the refresh token and the user's subject. `store` is an `Arc<dyn CredentialStore>` you implement. `StoredLogin` refreshes the ID token when less than 60 s remain before it expires, or when the API rejects it with 401, and saves the result; a refreshed ID token must name the same subject. `revoke` revokes the refresh token at logout.
 
 The API URL, the issuer and every identity provider endpoint use `https`; `http` works only for `localhost`, `127.0.0.1` and `::1`. The protected resource metadata, `config.json` and the discovery document follow redirects only within their origin, token and revocation requests follow none, and their responses are limited to 1 MiB. Errors never contain a token, an authorization code or the PKCE verifier.
 
 ## Upload a dataset
 
 ```rust
-use imify::ingest::{NewSession, UploadEvent, UploadPlan, Uploader};
+use imify::ingest::{NewRecording, UploadEvent, UploadPlan, Uploader};
 
 let plan = UploadPlan::from_dir("datasets/pick-place")?;
-let session = Uploader::new(client)
+let recording = Uploader::new(client)
     .on_event(|event| {
         if let UploadEvent::FileFinished { path, size } = event {
             println!("{path}: {size} bytes");
         }
     })
-    .upload(&plan, &NewSession::new("pick-place"))
+    .upload(&plan, &NewRecording::new("pick-place").task("Pick up the red cube"))
     .await?;
 ```
 
-`upload` creates an ingest session, sends `meta/info.json`, sends the files under `meta/`, `data/` and `videos/` 4 at a time, and completes the session. Files are streamed from disk. Request starts are at least 100 ms apart; a rate-limited response holds all starts for the requested delay. `UploadOptions` changes the concurrency and the interval.
+`upload` computes the SHA-256 of the files under `meta/`, `data/` and `videos/`, creates a recording, announces the files with their sizes and SHA-256, sends each file with one `PUT` to the presigned storage URL the API returns, 4 at a time, and completes the recording. Storage requests carry no `Authorization` header, and no error shows a presigned URL. Files are streamed from disk. Request starts are at least 100 ms apart. `UploadOptions` changes the concurrency and the interval. A create carries a `RequestId`, so a repeated create returns the first recording.
 
 ## Download a checkpoint
 
@@ -62,7 +62,7 @@ let summary = Downloader::new(client)
 println!("{} files in {}", summary.files, summary.target.display());
 ```
 
-`download` fetches the manifest of a training checkpoint and saves its files 4 at a time. Each file is written to `<path>.part`, checked against the manifest size, synced and renamed into place. Storage requests carry no `Authorization` header. The download refuses to start when a manifest path is unsafe, or when the target directory holds a symbolic link, a file not in the manifest or a manifest file with another size. Files that exist with the manifest size are skipped, so running the download again completes an interrupted one. A partial `<path>.part` is continued with a `Range` request when storage answers with 206 and the matching `Content-Range`. When storage rejects an expired URL with 403, the manifest is fetched again once.
+`download` reads a training checkpoint with its files and saves them 4 at a time. Each file is written to `<path>.part`, checked against the manifest size, synced and renamed into place. Storage requests carry no `Authorization` header. The download refuses to start when a manifest path is unsafe, or when the target directory holds a symbolic link, a file not in the manifest or a manifest file with another size. Files that exist with the manifest size are skipped, so running the download again completes an interrupted one. A partial `<path>.part` is continued with a `Range` request when storage answers with 206 and the matching `Content-Range`. When storage rejects an expired URL with 403, the manifest is fetched again once.
 
 ## Update a program installed by its installer
 

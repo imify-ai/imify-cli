@@ -1,17 +1,20 @@
 //! Policies: the models trained on a dataset version, their checkpoints and training logs.
+//!
+//! A policy is a training run of the API (`/api/v1/trainingRuns`).
 
 use std::fmt;
 
 use reqwest::header::HeaderMap;
 use reqwest::{Method, StatusCode, Url};
 use serde::Deserialize;
-use serde::de::DeserializeOwned;
 
 use crate::error::from_response;
+use crate::resource::{self, last_segment};
 use crate::retry::RetryMode;
 use crate::{Client, Error};
 
-const POLICIES_PATH: &str = "api/v1/training-runs";
+/// The collection of training runs below `/api/v1/`.
+pub(crate) const TRAINING_RUNS: &str = "trainingRuns";
 
 /// The id of a policy.
 ///
@@ -104,13 +107,15 @@ impl PolicyState {
         }
     }
 
-    fn from_wire(status: String) -> Self {
-        match status.as_str() {
-            "queued" => Self::Queued,
-            "running" => Self::Training,
-            "succeeded" => Self::Ready,
-            "failed" => Self::Failed,
-            _ => Self::Other(status),
+    /// The state of the API's `state`. A value this SDK version does not know is kept
+    /// in lowercase, so [`PolicyState::as_str`] stays lowercase for every state.
+    fn from_wire(state: &str) -> Self {
+        match state {
+            "QUEUED" => Self::Queued,
+            "RUNNING" => Self::Training,
+            "SUCCEEDED" => Self::Ready,
+            "FAILED" => Self::Failed,
+            _ => Self::Other(state.to_lowercase()),
         }
     }
 }
@@ -146,10 +151,13 @@ pub struct Policy {
     pub policy_type: String,
     /// Life cycle state.
     pub state: PolicyState,
-    /// Id of the dataset the policy is trained on.
+    /// Id of the dataset the policy is trained on: the `{d}` of `dataset_version`.
     pub dataset_id: String,
-    /// Id of the dataset version the policy is trained on.
+    /// Id of the dataset version the policy is trained on: the `{v}` of
+    /// `dataset_version`.
     pub dataset_version_id: String,
+    /// Resource name of the dataset version, `datasets/{d}/versions/{v}`.
+    pub dataset_version: String,
     /// Sub-step of the current state as sent by the API, such as `materializing`.
     pub phase: String,
     /// Training steps completed.
@@ -158,51 +166,80 @@ pub struct Policy {
     pub total_steps: u64,
     /// Reason for a failed training, as sent by the API.
     pub error: Option<String>,
-    /// Creation time as sent by the API, an ISO 8601 date-time.
+    /// Creation time as sent by the API, an RFC 3339 date-time.
     pub created_at: String,
-    /// Start of training as sent by the API, an ISO 8601 date-time.
+    /// Start of training as sent by the API, an RFC 3339 date-time.
     pub started_at: Option<String>,
-    /// End of training as sent by the API, an ISO 8601 date-time.
+    /// End of training as sent by the API, an RFC 3339 date-time.
     pub finished_at: Option<String>,
 }
 
+/// A training run as `/api/v1/trainingRuns` sends it.
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct WirePolicy {
-    id: String,
+    name: String,
+    #[serde(default)]
     policy: String,
-    status: String,
-    dataset_id: String,
-    version_id: String,
+    state: String,
+    #[serde(default)]
+    dataset_version: String,
+    #[serde(default)]
     phase: String,
+    #[serde(default)]
     step: u64,
-    total_steps: u64,
-    error: Option<String>,
-    created_at: String,
-    started_at: Option<String>,
-    finished_at: Option<String>,
+    #[serde(default)]
+    step_count: u64,
+    #[serde(default)]
+    error: Option<WireStatus>,
+    #[serde(default)]
+    create_time: String,
+    #[serde(default)]
+    start_time: Option<String>,
+    #[serde(default)]
+    end_time: Option<String>,
+}
+
+/// The `error` of a failed training run.
+#[derive(Deserialize)]
+struct WireStatus {
+    #[serde(default)]
+    message: String,
 }
 
 impl From<WirePolicy> for Policy {
     fn from(wire: WirePolicy) -> Self {
+        let (dataset_id, dataset_version_id) = version_ids(&wire.dataset_version);
         Self {
-            id: PolicyId(wire.id),
+            id: PolicyId(last_segment(&wire.name).to_owned()),
             policy_type: wire.policy,
-            state: PolicyState::from_wire(wire.status),
-            dataset_id: wire.dataset_id,
-            dataset_version_id: wire.version_id,
+            state: PolicyState::from_wire(&wire.state),
+            dataset_id,
+            dataset_version_id,
+            dataset_version: wire.dataset_version,
             phase: wire.phase,
             step: wire.step,
-            total_steps: wire.total_steps,
-            error: wire.error,
-            created_at: wire.created_at,
-            started_at: wire.started_at,
-            finished_at: wire.finished_at,
+            total_steps: wire.step_count,
+            error: wire.error.map(|error| error.message),
+            created_at: wire.create_time,
+            started_at: wire.start_time,
+            finished_at: wire.end_time,
         }
     }
 }
 
+/// The `{d}` and `{v}` of a version name `datasets/{d}/versions/{v}`. `{v}` is the rest
+/// after `/versions/`, since an ID of a version made with the old API may hold `/`. Both
+/// are empty for another name.
+fn version_ids(name: &str) -> (String, String) {
+    name.strip_prefix("datasets/")
+        .and_then(|rest| rest.split_once("/versions/"))
+        .map(|(dataset, version)| (dataset.to_owned(), version.to_owned()))
+        .unwrap_or_default()
+}
+
 /// What a policy was trained on: the dataset version, its dataset and the exact
-/// episodes. Unknown response fields are ignored.
+/// episodes.
 ///
 /// # Examples
 ///
@@ -214,17 +251,14 @@ impl From<WirePolicy> for Policy {
 /// println!("{} on {}: {} episodes", lineage.task, lineage.embodiment, lineage.episodes);
 /// # Ok(()) }
 /// ```
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[serde(from = "WireLineage")]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct Lineage {
     /// Id of the dataset.
     pub dataset_id: String,
-    /// Id of the dataset version.
+    /// Id of the dataset version, chosen when the version was made, such as `v3`.
     pub dataset_version_id: String,
-    /// Name of the dataset version.
-    pub dataset_version_name: String,
-    /// Task description of the dataset.
+    /// Task of the dataset.
     pub task: String,
     /// Display label of the robot embodiment, such as `so100`.
     pub embodiment: String,
@@ -232,35 +266,39 @@ pub struct Lineage {
     pub embodiment_fingerprint: String,
     /// Number of episodes in the dataset version.
     pub episodes: u64,
-    /// Ids of the episodes in the dataset version.
+    /// Ids of the episodes in the dataset version, sorted.
     pub episode_ids: Vec<String>,
 }
 
+/// A dataset version as `GET /api/v1/datasets/{d}/versions/{v}` sends it.
 #[derive(Deserialize)]
-struct WireLineage {
-    dataset_id: String,
-    version_id: String,
-    version_name: String,
-    task_description: String,
-    embodiment_label: String,
-    embodiment_fingerprint: String,
+#[serde(rename_all = "camelCase")]
+struct WireVersion {
+    #[serde(default)]
     episode_count: u64,
-    episode_ids: Vec<String>,
 }
 
-impl From<WireLineage> for Lineage {
-    fn from(wire: WireLineage) -> Self {
-        Self {
-            dataset_id: wire.dataset_id,
-            dataset_version_id: wire.version_id,
-            dataset_version_name: wire.version_name,
-            task: wire.task_description,
-            embodiment: wire.embodiment_label,
-            embodiment_fingerprint: wire.embodiment_fingerprint,
-            episodes: wire.episode_count,
-            episode_ids: wire.episode_ids,
-        }
-    }
+/// A dataset as `GET /api/v1/datasets/{d}` sends it.
+#[derive(Deserialize)]
+struct WireDataset {
+    #[serde(default)]
+    task: String,
+    #[serde(default)]
+    embodiment: String,
+}
+
+/// An embodiment as `GET /api/v1/embodiments/{e}` sends it.
+#[derive(Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WireEmbodiment {
+    #[serde(default)]
+    display_name: String,
+}
+
+/// An item of a List whose resource name is all this SDK reads.
+#[derive(Deserialize)]
+struct Named {
+    name: String,
 }
 
 /// A policy's state at one training step. Unknown response fields are ignored.
@@ -277,14 +315,36 @@ impl From<WireLineage> for Lineage {
 /// # Ok(()) }
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(from = "WireCheckpoint")]
 #[non_exhaustive]
 pub struct Checkpoint {
     /// Checkpoint id, such as the training step `020000`.
     pub id: String,
     /// Total size of the checkpoint's files in bytes.
     pub size: u64,
-    /// Time of the last change as sent by the API, an ISO 8601 date-time.
+    /// Time of the last change as sent by the API, an RFC 3339 date-time.
     pub last_modified: String,
+}
+
+/// A checkpoint as `GET /api/v1/trainingRuns/{r}/checkpoints` sends it.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WireCheckpoint {
+    name: String,
+    #[serde(default)]
+    size_bytes: u64,
+    #[serde(default)]
+    update_time: String,
+}
+
+impl From<WireCheckpoint> for Checkpoint {
+    fn from(wire: WireCheckpoint) -> Self {
+        Self {
+            id: last_segment(&wire.name).to_owned(),
+            size: wire.size_bytes,
+            last_modified: wire.update_time,
+        }
+    }
 }
 
 /// Which policies [`Policies::list`] returns. The default matches every policy.
@@ -380,9 +440,9 @@ pub struct Policies<'a> {
 }
 
 impl Policies<'_> {
-    /// Returns the policies visible to the authenticated user that match `filter`
-    /// (`GET /api/v1/training-runs`), in the order the API returns them. The filter is
-    /// applied to the response.
+    /// Returns the policies visible to the authenticated user that match `filter`, in the
+    /// order the API returns them. Reads every page of `GET /api/v1/trainingRuns` and
+    /// applies the filter to the response.
     ///
     /// # Errors
     ///
@@ -403,17 +463,15 @@ impl Policies<'_> {
     /// # Ok(()) }
     /// ```
     pub async fn list(&self, filter: &PolicyFilter) -> Result<Vec<Policy>, Error> {
-        let policies: Vec<Policy> = self
-            .client
-            .execute(Method::GET, POLICIES_PATH, None)
-            .await?;
+        let url = resource::url(self.client, [TRAINING_RUNS])?;
+        let policies: Vec<Policy> = resource::list_all(self.client, &url, "trainingRuns").await?;
         Ok(policies
             .into_iter()
             .filter(|policy| filter.matches(policy))
             .collect())
     }
 
-    /// Returns the policy `id` (`GET /api/v1/training-runs/{id}`).
+    /// Returns the policy `id` (`GET /api/v1/trainingRuns/{id}`).
     ///
     /// # Errors
     ///
@@ -432,11 +490,13 @@ impl Policies<'_> {
     /// # Ok(()) }
     /// ```
     pub async fn get(&self, id: &PolicyId) -> Result<Policy, Error> {
-        self.get_json(id, None).await
+        resource::get(self.client, self.url(id, None)?).await
     }
 
-    /// Returns what the policy `id` was trained on
-    /// (`GET /api/v1/training-runs/{id}/lineage`).
+    /// Returns what the policy `id` was trained on. Reads the policy, its dataset version
+    /// (`GET /api/v1/datasets/{d}/versions/{v}`), its dataset and that dataset's embodiment,
+    /// and every page of the version's episodes
+    /// (`GET /api/v1/episodes?datasetVersion=datasets/{d}/versions/{v}`).
     ///
     /// # Errors
     ///
@@ -449,15 +509,72 @@ impl Policies<'_> {
     /// use imify::policies::PolicyId;
     ///
     /// let lineage = client.policies().lineage(&PolicyId::new("run-3c9e1a7f")).await?;
-    /// println!("dataset version {}", lineage.dataset_version_name);
+    /// println!("dataset version {}", lineage.dataset_version_id);
     /// # Ok(()) }
     /// ```
     pub async fn lineage(&self, id: &PolicyId) -> Result<Lineage, Error> {
-        self.get_json(id, Some("lineage")).await
+        let policy = self.get(id).await?;
+        let (version, (dataset, embodiment), episode_ids) = futures_util::future::try_join3(
+            self.version(&policy),
+            self.dataset_with_embodiment(&policy.dataset_id),
+            self.episode_ids(&policy.dataset_version),
+        )
+        .await?;
+        Ok(Lineage {
+            embodiment_fingerprint: last_segment(&dataset.embodiment).to_owned(),
+            dataset_id: policy.dataset_id,
+            dataset_version_id: policy.dataset_version_id,
+            task: dataset.task,
+            embodiment: embodiment.display_name,
+            episodes: version.episode_count,
+            episode_ids,
+        })
     }
 
-    /// Returns the checkpoints of the policy `id`, oldest first
-    /// (`GET /api/v1/training-runs/{id}/checkpoints`).
+    /// The dataset version `policy` was trained on.
+    async fn version(self, policy: &Policy) -> Result<WireVersion, Error> {
+        let segments = [
+            "datasets",
+            policy.dataset_id.as_str(),
+            "versions",
+            policy.dataset_version_id.as_str(),
+        ];
+        resource::get(self.client, resource::url(self.client, segments)?).await
+    }
+
+    /// The dataset `id` and its embodiment; an empty embodiment when the dataset names
+    /// none.
+    async fn dataset_with_embodiment(
+        self,
+        id: &str,
+    ) -> Result<(WireDataset, WireEmbodiment), Error> {
+        let dataset: WireDataset =
+            resource::get(self.client, resource::url(self.client, ["datasets", id])?).await?;
+        let embodiment_id = last_segment(&dataset.embodiment);
+        if embodiment_id.is_empty() {
+            return Ok((dataset, WireEmbodiment::default()));
+        }
+        let url = resource::url(self.client, ["embodiments", embodiment_id])?;
+        let embodiment = resource::get(self.client, url).await?;
+        Ok((dataset, embodiment))
+    }
+
+    /// The sorted ids of the episodes of the dataset version named `version`, from every
+    /// page of `GET /api/v1/episodes?datasetVersion=`.
+    async fn episode_ids(self, version: &str) -> Result<Vec<String>, Error> {
+        let mut url = resource::url(self.client, ["episodes"])?;
+        url.query_pairs_mut().append_pair("datasetVersion", version);
+        let episodes: Vec<Named> = resource::list_all(self.client, &url, "episodes").await?;
+        let mut ids: Vec<String> = episodes
+            .iter()
+            .map(|episode| last_segment(&episode.name).to_owned())
+            .collect();
+        ids.sort();
+        Ok(ids)
+    }
+
+    /// Returns the checkpoints of the policy `id`, oldest first. Reads every page of
+    /// `GET /api/v1/trainingRuns/{id}/checkpoints`.
     ///
     /// # Errors
     ///
@@ -476,11 +593,12 @@ impl Policies<'_> {
     /// # Ok(()) }
     /// ```
     pub async fn checkpoints(&self, id: &PolicyId) -> Result<Vec<Checkpoint>, Error> {
-        self.get_json(id, Some("checkpoints")).await
+        let url = self.url(id, Some("checkpoints"))?;
+        resource::list_all(self.client, &url, "checkpoints").await
     }
 
     /// Returns the training log of the policy `id` as text
-    /// (`GET /api/v1/training-runs/{id}/log`). Bytes that are not valid UTF-8 are
+    /// (`GET /api/v1/trainingRuns/{id}/log`). Bytes that are not valid UTF-8 are
     /// replaced with U+FFFD.
     ///
     /// # Errors
@@ -507,30 +625,12 @@ impl Policies<'_> {
             .await
     }
 
-    /// Sends a `GET` to the policy `id`, or to `segment` below it, and decodes the JSON
-    /// response as `T`.
-    async fn get_json<T: DeserializeOwned>(
-        &self,
-        id: &PolicyId,
-        segment: Option<&str>,
-    ) -> Result<T, Error> {
-        let url = self.url(id, segment)?;
-        self.client
-            .execute_at(RetryMode::Idempotent, Method::GET, url, None)
-            .await
-    }
-
     /// URL of the policy `id`, or of `segment` below it, each segment percent-encoded.
     fn url(self, id: &PolicyId, segment: Option<&str>) -> Result<Url, Error> {
-        let mut url = self.client.url(POLICIES_PATH)?;
-        url.path_segments_mut()
-            .map_err(|()| Error::Config {
-                message: "base URL cannot have a path".to_owned(),
-            })?
-            .pop_if_empty()
-            .push(id.as_str())
-            .extend(segment);
-        Ok(url)
+        resource::url(
+            self.client,
+            [TRAINING_RUNS, id.as_str()].into_iter().chain(segment),
+        )
     }
 }
 

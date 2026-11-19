@@ -14,7 +14,7 @@ use super::Revocation;
 use crate::client::{network_error, read_small_body, redirect_not_followed, require_secure};
 use crate::error::from_response;
 use crate::retry::RetryMode;
-use crate::{Client, Error, FieldError, LoginFailure, OidcSettings};
+use crate::{Client, Error, FieldError, LoginFailure, OidcSettings, Violation};
 
 /// Scopes every login requests.
 pub(crate) const SCOPES: &str = "openid email profile";
@@ -319,7 +319,15 @@ fn redact_error(error: Error, secrets: &[&str]) -> Error {
         Error::NotFound { message } => Error::NotFound {
             message: redact(message),
         },
-        Error::Validation { message, fields } => Error::Validation {
+        Error::PermissionDenied { message, reason } => Error::PermissionDenied {
+            message: redact(message),
+            reason,
+        },
+        Error::Validation {
+            message,
+            fields,
+            reason,
+        } => Error::Validation {
             message: redact(message),
             fields: fields
                 .into_iter()
@@ -329,13 +337,36 @@ fn redact_error(error: Error, secrets: &[&str]) -> Error {
                     kind: redact(field.kind),
                 })
                 .collect(),
+            reason,
         },
-        Error::Conflict { message } => Error::Conflict {
+        Error::Conflict { message, reason } => Error::Conflict {
             message: redact(message),
+            reason,
         },
-        Error::Server { status, message } => Error::Server {
+        Error::FailedPrecondition {
+            message,
+            reason,
+            violations,
+        } => Error::FailedPrecondition {
+            message: redact(message),
+            reason,
+            violations: violations
+                .into_iter()
+                .map(|violation| Violation {
+                    kind: violation.kind,
+                    subject: redact(violation.subject),
+                    description: redact(violation.description),
+                })
+                .collect(),
+        },
+        Error::Server {
+            status,
+            message,
+            retry_after,
+        } => Error::Server {
             status,
             message: redact(message),
+            retry_after,
         },
         Error::UnexpectedResponse { status, message } => Error::UnexpectedResponse {
             status,

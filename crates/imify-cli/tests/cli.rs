@@ -5,8 +5,15 @@ use std::process::Output;
 use assert_cmd::Command;
 use imify_test_support::{DatasetBuilder, Defect, Format, SyntheticDataset};
 use serde_json::json;
-use wiremock::matchers::{header, method, path, path_regex};
-use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
+use wiremock::matchers::{header, method, path};
+use wiremock::{Mock, MockServer, ResponseTemplate};
+
+mod recordings;
+
+use recordings::{
+    BATCH_CREATE, COMPLETE, RECORDING_ID, RECORDINGS, Stored, completed, completed_recording_body,
+    creations, stored_paths,
+};
 
 const TOKEN: &str = "tok_7f3a9c-secret";
 
@@ -128,7 +135,7 @@ fn global_flags_are_accepted_without_a_command() {
 async fn api_answering(status: u16, body: serde_json::Value) -> MockServer {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
-        .and(path("/api/v1/me"))
+        .and(path("/api/v1/users/me"))
         .respond_with(ResponseTemplate::new(status).set_body_json(body))
         .mount(&server)
         .await;
@@ -136,7 +143,12 @@ async fn api_answering(status: u16, body: serde_json::Value) -> MockServer {
 }
 
 fn user_body() -> serde_json::Value {
-    json!({"subject": "user-1234", "name": "Ada Lovelace", "role": "admin"})
+    json!({"name": "users/user-1234", "displayName": "Ada Lovelace", "role": "ADMIN"})
+}
+
+/// The AIP-193 error the API answers to a token it rejects.
+fn invalid_token() -> serde_json::Value {
+    json!({"error": {"code": 401, "status": "UNAUTHENTICATED", "message": "Invalid token"}})
 }
 
 async fn api_with_user() -> MockServer {
@@ -144,7 +156,7 @@ async fn api_with_user() -> MockServer {
 }
 
 async fn api_rejecting_the_token() -> MockServer {
-    api_answering(401, json!({"detail": "Invalid token"})).await
+    api_answering(401, invalid_token()).await
 }
 
 fn whoami(server: &MockServer, extra_args: &[&str]) -> Output {
@@ -180,7 +192,7 @@ async fn whoami_json_prints_the_user_as_an_object() {
 async fn whoami_sends_imify_token_as_the_bearer_token() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
-        .and(path("/api/v1/me"))
+        .and(path("/api/v1/users/me"))
         .and(header("authorization", format!("Bearer {TOKEN}").as_str()))
         .respond_with(ResponseTemplate::new(200).set_body_json(user_body()))
         .expect(1)
@@ -221,7 +233,11 @@ async fn whoami_with_a_rejected_token_fails_with_auth_rejected() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn whoami_forbidden_with_a_json_body_fails_with_permission_denied() {
-    let server = api_answering(403, json!({"detail": "Not allowed"})).await;
+    let server = api_answering(
+        403,
+        json!({"error": {"code": 403, "status": "PERMISSION_DENIED", "message": "Not allowed"}}),
+    )
+    .await;
 
     let output = whoami(&server, &["--json"]);
 
@@ -346,39 +362,55 @@ fn dataset_body(
     accepted: u64,
 ) -> serde_json::Value {
     json!({
-        "id": id,
-        "task_description": task,
-        "dataset_format": format,
-        "embodiment_label": embodiment,
-        "embodiment_fingerprint": format!("{embodiment}-f3a9c1"),
+        "name": format!("datasets/{id}"),
+        "displayName": "",
+        "description": "",
+        "embodiment": format!("embodiments/{embodiment}-f3a9c1"),
+        "task": task,
+        "format": format,
+        "state": "ACTIVE",
+        "episodeCounts": {"ACCEPTED": accepted, "PENDING_REVIEW": episodes - accepted},
+        "createTime": "2026-10-01T09:30:00Z",
+        "updateTime": "2026-10-01T09:30:00Z",
+        "etag": "W/\"1\""
+    })
+}
+
+fn embodiment_body(label: &str) -> serde_json::Value {
+    json!({
+        "name": format!("embodiments/{label}-f3a9c1"),
+        "displayName": label,
+        "fps": 30,
+        "actionDim": 6,
+        "stateDim": 6,
+        "actionNames": [],
         "cameras": ["wrist", "top"],
-        "action_dim": 6,
-        "created_at": "2026-10-01T09:30:00Z",
-        "episode_count": episodes,
-        "accepted_count": accepted
+        "createTime": "2026-09-01T00:00:00Z"
     })
 }
 
 fn datasets_body() -> serde_json::Value {
-    json!([
-        dataset_body(STACK_ID, "Stack two blocks", "lerobot_v3", "koch", 12, 12),
-        dataset_body(
-            PICK_ID,
-            "Pick up the red cube",
-            "lerobot_v3",
-            "so100",
-            50,
-            48
-        ),
-        dataset_body(POUR_ID, "Pour water", "lerobot_v2_1", "so100", 9, 7),
-    ])
+    json!({"datasets": [
+        dataset_body(STACK_ID, "Stack two blocks", "v3", "koch", 12, 12),
+        dataset_body(PICK_ID, "Pick up the red cube", "v3", "so100", 50, 48),
+        dataset_body(POUR_ID, "Pour water", "v2.1", "so100", 9, 7),
+    ]})
 }
 
+/// An API that answers the dataset List with `status` and `body`, and lists the
+/// embodiments `so100` and `koch`.
 async fn api_with_datasets(status: u16, body: serde_json::Value) -> MockServer {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/api/v1/datasets"))
         .respond_with(ResponseTemplate::new(status).set_body_json(body))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/embodiments"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(
+            json!({"embodiments": [embodiment_body("so100"), embodiment_body("koch")]}),
+        ))
         .mount(&server)
         .await;
     server
@@ -415,7 +447,7 @@ async fn datasets_list_json_prints_every_field_as_an_array() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn datasets_list_without_datasets_prints_no_datasets() {
-    let server = api_with_datasets(200, json!([])).await;
+    let server = api_with_datasets(200, json!({"datasets": []})).await;
 
     let output = datasets_list(&server, &[]);
 
@@ -425,7 +457,7 @@ async fn datasets_list_without_datasets_prints_no_datasets() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn datasets_list_json_without_datasets_prints_an_empty_array() {
-    let server = api_with_datasets(200, json!([])).await;
+    let server = api_with_datasets(200, json!({"datasets": []})).await;
 
     let output = datasets_list(&server, &["--json"]);
 
@@ -437,10 +469,7 @@ async fn datasets_list_json_without_datasets_prints_an_empty_array() {
 async fn datasets_list_json_filters_and_sorts_before_printing() {
     let server = api_with_datasets(200, datasets_body()).await;
 
-    let output = datasets_list(
-        &server,
-        &["--json", "--format", "lerobot_v3", "--sort", "episodes"],
-    );
+    let output = datasets_list(&server, &["--json", "--format", "v3", "--sort", "episodes"]);
 
     assert!(output.status.success(), "{}", text(&output.stderr));
     let datasets: Vec<serde_json::Value> = serde_json::from_slice(&output.stdout).unwrap();
@@ -468,7 +497,7 @@ async fn datasets_list_without_imify_token_fails_with_auth_required_and_sends_no
 
 #[tokio::test(flavor = "multi_thread")]
 async fn datasets_list_with_a_rejected_token_fails_with_auth_rejected() {
-    let server = api_with_datasets(401, json!({"detail": "Invalid token"})).await;
+    let server = api_with_datasets(401, invalid_token()).await;
 
     let output = datasets_list(&server, &["--json"]);
 
@@ -479,7 +508,7 @@ async fn datasets_list_with_a_rejected_token_fails_with_auth_rejected() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn datasets_list_with_a_body_that_is_not_a_list_of_datasets_fails_with_internal() {
-    let server = api_with_datasets(200, json!({"items": []})).await;
+    let server = api_with_datasets(200, json!({"datasets": [{"id": 1}]})).await;
 
     let output = datasets_list(&server, &["--json"]);
 
@@ -614,81 +643,26 @@ fn datasets_validate_of_a_missing_directory_is_a_usage_error_naming_meta_info_js
             .contains("meta/info.json")
     );
 }
-const SESSION_ID: &str = "3f2c9a";
+const SESSION_ID: &str = RECORDING_ID;
 const TASK: &str = "Pick up the red cube";
-const SESSIONS: &str = "/api/v1/ingest/sessions";
-const FILES: &str = "/api/v1/ingest/sessions/3f2c9a/files/";
-const COMPLETE: &str = "/api/v1/ingest/sessions/3f2c9a/complete";
 
-fn session_body(status: &str) -> serde_json::Value {
-    json!({
-        "id": SESSION_ID,
-        "name": "pick-cube",
-        "dataset_format": null,
-        "robot_type": null,
-        "fps": null,
-        "total_episodes": null,
-        "status": status,
-        "task_description": TASK,
-        "created_at": "2026-10-16T09:30:00Z"
-    })
+/// An error of `:complete` for a dataset the API cannot read.
+fn unreadable_dataset() -> ResponseTemplate {
+    recordings::api_error(
+        400,
+        "INVALID_ARGUMENT",
+        "INVALID_DATASET",
+        "No episodes found in data/",
+    )
 }
 
-fn completed_session_body() -> serde_json::Value {
-    let mut body = session_body("ready");
-    body["dataset_format"] = json!("lerobot_v3");
-    body["robot_type"] = json!("so100");
-    body["fps"] = json!(30.0);
-    body["total_episodes"] = json!(2);
-    body
-}
-
-/// Answers a file `PUT` the way the API does: with the stored path and size.
-struct Store;
-
-impl Respond for Store {
-    fn respond(&self, request: &Request) -> ResponseTemplate {
-        let stored = request.url.path().strip_prefix(FILES).unwrap_or_default();
-        ResponseTemplate::new(200).set_body_json(json!({
-            "path": stored,
-            "size": request.body.len(),
-        }))
-    }
-}
-
-/// An ingest API that creates session `3f2c9a`, stores every file and answers `complete` with
-/// `complete`.
+/// A recordings API whose `:complete` answers `complete`.
 async fn ingest_api_completing_with(complete: ResponseTemplate) -> MockServer {
-    let server = MockServer::start().await;
-    mount_ingest_api(&server, complete).await;
-    server
-}
-
-/// Mounts the mocks of [`ingest_api_completing_with`] on `server`.
-async fn mount_ingest_api(server: &MockServer, complete: ResponseTemplate) {
-    Mock::given(method("POST"))
-        .and(path(SESSIONS))
-        .respond_with(ResponseTemplate::new(201).set_body_json(session_body("uploading")))
-        .mount(server)
-        .await;
-    Mock::given(method("PUT"))
-        .and(path_regex(format!("^{FILES}")))
-        .respond_with(Store)
-        .mount(server)
-        .await;
-    Mock::given(method("POST"))
-        .and(path(COMPLETE))
-        .respond_with(complete)
-        .mount(server)
-        .await;
-}
-
-fn completed() -> ResponseTemplate {
-    ResponseTemplate::new(200).set_body_json(completed_session_body())
+    recordings::api_completing_with(complete).await
 }
 
 async fn ingest_api() -> MockServer {
-    ingest_api_completing_with(completed()).await
+    recordings::api().await
 }
 
 /// A synthetic dataset in a directory named `pick-cube`, next to a home directory for the
@@ -844,8 +818,7 @@ async fn datasets_upload_json_reports_each_file_as_started_then_finished() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn datasets_upload_creates_the_session_sends_meta_info_json_first_then_every_file_then_completes()
- {
+async fn datasets_upload_creates_the_recording_announces_and_sends_every_file_then_completes() {
     let server = ingest_api().await;
     let dataset = pick_cube(&[]).unwrap();
 
@@ -853,30 +826,161 @@ async fn datasets_upload_creates_the_session_sends_meta_info_json_first_then_eve
 
     assert_eq!(output.status.code(), Some(0), "{}", text(&output.stderr));
     let requests = server.received_requests().await.unwrap();
-    let (first, rest) = requests.split_first().unwrap();
-    let (last, puts) = rest.split_last().unwrap();
+    let (create, rest) = requests.split_first().unwrap();
+    let (announce, rest) = rest.split_first().unwrap();
+    let (complete, puts) = rest.split_last().unwrap();
+    let mut body = serde_json::from_slice::<serde_json::Value>(&create.body).unwrap();
+    let request_id = body["requestId"].take();
     assert_eq!(
-        (first.method.as_str(), first.url.path()),
-        ("POST", SESSIONS)
+        (
+            create.url.path(),
+            body,
+            request_id.as_str().map(str::len),
+            announce.url.path(),
+            complete.url.path()
+        ),
+        (
+            RECORDINGS,
+            json!({"requestId": null, "displayName": "pick-cube", "task": TASK}),
+            Some(36),
+            BATCH_CREATE,
+            COMPLETE
+        )
     );
+    let sent: BTreeSet<String> = stored_paths(puts).into_iter().collect();
+    assert_eq!(sent, dataset.upload_paths());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn datasets_upload_sends_the_recording_options() {
+    let server = ingest_api().await;
+    let dataset = pick_cube(&[]).unwrap();
+
+    let output = upload(
+        &dataset,
+        Some(&server),
+        &[
+            "--robot",
+            "so100-0042",
+            "--operator",
+            "op-17",
+            "--site",
+            "lab-munich",
+            "--start-time",
+            "2026-11-18T09:00:00Z",
+            "--label",
+            "shift=night",
+            "--label",
+            "gripper=v2",
+            "--json",
+        ],
+    );
+
+    assert_eq!(output.status.code(), Some(0), "{}", text(&output.stderr));
+    let create = &server.received_requests().await.unwrap()[0];
+    let body: serde_json::Value = serde_json::from_slice(&create.body).unwrap();
     assert_eq!(
-        serde_json::from_slice::<serde_json::Value>(&first.body).unwrap(),
-        json!({"name": "pick-cube", "task_description": TASK})
+        (
+            &body["robot"],
+            &body["operator"],
+            &body["site"],
+            &body["startTime"],
+            &body["labels"]
+        ),
+        (
+            &json!("so100-0042"),
+            &json!("op-17"),
+            &json!("lab-munich"),
+            &json!("2026-11-18T09:00:00Z"),
+            &json!({"gripper": "v2", "shift": "night"})
+        )
     );
-    assert_eq!((last.method.as_str(), last.url.path()), ("POST", COMPLETE));
-    let mut sent: Vec<&str> = puts
-        .iter()
-        .map(|request| request.url.path().strip_prefix(FILES).unwrap())
-        .collect();
-    assert_eq!(sent[0], "meta/info.json");
-    sent.sort_unstable();
-    let mut planned: Vec<&str> = dataset
-        .files
-        .iter()
-        .map(|file| file.to_str().unwrap())
-        .collect();
-    planned.sort_unstable();
-    assert_eq!(sent, planned);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn datasets_upload_without_operator_sends_none() {
+    let server = ingest_api().await;
+    let dataset = pick_cube(&[]).unwrap();
+
+    let output = upload(&dataset, Some(&server), &["--json"]);
+
+    assert_eq!(output.status.code(), Some(0), "{}", text(&output.stderr));
+    let create = &server.received_requests().await.unwrap()[0];
+    let body: serde_json::Value = serde_json::from_slice(&create.body).unwrap();
+    assert!(body.get("operator").is_none(), "{body}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn datasets_upload_with_an_option_outside_the_limits_fails_before_any_request() {
+    let server = ingest_api().await;
+    let dataset = pick_cube(&[]).unwrap();
+
+    for invalid in [
+        ["--robot", "so100 #42"],
+        ["--label", "Shift=night"],
+        ["--start-time", "yesterday"],
+    ] {
+        let mut args = invalid.to_vec();
+        args.push("--json");
+
+        let output = upload(&dataset, Some(&server), &args);
+
+        assert_eq!(output.status.code(), Some(2), "{invalid:?}");
+        assert_eq!(error_code(&output).as_deref(), Some("invalid_argument"));
+    }
+    assert!(server.received_requests().await.unwrap().is_empty());
+}
+
+#[test]
+fn datasets_upload_with_a_label_without_equals_sign_is_a_usage_error() {
+    let output = imify(
+        &[
+            "datasets", "upload", ".", "--task", TASK, "--label", "night", "--json",
+        ],
+        &[],
+    );
+
+    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(error_code(&output).as_deref(), Some("invalid_argument"));
+}
+
+#[test]
+fn datasets_upload_dry_run_shows_every_recording_option() {
+    let dataset = pick_cube(&[]).unwrap();
+
+    let output = upload(
+        &dataset,
+        None,
+        &[
+            "--dry-run",
+            "--robot",
+            "so100-0042",
+            "--site",
+            "lab-munich",
+            "--label",
+            "shift=night",
+            "--json",
+        ],
+    );
+
+    assert_eq!(output.status.code(), Some(0), "{}", text(&output.stderr));
+    let result = json_lines(&output.stdout).unwrap().pop().unwrap();
+    assert_eq!(
+        (
+            &result["robot"],
+            &result["operator"],
+            &result["site"],
+            &result["start_time"],
+            &result["labels"]
+        ),
+        (
+            &json!("so100-0042"),
+            &json!(null),
+            &json!("lab-munich"),
+            &json!(null),
+            &json!({"shift": "night"})
+        )
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1018,10 +1122,7 @@ fn datasets_upload_dry_run_names_a_skipped_symbolic_link() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn datasets_upload_rejected_by_complete_fails_with_dataset_invalid_and_the_api_message() {
-    let server = ingest_api_completing_with(
-        ResponseTemplate::new(400).set_body_json(json!({"detail": "No episodes found in data/"})),
-    )
-    .await;
+    let server = ingest_api_completing_with(unreadable_dataset()).await;
     let dataset = pick_cube(&[]).unwrap();
 
     let output = upload(&dataset, Some(&server), &["--json"]);
@@ -1097,9 +1198,9 @@ async fn datasets_upload_retries_a_file_answered_with_503_and_reports_the_retry(
         .unwrap()
         .to_owned();
     Mock::given(method("PUT"))
-        .and(path(format!("{FILES}{retried}")))
+        .and(path(format!("{}{retried}", recordings::STORAGE)))
         .respond_with(
-            ResponseTemplate::new(503).set_body_json(json!({"detail": "Service Unavailable"})),
+            ResponseTemplate::new(503).set_body_string("<Error><Code>SlowDown</Code></Error>"),
         )
         .up_to_n_times(1)
         .with_priority(1)
@@ -1119,23 +1220,6 @@ async fn datasets_upload_retries_a_file_answered_with_503_and_reports_the_retry(
     assert_eq!(retry_events[0]["attempt"], 1);
 }
 
-/// The files the requests store in session `3f2c9a`, in request order.
-fn stored_paths(requests: &[Request]) -> Vec<String> {
-    requests
-        .iter()
-        .filter(|request| request.method.as_str() == "PUT")
-        .filter_map(|request| request.url.path().strip_prefix(FILES))
-        .map(str::to_owned)
-        .collect()
-}
-
-fn session_creations(requests: &[Request]) -> usize {
-    requests
-        .iter()
-        .filter(|request| request.method.as_str() == "POST" && request.url.path() == SESSIONS)
-        .count()
-}
-
 /// The `path` of every event of type `kind`.
 fn event_paths(events: &[serde_json::Value], kind: &str) -> BTreeSet<String> {
     events
@@ -1146,50 +1230,49 @@ fn event_paths(events: &[serde_json::Value], kind: &str) -> BTreeSet<String> {
         .collect()
 }
 
-/// Runs an upload that stores every file and is rejected at `complete`, which leaves a
-/// journal of every file. Returns the server with its requests cleared and `complete`
-/// answering with the completed session.
+/// Runs an upload that stores every file and is rejected at `:complete`, which leaves a
+/// journal of every file. Returns the server with its requests cleared and `:complete`
+/// answering with the completed recording.
 async fn upload_rejected_at_complete(dataset: &PickCube) -> MockServer {
-    let server = ingest_api_completing_with(
-        ResponseTemplate::new(400).set_body_json(json!({"detail": "No episodes found in data/"})),
-    )
-    .await;
+    let server = MockServer::start().await;
+    let stored = Stored::default();
+    recordings::mount(&server, &stored, unreadable_dataset()).await;
     let output = upload(dataset, Some(&server), &["--json"]);
     assert_eq!(output.status.code(), Some(5), "{}", text(&output.stderr));
     server.reset().await;
-    mount_ingest_api(&server, completed()).await;
+    recordings::mount(&server, &stored, completed()).await;
     server
 }
 
 /// The data file [`upload_failing_at_a_data_file`] rejects.
 const REJECTED: &str = "data/chunk-000/file-000.parquet";
 
-/// Runs an upload whose first data file is rejected, which leaves a journal of the files
-/// stored before. Returns the server, its `complete` and file mocks unchanged, and the files
-/// the first run reported as stored.
+/// Runs an upload whose first data file storage rejects, which leaves a journal of the
+/// recording. Returns the server, its mocks unchanged, and the files the first run reported
+/// as uploaded.
 async fn upload_failing_at_a_data_file(
     dataset: &PickCube,
 ) -> serde_json::Result<(MockServer, BTreeSet<String>)> {
     let server = ingest_api().await;
     Mock::given(method("PUT"))
-        .and(path(format!("{FILES}{REJECTED}")))
+        .and(path(format!("{}{REJECTED}", recordings::STORAGE)))
         .respond_with(
-            ResponseTemplate::new(400).set_body_json(json!({"detail": "Unsupported file"})),
+            ResponseTemplate::new(400)
+                .set_body_string("<Error><Code>InvalidRequest</Code></Error>"),
         )
         .up_to_n_times(1)
         .with_priority(1)
         .mount(&server)
         .await;
     let output = upload(dataset, Some(&server), &["--json"]);
-    assert_eq!(output.status.code(), Some(5), "{}", text(&output.stderr));
+    assert_eq!(output.status.code(), Some(7), "{}", text(&output.stderr));
     let stored = event_paths(&json_lines(&output.stdout)?, "file_finished");
-    assert!(stored.contains("meta/info.json"), "{stored:?}");
     assert!(!stored.contains(REJECTED), "{stored:?}");
     Ok((server, stored))
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn datasets_upload_after_a_failed_upload_resumes_the_session_and_sends_only_the_remaining_files()
+async fn datasets_upload_after_a_failed_upload_resumes_the_recording_and_sends_only_the_remaining_files()
  {
     let dataset = pick_cube(&[]).unwrap();
     let (server, stored) = upload_failing_at_a_data_file(&dataset).await.unwrap();
@@ -1200,20 +1283,21 @@ async fn datasets_upload_after_a_failed_upload_resumes_the_session_and_sends_onl
     assert_eq!(output.status.code(), Some(0), "{}", text(&output.stderr));
     let requests = server.received_requests().await.unwrap()[first_run..].to_vec();
     let sent: BTreeSet<String> = stored_paths(&requests).into_iter().collect();
-    let remaining: BTreeSet<String> = dataset
-        .upload_paths()
-        .difference(&stored)
-        .cloned()
-        .collect();
-    assert_eq!(sent, remaining);
-    assert_eq!(session_creations(&requests), 0);
+    assert!(
+        sent.contains(REJECTED) && sent.is_disjoint(&stored),
+        "{sent:?}"
+    );
+    assert_eq!(creations(&requests), 0);
     let events = json_lines(&output.stdout).unwrap();
     let resumed = events
         .iter()
         .find(|event| event["type"] == "session_resumed")
         .unwrap();
     assert_eq!(resumed["session_id"], SESSION_ID);
-    assert_eq!(resumed["files_done"], stored.len());
+    assert_eq!(
+        resumed["files_done"].as_u64().unwrap() + sent.len() as u64,
+        dataset.upload_paths().len() as u64
+    );
     let result = events.last().unwrap();
     assert_eq!(
         (&result["session_id"], &result["resumed"]),
@@ -1237,7 +1321,7 @@ async fn datasets_upload_json_of_a_resumed_upload_reports_the_files_already_stor
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn datasets_upload_removes_the_journal_once_the_session_is_complete() {
+async fn datasets_upload_removes_the_journal_once_the_recording_is_complete() {
     let dataset = pick_cube(&[]).unwrap();
     let (server, _) = upload_failing_at_a_data_file(&dataset).await.unwrap();
     let journals_before = std::fs::read_dir(dataset.journal_dir()).unwrap().count();
@@ -1280,7 +1364,7 @@ async fn datasets_upload_with_another_task_than_the_interrupted_upload_fails_wit
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn datasets_upload_restart_creates_a_new_session_and_sends_every_file() {
+async fn datasets_upload_restart_creates_a_new_recording() {
     let dataset = pick_cube(&[]).unwrap();
     let (server, _) = upload_failing_at_a_data_file(&dataset).await.unwrap();
     let first_run = server.received_requests().await.unwrap().len();
@@ -1289,9 +1373,7 @@ async fn datasets_upload_restart_creates_a_new_session_and_sends_every_file() {
 
     assert_eq!(output.status.code(), Some(0), "{}", text(&output.stderr));
     let requests = server.received_requests().await.unwrap()[first_run..].to_vec();
-    assert_eq!(session_creations(&requests), 1);
-    let sent: BTreeSet<String> = stored_paths(&requests).into_iter().collect();
-    assert_eq!(sent, dataset.upload_paths());
+    assert_eq!(creations(&requests), 1);
     let events = json_lines(&output.stdout).unwrap();
     assert!(types(&events).contains(&"session_created"), "{events:?}");
     assert!(!types(&events).contains(&"session_resumed"), "{events:?}");
@@ -1367,7 +1449,7 @@ async fn doctor_api(
     for (route, response) in [
         ("/api/health", health),
         ("/api/health/ready", readiness),
-        ("/api/v1/me", me),
+        ("/api/v1/users/me", me),
         ("/config.json", config_json_ok()),
     ] {
         Mock::given(method("GET"))
@@ -1606,7 +1688,7 @@ async fn doctor_without_imify_token_fails_with_auth_required_and_does_not_call_m
     assert!(
         requests
             .iter()
-            .all(|request| request.url.path() != "/api/v1/me")
+            .all(|request| request.url.path() != "/api/v1/users/me")
     );
 }
 
@@ -1628,7 +1710,7 @@ async fn doctor_with_a_token_the_api_rejects_fails_with_auth_rejected() {
     let server = doctor_api(
         health_ok(),
         ready(200, "ok"),
-        ResponseTemplate::new(401).set_body_json(json!({"detail": "Invalid token"})),
+        ResponseTemplate::new(401).set_body_json(invalid_token()),
     )
     .await;
 
@@ -1751,7 +1833,7 @@ async fn doctor_with_a_rejected_imify_token_and_a_stored_login_hints_at_unsettin
     let server = doctor_api(
         health_ok(),
         ready(200, "ok"),
-        ResponseTemplate::new(401).set_body_json(json!({"detail": "Invalid token"})),
+        ResponseTemplate::new(401).set_body_json(invalid_token()),
     )
     .await;
     let config_dir = config_dir_with_login(&server.uri()).unwrap();
@@ -1877,7 +1959,7 @@ async fn doctor_against_a_host_without_config_json_warns_on_oidc_and_exits_0() {
     for (route, response) in [
         ("/api/health", health_ok()),
         ("/api/health/ready", ready(200, "ok")),
-        ("/api/v1/me", me_ok()),
+        ("/api/v1/users/me", me_ok()),
     ] {
         Mock::given(method("GET"))
             .and(path(route))
@@ -2200,7 +2282,7 @@ fn datasets_validate_escapes_a_parquet_value() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn datasets_list_escapes_a_server_dataset_name() {
-    let body = json!([dataset_body(PICK_ID, HOSTILE, "lerobot_v3", "so100", 1, 1)]);
+    let body = json!({"datasets": [dataset_body(PICK_ID, HOSTILE, "v3", "so100", 1, 1)]});
     let server = api_with_datasets(200, body).await;
 
     let output = datasets_list(&server, &[]);
@@ -2210,14 +2292,14 @@ async fn datasets_list_escapes_a_server_dataset_name() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn datasets_upload_escapes_session_fields_and_file_names() {
+async fn datasets_upload_escapes_recording_fields_and_file_names() {
     let server = ingest_api().await;
     let dataset = pick_cube(&[Defect::StrayFile(HOSTILE.to_owned())]).unwrap();
-    let mut session = completed_session_body();
-    session["robot_type"] = json!(HOSTILE);
+    let mut recording = completed_recording_body();
+    recording["robotType"] = json!(HOSTILE);
     Mock::given(method("POST"))
         .and(path(COMPLETE))
-        .respond_with(ResponseTemplate::new(200).set_body_json(session))
+        .respond_with(ResponseTemplate::new(200).set_body_json(recording))
         .with_priority(1)
         .mount(&server)
         .await;
@@ -2230,7 +2312,7 @@ async fn datasets_upload_escapes_session_fields_and_file_names() {
 }
 
 #[test]
-fn datasets_upload_dry_run_escapes_the_session_name_taken_from_the_directory_name() {
+fn datasets_upload_dry_run_escapes_the_recording_name_taken_from_the_directory_name() {
     let parent = tempfile::tempdir().unwrap();
     let root = parent.path().join(HOSTILE);
     DatasetBuilder::new(Format::V3_0).write_to(&root).unwrap();
@@ -2252,7 +2334,7 @@ async fn doctor_escapes_readiness_and_account_fields() {
     let readiness = ResponseTemplate::new(200)
         .set_body_json(json!({"status": "ok", "db": HOSTILE, "storage": "ok"}));
     let me = ResponseTemplate::new(200)
-        .set_body_json(json!({"subject": "user-1234", "name": HOSTILE, "role": "admin"}));
+        .set_body_json(json!({"name": "users/user-1234", "displayName": HOSTILE, "role": "ADMIN"}));
     let server = doctor_api(health_ok(), readiness, me).await;
 
     let output = doctor(Some(&server.uri()), Some(VALID_JWT), &[]);

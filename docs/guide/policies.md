@@ -44,7 +44,7 @@ Filters combine: a policy is listed when it matches every filter given.
 
 ```console
 $ imify policies list --state ready --json
-[{"created_at":"2026-10-01T09:30:00Z","dataset_id":"0b6f3c2e-8d1a-4f7e-9a51-2c4d6e8f0a13","dataset_version_id":"ver-41d2","error":null,"finished_at":"2026-10-01T11:02:40Z","id":"run-3c9e1a7f","phase":"done","policy_type":"act","started_at":"2026-10-01T09:31:12Z","state":"ready","step":20000,"total_steps":20000}]
+[{"created_at":"2026-10-01T09:30:00Z","dataset_id":"0b6f3c2e-8d1a-4f7e-9a51-2c4d6e8f0a13","dataset_version_id":"v3","error":null,"finished_at":"2026-10-01T11:02:40Z","id":"run-3c9e1a7f","phase":"done","policy_type":"act","started_at":"2026-10-01T09:31:12Z","state":"ready","step":20000,"total_steps":20000}]
 ```
 
 `--json` prints one array, `[]` when no policy matches. Each object has these fields:
@@ -58,7 +58,7 @@ $ imify policies list --state ready --json
 | `step` | integer | Training steps completed. |
 | `total_steps` | integer | Training steps planned. |
 | `dataset_id` | string | Id of the dataset the policy is trained on. |
-| `dataset_version_id` | string | Id of the dataset version the policy is trained on. |
+| `dataset_version_id` | string | Id of the dataset version the policy is trained on, such as `v3`. |
 | `error` | string or null | Reason for a failed training. |
 | `created_at` | string | Creation time, an ISO 8601 date-time as the API sends it. |
 | `started_at` | string or null | Start of training. |
@@ -76,7 +76,7 @@ State       ready
 Phase       done
 Progress    20000/20000
 Dataset     0b6f3c2e-8d1a-4f7e-9a51-2c4d6e8f0a13
-Version     v3 (ver-41d2)
+Version     v3
 Task        Pick up the red cube
 Embodiment  so100
 Episodes    2
@@ -97,7 +97,7 @@ CHECKPOINT     SIZE  LAST MODIFIED
 
 | Field | Type | Content |
 |---|---|---|
-| `lineage` | object | `dataset_id`, `dataset_version_id`, `dataset_version_name`, `task`, `embodiment`, `embodiment_fingerprint`, `episodes` (integer) and `episode_ids` (array of strings). |
+| `lineage` | object | `dataset_id`, `dataset_version_id`, `dataset_version_name` (the same as `dataset_version_id`), `task`, `embodiment`, `embodiment_fingerprint`, `episodes` (integer) and `episode_ids` (array of strings, sorted). |
 | `checkpoints` | array | One object per checkpoint, oldest first: `id`, `size` in bytes and `last_modified`, an ISO 8601 date-time as the API sends it. |
 
 Schema: [`policies-show.json`](../reference/schemas/policies-show.json).

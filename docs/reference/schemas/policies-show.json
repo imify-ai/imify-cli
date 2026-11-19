@@ -90,11 +90,11 @@
           "type": "string"
         },
         "dataset_version_id": {
-          "description": "Id of the dataset version.",
+          "description": "Id of the dataset version, chosen when the version was made, such as `v3`.",
           "type": "string"
         },
         "dataset_version_name": {
-          "description": "Name of the dataset version.",
+          "description": "The same as `dataset_version_id`: the API names a dataset version by its id.",
           "type": "string"
         },
         "task": {

@@ -8,7 +8,7 @@ State       ready
 Phase       done
 Progress    20000/20000
 Dataset     0b6f3c2e-8d1a-4f7e-9a51-2c4d6e8f0a13
-Version     v3 (ver-41d2)
+Version     v3
 Task        Pick up the red cube
 Embodiment  so100
 Episodes    2

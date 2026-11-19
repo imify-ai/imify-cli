@@ -2,7 +2,7 @@
 source: crates/imify-cli/src/tui/upload/tests.rs
 expression: text
 ---
-Paused (rate limited, 3s)  pick-cube  session 3f2c9a
+Paused (rate limited, 3s)  pick-cube  recording 3f2c9a
 [████████████████░░░░░░░░░░░░░░]  760.0 MiB / 1.4 GiB  53%  28.0 MiB/s  23s left
 5/8 files  1 retry
   data/chunk-000/file-000.parquet                           90.0 MiB / 300.0 MiB

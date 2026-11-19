@@ -117,11 +117,11 @@ impl Login {
 
     async fn answer_me(&self) {
         Mock::given(method("GET"))
-            .and(path("/api/v1/me"))
+            .and(path("/api/v1/users/me"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "subject": "user-1234",
-                "name": "Ada Lovelace",
-                "role": "admin",
+                "name": "users/user-1234",
+                "displayName": "Ada Lovelace",
+                "role": "ADMIN",
             })))
             .mount(&self.api)
             .await;
@@ -192,13 +192,13 @@ fn envelope(output: &Output) -> Value {
 async fn whoami_sends_the_stored_id_token() {
     let login = Login::stored(3600).await.unwrap();
     Mock::given(method("GET"))
-        .and(path("/api/v1/me"))
+        .and(path("/api/v1/users/me"))
         .and(header(
             "authorization",
             format!("Bearer {}", login.id_token).as_str(),
         ))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "subject": "user-1234", "name": "Ada Lovelace", "role": "admin",
+            "name": "users/user-1234", "displayName": "Ada Lovelace", "role": "ADMIN",
         })))
         .expect(1)
         .mount(&login.api)
@@ -222,10 +222,10 @@ async fn whoami_refreshes_an_id_token_that_expires_within_60_s_and_stores_it() {
         })))
         .await;
     Mock::given(method("GET"))
-        .and(path("/api/v1/me"))
+        .and(path("/api/v1/users/me"))
         .and(header("authorization", format!("Bearer {fresh}").as_str()))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "subject": "user-1234", "name": "Ada Lovelace", "role": "admin",
+            "name": "users/user-1234", "displayName": "Ada Lovelace", "role": "ADMIN",
         })))
         .expect(1)
         .mount(&login.api)
@@ -258,7 +258,7 @@ async fn whoami_with_a_revoked_refresh_token_fails_with_auth_expired() {
     let output = login.run(&["auth", "whoami", "--json"], &[]);
 
     assert_eq!(output.status.code(), Some(3));
-    assert_eq!(login.requests_to(&login.api, "/api/v1/me").await, 0);
+    assert_eq!(login.requests_to(&login.api, "/api/v1/users/me").await, 0);
     insta::assert_snapshot!("whoami_auth_expired_json", text(&output.stderr));
 }
 
@@ -266,13 +266,13 @@ async fn whoami_with_a_revoked_refresh_token_fails_with_auth_expired() {
 async fn imify_token_takes_precedence_over_the_stored_login() {
     let login = Login::stored(3600).await.unwrap();
     Mock::given(method("GET"))
-        .and(path("/api/v1/me"))
+        .and(path("/api/v1/users/me"))
         .and(header(
             "authorization",
             format!("Bearer {ENV_TOKEN}").as_str(),
         ))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "subject": "user-1234", "name": "Ada Lovelace", "role": "admin",
+            "name": "users/user-1234", "displayName": "Ada Lovelace", "role": "ADMIN",
         })))
         .expect(1)
         .mount(&login.api)
@@ -283,12 +283,88 @@ async fn imify_token_takes_precedence_over_the_stored_login() {
     assert!(output.status.success(), "{}", text(&output.stderr));
 }
 
+/// Answers the refresh of the stored login with a fresh ID token and returns it.
+async fn refresh_to_a_fresh_token(login: &Login) -> String {
+    let fresh = id_token(&login.provider.uri(), "fresh", 3600);
+    login
+        .answer_token(ResponseTemplate::new(200).set_body_json(json!({
+            "id_token": fresh,
+            "token_type": "Bearer",
+        })))
+        .await;
+    fresh
+}
+
 #[tokio::test(flavor = "multi_thread")]
-async fn a_rejected_stored_login_hints_at_imify_login() {
+async fn a_rejected_stored_login_is_refreshed_once_and_then_hints_at_imify_login() {
     let login = Login::stored(3600).await.unwrap();
+    refresh_to_a_fresh_token(&login).await;
     Mock::given(method("GET"))
-        .and(path("/api/v1/me"))
-        .respond_with(ResponseTemplate::new(401).set_body_json(json!({"detail": "Invalid token"})))
+        .and(path("/api/v1/users/me"))
+        .respond_with(ResponseTemplate::new(401).set_body_json(
+            json!({"error": {"code": 401, "status": "UNAUTHENTICATED", "message": "Invalid token"}}),
+        ))
+        .mount(&login.api)
+        .await;
+
+    let output = login.run(&["auth", "whoami", "--json"], &[]);
+
+    let envelope = envelope(&output);
+    assert_eq!(
+        (
+            &envelope["error"]["code"],
+            &envelope["error"]["hint"],
+            login.requests_to(&login.api, "/api/v1/users/me").await,
+            login.requests_to(&login.provider, "/oauth2/token").await
+        ),
+        (
+            &json!("auth_rejected"),
+            &json!("Run `imify auth login`."),
+            2,
+            1
+        )
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_stored_login_rejected_with_401_is_refreshed_and_the_request_repeated() {
+    let login = Login::stored(3600).await.unwrap();
+    let fresh = refresh_to_a_fresh_token(&login).await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/users/me"))
+        .and(header("authorization", format!("Bearer {fresh}").as_str()))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "name": "users/user-1234", "displayName": "Ada Lovelace", "role": "ADMIN",
+        })))
+        .with_priority(1)
+        .mount(&login.api)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/users/me"))
+        .respond_with(ResponseTemplate::new(401))
+        .mount(&login.api)
+        .await;
+
+    let output = login.run(&["auth", "whoami"], &[]);
+
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    assert_eq!(
+        login.stored_entry().unwrap()["id_token"].as_str(),
+        Some(fresh.as_str())
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_stored_login_whose_refresh_is_refused_after_a_401_fails_with_auth_expired() {
+    let login = Login::stored(3600).await.unwrap();
+    login
+        .answer_token(ResponseTemplate::new(400).set_body_json(json!({
+            "error": "invalid_grant",
+        })))
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/users/me"))
+        .respond_with(ResponseTemplate::new(401))
         .mount(&login.api)
         .await;
 
@@ -297,7 +373,7 @@ async fn a_rejected_stored_login_hints_at_imify_login() {
     let envelope = envelope(&output);
     assert_eq!(
         (&envelope["error"]["code"], &envelope["error"]["hint"]),
-        (&json!("auth_rejected"), &json!("Run `imify auth login`."))
+        (&json!("auth_expired"), &json!("Run `imify auth login`."))
     );
 }
 
@@ -305,11 +381,13 @@ const UNSET_TOKEN_HINT: &str =
     "Unset `IMIFY_TOKEN` to use the stored login, or set it to a valid, unexpired token.";
 const AUTH_REJECTED_HINT: &str = "Set `IMIFY_TOKEN` to a valid, unexpired token.";
 
-/// Mounts a `/api/v1/me` that rejects every token on `api`.
+/// Mounts a `/api/v1/users/me` that rejects every token on `api`.
 async fn reject_every_token(api: &MockServer) {
     Mock::given(method("GET"))
-        .and(path("/api/v1/me"))
-        .respond_with(ResponseTemplate::new(401).set_body_json(json!({"detail": "Invalid token"})))
+        .and(path("/api/v1/users/me"))
+        .respond_with(ResponseTemplate::new(401).set_body_json(
+            json!({"error": {"code": 401, "status": "UNAUTHENTICATED", "message": "Invalid token"}}),
+        ))
         .mount(api)
         .await;
 }
@@ -760,12 +838,14 @@ fn login_logout_and_whoami_help_show_examples() {
 #[tokio::test(flavor = "multi_thread")]
 async fn an_escape_sequence_in_an_api_error_is_not_written_raw() {
     let login = Login::stored(3600).await.unwrap();
+    refresh_to_a_fresh_token(&login).await;
     Mock::given(method("GET"))
-        .and(path("/api/v1/me"))
-        .respond_with(
-            ResponseTemplate::new(401)
-                .set_body_json(json!({"detail": "Invalid token\u{1b}]0;pwned\u{7}\u{1b}[2J"})),
-        )
+        .and(path("/api/v1/users/me"))
+        .respond_with(ResponseTemplate::new(401).set_body_json(json!({"error": {
+            "code": 401,
+            "status": "UNAUTHENTICATED",
+            "message": "Invalid token\u{1b}]0;pwned\u{7}\u{1b}[2J"
+        }})))
         .mount(&login.api)
         .await;
 
@@ -807,7 +887,7 @@ async fn logout_removes_a_login_it_cannot_read_and_does_not_revoke() {
 }
 
 impl Login {
-    /// Mounts the requests doctor sends besides `/api/v1/me`: health, readiness and a
+    /// Mounts the requests doctor sends besides `/api/v1/users/me`: health, readiness and a
     /// `config.json` that names an `https` identity provider.
     async fn answer_doctor(&self) {
         for (route, body) in [
@@ -966,6 +1046,7 @@ async fn doctor_with_a_revoked_refresh_token_fails_the_account_check_with_auth_e
 async fn doctor_with_a_stored_login_the_api_rejects_hints_at_imify_login() {
     let login = Login::stored(3600).await.unwrap();
     login.answer_doctor().await;
+    refresh_to_a_fresh_token(&login).await;
     reject_every_token(&login.api).await;
 
     let (_, report) = login.doctor(&[]);

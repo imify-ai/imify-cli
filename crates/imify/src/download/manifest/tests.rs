@@ -99,7 +99,11 @@ async fn plain_http_storage_on_another_host_is_refused_without_naming_the_query(
 async fn a_total_size_other_than_the_sum_of_the_sizes_is_an_unexpected_response() {
     let server = MockServer::start().await;
     let url = storage_url(&server.uri(), "model.bin");
-    let body = json!({"files": [entry("model.bin", &url, 4)], "total_size_bytes": 5});
+    let body = json!({
+        "name": "trainingRuns/8d41c7/checkpoints/step-20000",
+        "files": [entry("model.bin", &url, 4)],
+        "sizeBytes": 5
+    });
 
     let (error, created) = refused_with(&server, &body).await;
 
@@ -116,7 +120,9 @@ async fn an_unknown_checkpoint_is_not_found_and_creates_no_directory() {
     Mock::given(method("GET"))
         .and(path(MANIFEST))
         .respond_with(
-            ResponseTemplate::new(404).set_body_json(json!({"detail": "Checkpoint not found"})),
+            ResponseTemplate::new(404).set_body_json(
+                json!({"error": {"code": 404, "status": "NOT_FOUND", "message": "Checkpoint not found"}}),
+            ),
         )
         .mount(&server)
         .await;
@@ -132,12 +138,21 @@ async fn an_unknown_checkpoint_is_not_found_and_creates_no_directory() {
 }
 
 #[tokio::test]
-async fn storage_without_downloads_is_a_validation_error_with_the_detail() {
+async fn storage_without_downloads_is_a_failed_precondition_with_the_message() {
     let server = MockServer::start().await;
     let detail = "Downloads are not available for this storage backend";
     Mock::given(method("GET"))
         .and(path(MANIFEST))
-        .respond_with(ResponseTemplate::new(422).set_body_json(json!({"detail": detail})))
+        .respond_with(ResponseTemplate::new(412).set_body_json(json!({"error": {
+            "code": 412,
+            "status": "FAILED_PRECONDITION",
+            "message": detail,
+            "details": [{
+                "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+                "reason": "DOWNLOADS_NOT_SUPPORTED",
+                "domain": "imify-cloud"
+            }]
+        }})))
         .mount(&server)
         .await;
     let root = tempfile::tempdir().unwrap();
@@ -148,7 +163,8 @@ async fn storage_without_downloads_is_a_validation_error_with_the_detail() {
         .unwrap_err();
 
     assert!(
-        matches!(&error, Error::Validation { message, .. } if message == detail),
+        matches!(&error, Error::FailedPrecondition { message, reason: Some(reason), .. }
+            if message == detail && reason == "DOWNLOADS_NOT_SUPPORTED"),
         "{error:?}"
     );
     assert!(!root.path().join("policy").exists());
@@ -159,7 +175,7 @@ async fn ids_with_a_slash_are_sent_as_single_path_segments() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path(
-            "/api/v1/training-runs/team%2F8d41c7/checkpoints/step%2F1",
+            "/api/v1/trainingRuns/team%2F8d41c7/checkpoints/step%2F1",
         ))
         .respond_with(ResponseTemplate::new(200).set_body_json(manifest(&[])))
         .mount(&server)
@@ -175,4 +191,22 @@ async fn ids_with_a_slash_are_sent_as_single_path_segments() {
         .unwrap();
 
     assert_eq!(summary.files, 0);
+}
+
+#[tokio::test]
+async fn a_checkpoint_without_files_is_an_unexpected_response() {
+    let server = MockServer::start().await;
+    let body = json!({
+        "name": "trainingRuns/8d41c7/checkpoints/step-20000",
+        "sizeBytes": 0,
+        "files": null
+    });
+
+    let (error, created) = refused_with(&server, &body).await;
+
+    assert!(
+        matches!(error, Error::UnexpectedResponse { .. }),
+        "{error:?}"
+    );
+    assert!(!created);
 }
