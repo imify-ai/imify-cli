@@ -25,3 +25,7 @@ github-attestations = true
 pr-run-mode = "plan"
 # Dependabot updates action versions in the generated release workflow.
 allow-dirty = ["ci"]
+
+# GitHub retired the macos-14 runner that dist picks by default for this target.
+[dist.github-custom-runners]
+aarch64-apple-darwin = "macos-15"
