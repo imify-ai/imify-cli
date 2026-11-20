@@ -66,15 +66,17 @@ gh attestation verify imify-cli-x86_64-unknown-linux-gnu.tar.xz --repo imify-ai/
 
 On macOS, use `shasum -a 256 --check` in place of `sha256sum --check`. `gh attestation verify` confirms that the archive was built by the release workflow of `imify-ai/imify-cli`.
 
-## What works in 0.1.0
+## What works
 
 - `imify auth login`, `imify auth logout` and `imify auth whoami`: browser sign-in, with `--no-browser` for machines without one; the login is stored in the OS keychain or a user-only file. `IMIFY_TOKEN` for CI.
 - `imify datasets validate`: offline check of a LeRobot v3 or v2.1 dataset.
 - `imify datasets upload`: uploads a dataset into a recording, straight to storage; an interrupted upload continues where it stopped.
 - `imify datasets list`: lists datasets, with filters and sorting.
+- `imify policies list`, `show` and `download`: lists the trained policies, shows one with its checkpoints, and downloads a checkpoint.
 - `imify doctor`: checks the configuration, the API, the clock and the token.
-- `imify config`: stores the API URL.
+- `imify config get`, `set`, `unset`, `list` and `profiles`: reads and changes the settings in the config file, with profiles for several API hosts.
 - `imify browse`: opens the platform in the browser.
+- `imify self update`: installs the latest release.
 
 ## Authentication
 
