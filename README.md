@@ -66,7 +66,7 @@ gh attestation verify imify-cli-x86_64-unknown-linux-gnu.tar.xz --repo imify-ai/
 
 On macOS, use `shasum -a 256 --check` in place of `sha256sum --check`. `gh attestation verify` confirms that the archive was built by the release workflow of `imify-ai/imify-cli`.
 
-## What works in 0.1.0
+## What works
 
 - `imify auth login`, `imify auth logout` and `imify auth whoami`: browser sign-in, with `--no-browser` for machines without one; the login is stored in the OS keychain or a user-only file. `IMIFY_TOKEN` for CI.
 - `imify datasets validate`: offline check of a LeRobot v3 or v2.1 dataset.
