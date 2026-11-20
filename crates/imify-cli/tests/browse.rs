@@ -65,12 +65,15 @@ impl FakeOpener {
         path
     }
 
-    /// The URLs the scripts were started with. Waits up to 5 s for the first line, because the
-    /// CLI does not wait for the opener.
+    /// The URLs the scripts were started with. Waits up to 5 s for the first full line, because
+    /// the CLI does not wait for the opener, and the shell creates the log before it writes the
+    /// line.
     fn opened(&self) -> Vec<String> {
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
-            if let Ok(log) = fs::read_to_string(&self.log) {
+            if let Ok(log) = fs::read_to_string(&self.log)
+                && log.ends_with('\n')
+            {
                 return log.lines().map(str::to_owned).collect();
             }
             assert!(Instant::now() < deadline, "the opener was not started");
