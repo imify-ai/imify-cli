@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.1](https://github.com/imify-ai/imify-cli/compare/v0.5.0...v0.5.1) - 2026-11-20
+
+The v0.5.0 release stopped before it built any archives, so 0.5.1 is the first release with the changes of 0.5.0.
+
+### Fixed
+
+- *(release)* build aarch64-apple-darwin on macos-15 ([#125](https://github.com/imify-ai/imify-cli/pull/125))
+
+### Other
+
+- *(readme)* drop the version from the feature list and list the current commands ([#126](https://github.com/imify-ai/imify-cli/pull/126))
+- *(browse)* wait for the full line of the fake opener in the tests ([#126](https://github.com/imify-ai/imify-cli/pull/126))
+
 ## [0.5.0](https://github.com/imify-ai/imify-cli/compare/v0.4.0...v0.5.0) - 2026-11-19
 
 ### Added
